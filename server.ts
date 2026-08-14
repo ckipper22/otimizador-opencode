@@ -3062,6 +3062,17 @@ app.post("/api/optimize", async (req, res) => {
     logs.push(`[SUCESSO] Itens Otimizados com Economia: ${itemsSwappedCount} de ${parsedItems.length}`);
     logs.push(`[SUCESSO] Economia Estimada Total: R$ ${totalSavings.toFixed(2)}`);
 
+    // Filtrar itens sem estoque real na SmartPed ("Não Encontrados" / estoque 0)
+    const filteredReport = report.filter((item: any) => {
+      const dist = String(item.distribuidora || "").toLowerCase();
+      const estoque = Number(item.estoque !== undefined ? item.estoque : 0);
+      const isNotFound = !item.distribuidora || dist.includes("não encontrado") || dist.includes("nao encontrado") || dist.includes("sem estoque");
+      return !isNotFound && estoque > 0;
+    });
+    if (filteredReport.length < report.length) {
+      logs.push(`[FILTRO ESTOQUE] Removidos ${report.length - filteredReport.length} itens sem estoque real na SmartPed.`);
+    }
+
     res.json({
       optimizedFileContent,
       cnpj: finalCnpj,
@@ -3071,7 +3082,7 @@ app.post("/api/optimize", async (req, res) => {
         itemsSwapped: itemsSwappedCount,
         totalSavings
       },
-      report,
+      report: filteredReport,
       minimos: allMinimos,
       logs
     });
