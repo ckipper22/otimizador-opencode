@@ -115,6 +115,7 @@ export default function SwapsTable({
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [selectedWhatsAppRule, setSelectedWhatsAppRule] = useState<WhatsAppRule | null>(null);
   const [filterType, setFilterType] = useState<"all" | "swapped" | "original">("all");
+  const [allOffersModalItem, setAllOffersModalItem] = useState<any>(null);
 
   // Regras ativas de pedido WhatsApp (do config ou fallback para Eurofarma)
   const activeWhatsAppRules = useMemo<WhatsAppRule[]>(() => {
@@ -1595,6 +1596,15 @@ export default function SwapsTable({
 
                                   <ObservationBell ean={item.originalEan} />
 
+                                  <button
+                                    onClick={() => setAllOffersModalItem(item)}
+                                    className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-blue-50 border border-blue-300 text-blue-700 rounded-sm hover:bg-blue-100 transition-colors cursor-pointer"
+                                    title="Ver todas as ofertas disponíveis com estoque para este EAN"
+                                  >
+                                    <Search className="w-3 h-3" />
+                                    Ver ofertas
+                                  </button>
+
                                   {item.observacao && (
                                     <div className="mt-1.5 flex items-start gap-1 text-[10px] text-amber-700 bg-amber-50 p-1 rounded-sm border border-amber-200">
                                       <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
@@ -2137,6 +2147,100 @@ export default function SwapsTable({
             />
           )}
         </AnimatePresence>
+
+        {/* Modal de Todas as Ofertas */}
+        {allOffersModalItem && onSelectCondition && (() => {
+          const modalItem = allOffersModalItem;
+          const allAlts = (modalItem.alternatives || []).filter((alt: any) => {
+            const dist = String(alt.distribuidora || "").toUpperCase();
+            if (!alt.distribuidora || dist.includes("NÃO ENCONTRADOS") || dist.includes("SEM ESTOQUE")) return false;
+            return Number(alt.estoque !== undefined ? alt.estoque : (alt.Estoque || 0)) > 0;
+          });
+          const sameProductAlts = allAlts.filter((a: any) => a.ean === modalItem.originalEan);
+          const otherProductAlts = allAlts.filter((a: any) => a.ean !== modalItem.originalEan);
+
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+              onClick={() => setAllOffersModalItem(null)}
+            >
+              <motion.div
+                initial={{ scale: 0.95, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 20 }}
+                className="bg-white rounded-lg shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between p-4 border-b">
+                  <div>
+                    <h3 className="text-sm font-black uppercase tracking-wider">Todas as Ofertas Disponíveis</h3>
+                    <p className="text-[11px] text-gray-500 mt-0.5">{modalItem.originalDescricao} — EAN: {modalItem.originalEan}</p>
+                  </div>
+                  <button onClick={() => setAllOffersModalItem(null)} className="p-1 hover:bg-gray-100 rounded"><X className="w-4 h-4" /></button>
+                </div>
+                <div className="overflow-y-auto flex-1 p-4 space-y-4">
+                  {allAlts.length === 0 ? (
+                    <p className="text-center text-gray-400 text-xs py-8">Nenhuma oferta com estoque encontrada.</p>
+                  ) : (
+                    <>
+                      {sameProductAlts.length > 0 && (
+                        <div>
+                          <h4 className="text-[10px] font-extrabold uppercase tracking-wider text-gray-600 mb-2">📋 Mesmo Medicamento</h4>
+                          <div className="space-y-1">
+                            {sameProductAlts.sort((a: any, b: any) => a.preco - b.preco).map((alt: any, idx: number) => (
+                              <button
+                                key={idx}
+                                onClick={() => { onSelectCondition(modalItem.codInterno, alt); setAllOffersModalItem(null); }}
+                                className="w-full flex items-center justify-between px-3 py-2 text-[11px] border rounded-sm hover:bg-blue-50 hover:border-blue-300 transition-colors cursor-pointer"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-gray-800">{alt.distribuidora}</span>
+                                  <span className="text-gray-500">{alt.condicao}</span>
+                                  <span className="text-gray-400">{alt.prazo > 0 ? `${alt.prazo}d` : "À vista"}</span>
+                                  {alt.qtdMin > 0 && <span className="text-amber-600 font-bold">⚠️ Mín {alt.qtdMin}un</span>}
+                                  {alt.qtdMin <= 0 && <span className="text-emerald-600 font-bold">✅ Sem mínimo</span>}
+                                </div>
+                                <span className="font-black text-emerald-700">R$ {Number(alt.preco).toFixed(2).replace(".", ",")}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {otherProductAlts.length > 0 && (
+                        <div>
+                          <h4 className="text-[10px] font-extrabold uppercase tracking-wider text-gray-600 mb-2">🔬 Substitutos ({otherProductAlts.length})</h4>
+                          <div className="space-y-1">
+                            {otherProductAlts.sort((a: any, b: any) => a.preco - b.preco).map((alt: any, idx: number) => (
+                              <button
+                                key={idx}
+                                onClick={() => { onSelectCondition(modalItem.codInterno, alt); setAllOffersModalItem(null); }}
+                                className="w-full flex items-center justify-between px-3 py-2 text-[11px] border rounded-sm hover:bg-blue-50 hover:border-blue-300 transition-colors cursor-pointer"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-blue-800 truncate max-w-[150px]">{(alt.laboratorio || "GENÉRICO").substring(0, 20)}</span>
+                                  <span className="text-gray-500 truncate max-w-[180px]">{(alt.descricao || "").substring(0, 30)}</span>
+                                  {alt.qtdMin > 0 && <span className="text-amber-600 font-bold">⚠️ Mín {alt.qtdMin}un</span>}
+                                  {alt.qtdMin <= 0 && <span className="text-emerald-600 font-bold">✅ Sem mínimo</span>}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-gray-500">{alt.distribuidora}</span>
+                                  <span className="font-black text-emerald-700">R$ {Number(alt.preco).toFixed(2).replace(".", ",")}</span>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
 
         {/* Botão Flutuante de Busca nos Pedidos e Card Interativo */}
         <div className="fixed bottom-28 right-8 z-40 flex flex-col items-end pointer-events-none">
