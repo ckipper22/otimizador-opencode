@@ -1594,7 +1594,15 @@ export default function SwapsTable({
                                     )}
                                   </div>
 
-                                  <ObservationBell ean={item.originalEan} />
+<ObservationBell ean={item.originalEan} />
+                          <button
+                            onClick={() => setAllOffersModalItem(item)}
+                            className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-blue-50 border border-blue-300 text-blue-700 rounded-sm hover:bg-blue-100 transition-colors cursor-pointer"
+                            title="Ver todas as ofertas disponíveis com estoque para este EAN"
+                          >
+                            <Search className="w-3 h-3" />
+                            Ver ofertas
+                          </button>
 
                                   <button
                                     onClick={() => setAllOffersModalItem(item)}
