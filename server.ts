@@ -1,62 +1,25 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import dotenv from "dotenv";
-import fs from "fs";
 import { runEngineSelfTests } from "./backend-tests";
 import { validateSwapEquivalence } from "./swap-validation";
 
-dotenv.config();
+import { CONFIG, PORT } from "./server/config";
+import { cacheKey, getFromCache, setInCache, MINIMOS_GLOBAL_CACHE, updateMinimosCache, getMinimoFromCache, DYNAMIC_EANS_CACHE, FATURAMENTO_ITEMS_CACHE, SIMULATED_CHECKS, startCachePurgeInterval } from "./server/cache";
+import { rateLimitMiddleware, startRateLimitPurge } from "./server/rate-limiter";
+import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatabaseRecord, loadEanDatabase } from "./server/ean-utils";
+import { fetchEanDescriptions, fetchSimilarGenerics } from "./server/smartped-api";
+import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords } from "./server/parsers";
+import { DISTRIBUIDORAS_MAP } from "./server/distributors";
+import { LOCAL_EQUIVALENTS_DB, getLocalEquivalents } from "./server/equivalents-db";
+import { findBestSubstitute } from "./server/swap-engine";
+import { enrichReturnedItem } from "./server/smartped-transforms";
+import { MOCK_API_DATABASE } from "./server/mock-data";
+import { startDbCachePurge, saveOrder, saveOrderItem, getOrder } from "./server/database";
 
-// ============================================
-// CONFIGURACAO CENTRALIZADA (via .env)
-// ============================================
-const CONFIG = {
-  SMARTPED_PRODUCTION_TOKEN: process.env.SMARTPED_PRODUCTION_TOKEN || "fddfd9871b77f44f243e145207c8e93a",
-  SMARTPED_SANDBOX_TOKEN: process.env.SMARTPED_SANDBOX_TOKEN || "79770c03eb119691f0355c5628c496e2",
-  SMARTPED_DEFAULT_CNPJ: process.env.SMARTPED_DEFAULT_CNPJ || "13408443000168",
-  SMARTPED_PRODUCTION_URL: process.env.SMARTPED_PRODUCTION_URL || "https://api.smartped.com.br",
-  SMARTPED_SANDBOX_URL: process.env.SMARTPED_SANDBOX_URL || "https://apitest.smartped.com.br",
-  FERRAMENTINHAS_API_URL: process.env.FERRAMENTINHAS_API_URL || "https://api.ferramentinhas.com.br",
-  APP_ADMIN_EMAILS: (process.env.APP_ADMIN_EMAILS || "ckipper22@gmail.com,aga706panambi@gmail.com").split(",").map(e => e.trim().toLowerCase()),
-  APP_ADMIN_PASSWORD: process.env.APP_ADMIN_PASSWORD || "Aq1sw2de#fr4",
-};
-
-// Executa a suíte de auto-testes das regras de negócio do backend (Hard Block de Sabores, Dosagens, etc.)
 runEngineSelfTests();
 
-// ============================================
-// CACHE DE RESPOSTAS SMARTPED (anti-instabilidade)
-// A API SmartPed retorna resultados inconsistentes para o mesmo EAN.
-// Este cache armazena respostas por 5 minutos para estabilizar a experiência.
-// ============================================
-const SMARTPED_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
-const smartpedCache = new Map<string, { data: any; ts: number }>();
-
-function cacheKey(endpoint: string, ean: string, token: string, cnpj: string): string {
-  return `${endpoint}|${ean}|${token}|${cnpj}`;
-}
-
-function getFromCache(key: string): any | null {
-  const entry = smartpedCache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.ts > SMARTPED_CACHE_TTL_MS) {
-    smartpedCache.delete(key);
-    return null;
-  }
-  return entry.data;
-}
-
-function setInCache(key: string, data: any): void {
-  if (smartpedCache.size > 2000) {
-    const oldest = smartpedCache.keys().next().value;
-    if (oldest) smartpedCache.delete(oldest);
-  }
-  smartpedCache.set(key, { data, ts: Date.now() });
-}
-
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : (process.env.NODE_ENV === "production" ? 8080 : 3000);
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
@@ -66,1385 +29,23 @@ app.use((req, res, next) => {
   next();
 });
 
-// ============================================
-// RATE LIMITING (anti-abuso, em memoria)
-// ============================================
-const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minuto
-const RATE_LIMIT_MAX = 120; // max 120 req/min por IP
-const rateLimitStore: Record<string, { count: number; resetAt: number }> = {};
+// Rate limiting imported from server/rate-limiter.ts
+startRateLimitPurge();
+app.use(rateLimitMiddleware);
 
-app.use((req, res, next) => {
-  const ip = req.ip || req.socket.remoteAddress || "unknown";
-  const now = Date.now();
-  const entry = rateLimitStore[ip];
+// Cache purge interval
+startCachePurgeInterval(EAN_DATABASE, MINIMOS_GLOBAL_CACHE);
 
-  if (!entry || now > entry.resetAt) {
-    rateLimitStore[ip] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
-    return next();
-  }
+// Load EAN database on startup
+loadEanDatabase();
 
-  entry.count++;
-  if (entry.count > RATE_LIMIT_MAX) {
-    return res.status(429).json({ error: "Rate limit excedido. Tente novamente em 1 minuto." });
-  }
-  next();
-});
-
-// Purga entradas expiradas do rate limit a cada 5 minutos
-setInterval(() => {
-  const now = Date.now();
-  for (const ip of Object.keys(rateLimitStore)) {
-    if (now > rateLimitStore[ip].resetAt) delete rateLimitStore[ip];
-  }
-}, 5 * 60 * 1000);
-
-function cleanEan(ean: string | number | undefined | null): string {
-  if (ean === undefined || ean === null) return "";
-  const cleaned = String(ean).trim().replace(/\D/g, "");
-  if (!cleaned) return "";
-  if (cleaned.length <= 13) {
-    return cleaned.padStart(13, "0");
-  }
-  return cleaned;
-}
-
-function normalizeDistName(name: string): string {
-  return (name || "")
-    .split('[')[0]
-    .trim()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase();
-}
-
-export function extractSmartPedQtdMin(cond: any): number {
-  if (!cond) return 0;
-  const candidates = [
-    cond.QtdMin,
-    cond.qtdMin,
-    cond.QtdMinima,
-    cond.qtdMinima,
-    cond.Qtd_Minima,
-    cond.Qtd_minima,
-    cond.QuantidadeMinima,
-    cond.quantidadeMinima,
-    cond.Qtd,
-    cond.qtd,
-    cond.Combo?.QtdMin,
-    cond.combo?.qtdMin,
-    cond.Combo?.QtdMinima,
-    cond.combo?.qtdMinima,
-    cond.Escala?.QtdMin,
-    cond.escala?.qtdMin,
-    cond.Campanha?.QtdMin,
-    cond.campanha?.qtdMin
-  ];
-
-  for (const c of candidates) {
-    if (c !== undefined && c !== null) {
-      const parsed = parseInt(String(c).replace(/[^0-9]/g, ""), 10);
-      if (!isNaN(parsed) && parsed > 0) {
-        return parsed;
-      }
-    }
-  }
-  return 0;
-}
-
-export function parseSmartPedEstoque(rawEstoque: any, hasValidPrice: boolean = true): number {
-  if (rawEstoque === null || rawEstoque === undefined) {
-    // Na SmartPed, cotações ativas retornadas com preço comercial válido onde o campo Estoque é omitido/nulo
-    // representam produtos disponíveis e cotados na distribuidora (Status 2 = Normal).
-    return hasValidPrice ? 2 : 0;
-  }
-  if (typeof rawEstoque === "boolean") {
-    return rawEstoque ? 2 : 0;
-  }
-  if (typeof rawEstoque === "number") {
-    if (isNaN(rawEstoque)) return hasValidPrice ? 2 : 0;
-    return rawEstoque;
-  }
-  const str = String(rawEstoque).trim().toUpperCase();
-  if (!str || str === "NULL" || str === "UNDEFINED") {
-    return hasValidPrice ? 2 : 0;
-  }
-  if (["S", "SIM", "TRUE", "DISPONIVEL", "DISPONÍVEL", "NORMAL", "OK", "EM ESTOQUE"].includes(str)) {
-    return 2;
-  }
-  if (["N", "NAO", "NÃO", "FALSE", "SEM ESTOQUE", "INDISPONIVEL", "INDISPONÍVEL", "ZERADO", "0"].includes(str)) {
-    return 0;
-  }
-  const parsed = parseInt(str.replace(/[^0-9]/g, ""), 10);
-  if (!isNaN(parsed)) {
-    return parsed;
-  }
-  return hasValidPrice ? 2 : 0;
-}
-
-function cleanCodProduto(codProduto: string | undefined | null, codProdutoDist: string | undefined | null): string {
-  const prod = String(codProduto || "").trim();
-  const dist = String(codProdutoDist || "").trim();
-  return (prod === "" || prod === "0") ? dist : prod;
-}
-
-// =========================================================================
-// CACHE GLOBAL DE MÍNIMOS EM MEMÓRIA (SmartPed)
-// Armazena os parâmetros de pedido mínimo retornados pelas distribuidoras
-// =========================================================================
-export let MINIMOS_GLOBAL_CACHE: Array<{
-  CodDist: number;
-  Condicao: string;
-  Prazo: number;
-  VlrMinimo: number;
-  QtdMinima: number;
-}> = [];
-
-export function updateMinimosCache(minimos: any[]) {
-  if (!minimos || !Array.isArray(minimos)) return;
-  minimos.forEach(newMin => {
-    const codDist = Number(newMin.CodDist !== undefined ? newMin.CodDist : newMin.codDist);
-    const condicao = String(newMin.Condicao || newMin.condicao || "").trim().toUpperCase();
-    const prazo = Number(newMin.Prazo !== undefined ? newMin.Prazo : (newMin.prazo !== undefined ? newMin.prazo : 0));
-    const vlrMinimo = Number(newMin.VlrMinimo !== undefined ? newMin.VlrMinimo : (newMin.vlrMinimo !== undefined ? newMin.vlrMinimo : 0));
-    const qtdMinima = Number(newMin.QtdMinima !== undefined ? newMin.QtdMinima : (newMin.qtdMinima !== undefined ? newMin.qtdMinima : 0));
-
-    if (!codDist) return;
-
-    const normalizedMin = {
-      CodDist: codDist,
-      Condicao: condicao,
-      Prazo: prazo,
-      VlrMinimo: vlrMinimo,
-      QtdMinima: qtdMinima
-    };
-
-    const exists = MINIMOS_GLOBAL_CACHE.findIndex(
-      m => m.CodDist === codDist && 
-           m.Condicao === condicao && 
-           m.Prazo === prazo
-    );
-    if (exists !== -1) {
-      MINIMOS_GLOBAL_CACHE[exists] = normalizedMin;
-    } else {
-      MINIMOS_GLOBAL_CACHE.push(normalizedMin);
-    }
-  });
-}
-
-export function getMinimoFromCache(codDist: number | string | undefined, condicao?: string, prazo?: number | string): number {
-  const cDistNum = Number(codDist);
-  if (!cDistNum) return 0;
-  const condUpper = String(condicao || "FIXA").trim().toUpperCase();
-  const prazoNum = Number(prazo || 0);
-
-  // 1. Match exato: CodDist + Condicao + Prazo
-  let match = MINIMOS_GLOBAL_CACHE.find(
-    m => m.CodDist === cDistNum && m.Condicao === condUpper && m.Prazo === prazoNum
-  );
-  if (match && match.VlrMinimo > 0) return match.VlrMinimo;
-
-  // 2. Match por CodDist + Prazo
-  match = MINIMOS_GLOBAL_CACHE.find(
-    m => m.CodDist === cDistNum && m.Prazo === prazoNum
-  );
-  if (match && match.VlrMinimo > 0) return match.VlrMinimo;
-
-  // 3. Match por CodDist + Condicao
-  match = MINIMOS_GLOBAL_CACHE.find(
-    m => m.CodDist === cDistNum && m.Condicao === condUpper
-  );
-  if (match && match.VlrMinimo > 0) return match.VlrMinimo;
-
-  // 4. Match por CodDist
-  match = MINIMOS_GLOBAL_CACHE.find(
-    m => m.CodDist === cDistNum && m.VlrMinimo > 0
-  );
-  if (match && match.VlrMinimo > 0) return match.VlrMinimo;
-
-  return 0;
-}
-
-function stripHtmlTags(str: string): string {
-  if (!str) return "";
-  return str.replace(/<\/?[^>]+(>|$)/g, "").trim();
-}
-
-function extractQuantityCount(desc: string): number | null {
-  if (!desc) return null;
-  const normalized = desc.toUpperCase();
-  
-  const cMatch = normalized.match(/\bC(?:X)?\/\s*(\d+)\b/i);
-  if (cMatch && cMatch[1]) {
-    return parseInt(cMatch[1], 10);
-  }
-  
-  const cpMatch = normalized.match(/\b(\d+)\s*(?:CP|COMP|CAPS|CAP|DRG|BL|AMB|AMP|SACHET|ENVEL|UN)\b/i);
-  if (cpMatch && cpMatch[1]) {
-    return parseInt(cpMatch[1], 10);
-  }
-  
-  return null;
-}
-
-function checkColetivoKeywords(novaDesc: string, originalDesc?: string): boolean {
-  if (!novaDesc) return false;
-  
-  // Ignore lab codes/brand abbreviations that could interfere with text parsing (e.g., GG, AL, EMS, GL, BGN, GEO)
-  let normNova = novaDesc.toUpperCase();
-  const labCodesToIgnore = [/\bGG\b/g, /\bAL\b/g, /\bEMS\b/g, /\bGL\b/g, /\bBGN\b/g, /\bGEO\b/g];
-  labCodesToIgnore.forEach(regex => {
-    normNova = normNova.replace(regex, "");
-  });
-
-  const normOrig = (originalDesc || "").toUpperCase();
-
-  // 1. Real wholesale / collective terms
-  const wholesaleRegexes = [
-    /\bFARDO\b/i,
-    /\bDISPLAY\b/i,
-    /\bPACOTAO\b/i,
-    /\bPACOTÃO\b/i,
-    /\b\d+\s*X\s*\d+\b/i, // e.g. 25X4
-    /\bCX\s+COM\b/i,
-    /\bCX\s+C\/\b/i,
-    /\bC\/\s*DISPLAY\b/i
-  ];
-
-  if (wholesaleRegexes.some(regex => regex.test(normNova))) {
-    return true;
-  }
-
-  // 2. Check for C/N or CX/N pattern
-  const cMatch = normNova.match(/\bC(?:X)?\/\s*(\d+)\b/i);
-  if (cMatch && cMatch[1]) {
-    const subQty = parseInt(cMatch[1], 10);
-    const origQty = extractQuantityCount(normOrig);
-
-    // Equivalent retail presentations (e.g. original 30CP/C/30 and sub C/30) -> DO NOT FLAG
-    if (origQty !== null && origQty === subQty) {
-      return false;
-    }
-
-    if (origQty !== null) {
-      // Flag if substitute quantity is divergent (e.g., subQty >= 2 * origQty and subQty > 12)
-      if (subQty >= origQty * 2 && subQty > 12) {
-        return true;
-      }
-      return false;
-    } else {
-      // Original didn't specify count. Only flag if subQty is a large wholesale packaging number (> 30)
-      if (subQty > 30) {
-        return true;
-      }
-      return false;
-    }
-  }
-
-  return false;
-}
-
-function calculateQuantityAlert(
-  originalPreco: number,
-  novoPreco: number,
-  novaDescricao: string,
-  cx: number,
-  originalDescricao?: string
-): { alertaConfirmarQtd: boolean; motivoAlerta?: string } {
-  // 1. Refatoração por Preço Discrepante: novoPreco > originalPreco * 3 E diferença absoluta > R$ 15.00
-  if (originalPreco > 0 && novoPreco > originalPreco * 3 && (novoPreco - originalPreco > 15.0)) {
-    return {
-      alertaConfirmarQtd: true,
-      motivoAlerta: `Preço unitário cotado (R$ ${novoPreco.toFixed(2)}) é muito superior ao custo ERP (R$ ${originalPreco.toFixed(2)}). Verifique se a cotação é de uma caixa fechada/embalagem múltipla.`
-    };
-  }
-  
-  // 2. Verificação de Texto de Embalagem Coletiva com Validação de Equivalência
-  if (checkColetivoKeywords(novaDescricao, originalDescricao)) {
-    return {
-      alertaConfirmarQtd: true,
-      motivoAlerta: `Descrição indica embalagem coletiva ("${novaDescricao}"). Verifique se a quantidade cotada corresponde à fração correta.`
-    };
-  }
-  
-  // 3. Fator Caixa Master do Distribuidor (cx > 1)
-  if (cx > 1) {
-    return {
-      alertaConfirmarQtd: true,
-      motivoAlerta: `O distribuidor indicou embalagem coletiva com fator de caixa cx: ${cx}. Ajuste as quantidades para evitar compras duplicadas.`
-    };
-  }
-
-  return { alertaConfirmarQtd: false };
-}
-
-// Map of standard SmartPed distributors
-
-async function fetchEanDescriptions(baseUrl: string, token: string, apiCnpj: string, eans: string[], logs: string[]): Promise<Record<string, { Descricao: string, Laboratorio: string }>> {
-  if (!eans || eans.length === 0) return {};
-  const eansToFetch = Array.from(new Set(eans.map(e => cleanEan(e)))).filter(Boolean);
-  const result: Record<string, { Descricao: string, Laboratorio: string }> = {};
-  
-  // Dividimos em lotes de 40 para não sobrecarregar
-  const batchSize = 40;
-  for (let i = 0; i < eansToFetch.length; i += batchSize) {
-    const batch = eansToFetch.slice(i, i + batchSize);
-    try {
-      const endpoint = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Molecula`;
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Accept": "application/json" },
-        body: JSON.stringify({
-          Token: token,
-          parametros: { CnpjCLi: apiCnpj, Ean: batch.join(","), ConsideraTipo: 1 }
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const itens = data.Retorno?.itens || data.Retorno?.Itens || data.itens || data.Itens || [];
-        for (const it of itens) {
-           const ip = it.ItemPedido || it.itemPedido || it;
-           const eanStr = cleanEan(ip.Ean || ip.ean || "");
-           if (eanStr) {
-             result[eanStr] = {
-                Descricao: ip.Descricao || ip.descricao || "",
-                Laboratorio: ip.Laboratorio || ip.laboratorio || ""
-             };
-           }
-        }
-      }
-    } catch (e: any) {
-      logs.push(`[API ERRO] Falha ao buscar descrições via Molecula: ${e.message}`);
-    }
-
-    // Double-coverage check: For any EAN in this batch that was NOT resolved by Molecula, query Condicoes/Ean as fallback
-    const unresolved = batch.filter(e => !result[e]);
-    if (unresolved.length > 0) {
-      try {
-        const endpointEan = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`;
-        const resEan = await fetch(endpointEan, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({
-            Token: token,
-            parametros: { CnpjCLi: apiCnpj, Ean: unresolved.join(","), AceitaOntem: 1 }
-          })
-        });
-        if (resEan.ok) {
-          const dataEan = await resEan.json();
-          const itensEan = dataEan.Retorno?.itens || dataEan.Retorno?.Itens || dataEan.itens || dataEan.Itens || [];
-          for (const entry of itensEan) {
-            const conds = entry.Condicoes || entry.condicoes || [];
-            if (conds.length > 0) {
-              const firstCond = conds[0];
-              const eanRaw = String(firstCond.Ean || firstCond.ean || entry.CodBarra || "");
-              const eanStr = cleanEan(eanRaw);
-              if (eanStr && entry.Descricao) {
-                result[eanStr] = {
-                  Descricao: entry.Descricao,
-                  Laboratorio: entry.Laboratorio || "Geral"
-                };
-              }
-            }
-          }
-        }
-      } catch (e: any) {
-        logs.push(`[API ERRO] Falha ao buscar descrições de fallback via Ean: ${e.message}`);
-      }
-    }
-  }
-  
-  return result;
-}
-
-const DISTRIBUIDORAS_MAP: Record<number, string> = {
-  2: "PanPharma",
-  3: "Servimed",
-  4: "Profarma",
-  6: "SantaCruz",
-  8: "PharmaLink",
-  9: "DrogaCenter",
-  16: "SIC",
-  18: "GoiasSaude",
-  21: "DISTRIMED",
-  26: "Millenium",
-  32: "DISMED",
-  34: "Medicamental",
-  37: "Navarro",
-  56: "SIGREDE",
-  59: "ANB",
-  60: "GAM",
-  67: "Dimed",
-  79: "NeoSul",
-  80: "Farmix",
-  84: "GOLFARMA",
-  85: "FORTES",
-  518: "PONTUAL",
-  533: "REDERM",
-  542: "MULTIDROGAS",
-  551: "NOVASD",
-  552: "JK",
-  555: "PALMED",
-  557: "GOIASATACADO",
-  566: "FARMACIASBRAVA",
-  569: "WM",
-  572: "ABS",
-  576: "ATACADOSC",
-  577: "LM",
-  578: "AFIMINAS",
-  579: "BIOLABGEN",
-  580: "VAREJAO",
-  581: "REDEFARMAGENTE",
-  583: "DFDISTRIBUIDORA",
-  594: "PRATIDONADUZZI",
-  604: "RedeFBF",
-  612: "FQM",
-  616: "GLORIA",
-  618: "Icone",
-  625: "SmartDistribuidora",
-  644: "FARLOG"
-};
-
-const EAN_DATABASE: Record<string, { 
-  descricao: string; 
-  laboratorio: string; 
-  precoOriginal: number;
-  qtd_estoque?: number;
-  est_minimo?: number;
-  est_maximo?: number;
-  cod_reduzido?: string;
-  vlr_custopersonalizado?: number;
-  vlr_venda_tabela?: number;
-  vlr_venda_final?: number;
-  dat_ultent?: string;
-  cod_dcb?: string;
-  cod_concentracao?: string;
-}> = {};
-function getEanDatabaseRecord(ean: string | number | undefined | null) {
-  if (ean === undefined || ean === null) return null;
-  const cleaned = cleanEan(ean);
-  if (!cleaned) return null;
-  return EAN_DATABASE[cleaned] || EAN_DATABASE[String(ean).trim()] || null;
-}
-const DYNAMIC_EANS_CACHE: Record<string, any[]> = {};
-const FATURAMENTO_ITEMS_CACHE: Record<string, { ean: string, descricao: string, laboratorio: string }> = {};
-
-// ============================================
-// PURGA AUTOMATICA DE CACHES (TTL: 2 horas)
-// ============================================
-const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas
-setInterval(() => {
-  const eanCount = Object.keys(EAN_DATABASE).length;
-  const minimosCount = MINIMOS_GLOBAL_CACHE.length;
-  const dynamicCount = Object.keys(DYNAMIC_EANS_CACHE).length;
-  const fatCount = Object.keys(FATURAMENTO_ITEMS_CACHE).length;
-
-  // Limpa caches secundarios (EAN_DATABASE e MINIMOS sao repovoados naturalmente)
-  for (const key of Object.keys(DYNAMIC_EANS_CACHE)) delete DYNAMIC_EANS_CACHE[key];
-  for (const key of Object.keys(FATURAMENTO_ITEMS_CACHE)) delete FATURAMENTO_ITEMS_CACHE[key];
-  for (const key of Object.keys(SIMULATED_CHECKS)) delete SIMULATED_CHECKS[key];
-
-  // Limpa EAN_DATABASE se exceder 50k registros
-  if (eanCount > 50000) {
-    for (const key of Object.keys(EAN_DATABASE)) delete EAN_DATABASE[key];
-    console.log(`[CACHE PURGE] EAN_DATABASE limpo (${eanCount} registros).`);
-  }
-
-  // Limpa MINIMOS_GLOBAL_CACHE se exceder 5k registros
-  if (minimosCount > 5000) {
-    MINIMOS_GLOBAL_CACHE.length = 0;
-    console.log(`[CACHE PURGE] MINIMOS_GLOBAL_CACHE limpo (${minimosCount} registros).`);
-  }
-
-  console.log(`[CACHE PURGE] DYNAMIC_EANS: ${dynamicCount}→0, FATURAMENTO: ${fatCount}→0, SIMULATED: limpo.`);
-}, CACHE_TTL_MS);
-
-function loadEanDatabase() {
-  try {
-    const utilsPath = path.join(process.cwd(), "src/utils.ts");
-    if (fs.existsSync(utilsPath)) {
-      const content = fs.readFileSync(utilsPath, "utf-8");
-      const filesText: string[] = [];
-      const sampleMatch = content.match(/export const SAMPLE_SICF_FILE = `([\s\S]+?)`/);
-      if (sampleMatch) filesText.push(sampleMatch[1]);
-      const homolMatch = content.match(/export const HOMOLOGACAO_SICF_FILE = `([\s\S]+?)`/);
-      if (homolMatch) filesText.push(homolMatch[1]);
-
-      for (const text of filesText) {
-        const lines = text.split("\n");
-        for (const line of lines) {
-          const parts = line.trim().split(";");
-          if (parts.length >= 7 && parts[0] === "2") {
-            const ean = parts[1].trim();
-            const desc = parts[4].trim();
-            const lab = parts[5].trim();
-            const price = parseFloat(parts[6].replace(",", "."));
-            if (ean && desc) {
-              const cleaned = cleanEan(ean);
-              const data = {
-                descricao: desc,
-                laboratorio: lab || "Geral",
-                precoOriginal: isNaN(price) ? 10.0 : price
-              };
-              EAN_DATABASE[ean] = data;
-              if (cleaned && cleaned !== ean) {
-                EAN_DATABASE[cleaned] = data;
-              }
-            }
-          }
-        }
-      }
-      console.log(`[SISTEMA] Base de EANs carregada com sucesso: ${Object.keys(EAN_DATABASE).length} itens mapeados.`);
-    }
-  } catch (err) {
-    console.error("Erro ao carregar banco de dados de EANs:", err);
-  }
-}
-
-function enrichReturnedItem(
-  it: any, 
-  numPedido: string, 
-  descMap: Record<string, { Descricao: string, Laboratorio: string }> = {}
-) {
-  let rawEanStr = String(it.Ean || it.ean || it.EAN || it.CodBarra || it.codBarra || it.CodBarras || it.codBarras || "").trim();
-  let descSmart = String(it.Descricao || it.descricao || it.Nome || it.nome || it.Descr || it.descr || "").trim();
-  const codDistNum = typeof it.CodDist === "number" ? it.CodDist : parseInt(it.CodDist) || 2;
-  const codProdDistStr = String(it.CodProdutoDist || it.codProdutoDist || "0").trim();
-  const codProdutoStr = String(it.CodProduto || it.codProduto || "0").trim();
-
-  // 1. Tentar recuperar pelo cache com CodProdutoDist
-  if ((!rawEanStr || rawEanStr === "0" || !descSmart || descSmart.includes("sem identificação") || descSmart.toLowerCase() === "null") && numPedido) {
-    const cacheKey = `${numPedido}_${codDistNum}_${codProdDistStr}`;
-    const cached = FATURAMENTO_ITEMS_CACHE[cacheKey];
-    if (cached) {
-      if (!rawEanStr || rawEanStr === "0") rawEanStr = cached.ean;
-      if (!descSmart || descSmart.includes("sem identificação") || descSmart.toLowerCase() === "null") descSmart = cached.descricao;
-      it.Ean = rawEanStr;
-      it.ean = rawEanStr;
-      it.Descricao = descSmart;
-      it.descricao = descSmart;
-      if (cached.laboratorio) {
-        it.Laboratorio = cached.laboratorio;
-        it.laboratorio = cached.laboratorio;
-      }
-    }
-  }
-
-  // 2. Tentar recuperar pelo cache com CodProduto master
-  if ((!rawEanStr || rawEanStr === "0" || !descSmart || descSmart.includes("sem identificação") || descSmart.toLowerCase() === "null") && numPedido) {
-    const cacheKey2 = `${numPedido}_${codDistNum}_${codProdutoStr}`;
-    const cached2 = FATURAMENTO_ITEMS_CACHE[cacheKey2];
-    if (cached2) {
-      if (!rawEanStr || rawEanStr === "0") rawEanStr = cached2.ean;
-      if (!descSmart || descSmart.includes("sem identificação") || descSmart.toLowerCase() === "null") descSmart = cached2.descricao;
-      it.Ean = rawEanStr;
-      it.ean = rawEanStr;
-      it.Descricao = descSmart;
-      it.descricao = descSmart;
-      if (cached2.laboratorio) {
-        it.Laboratorio = cached2.laboratorio;
-        it.laboratorio = cached2.laboratorio;
-      }
-    }
-  }
-
-  // 3. Tentar enriquecer via descMap do SmartPed ou EAN_DATABASE usando o EAN recuperado
-  if (rawEanStr && rawEanStr !== "0") {
-    const cleanedEan = cleanEan(rawEanStr);
-    let descObj = descMap[cleanedEan] || descMap[rawEanStr];
-    if (!descObj) {
-      const local = getEanDatabaseRecord(rawEanStr);
-      if (local) {
-        descObj = { Descricao: local.descricao, Laboratorio: local.laboratorio };
-      }
-    }
-
-    if (descObj) {
-      it.Ean = rawEanStr;
-      it.ean = rawEanStr;
-      it.Descricao = descObj.Descricao;
-      it.descricao = descObj.Descricao;
-      it.Laboratorio = descObj.Laboratorio;
-      it.laboratorio = descObj.Laboratorio;
-    }
-  }
-
-  // 4. Se a descrição ainda estiver em branco, mas temos o EAN, garante pelo menos o formato "EAN: <ean>" ou do banco local
-  if ((!it.Descricao && !it.descricao) || (it.Descricao || "").includes("sem identificação") || (it.Descricao || "").toLowerCase() === "null") {
-    if (rawEanStr && rawEanStr !== "0") {
-      const local = getEanDatabaseRecord(rawEanStr);
-      if (local) {
-        it.Descricao = local.descricao;
-        it.descricao = local.descricao;
-        it.Laboratorio = local.laboratorio || "Geral";
-        it.laboratorio = local.laboratorio || "Geral";
-      } else {
-        it.Descricao = `EAN: ${rawEanStr}`;
-        it.descricao = `EAN: ${rawEanStr}`;
-      }
-    } else {
-      it.Descricao = "Item sem identificação (SmartPed)";
-      it.descricao = "Item sem identificação (SmartPed)";
-    }
-  }
-}
-
-// Mock database for simulation mode
-const MOCK_API_DATABASE: Record<string, { ItemPedido: any; Substitutos: any[] }> = {
-  "7896862994372": {
-    ItemPedido: {
-      Ean: "7896862994372",
-      Descricao: "DAPAGLIFLOZINA (G) 10MG 30CPM MEDQ",
-      Laboratorio: "MEDQUIMICA",
-      Pliquido: 51.88,
-      PliquidoUni: 51.88,
-      TipoItem: "G"
-    },
-    Substitutos: [
-      {
-        Ean: "7896862994372",
-        Descricao: "DAPAGLIFLOZINA (G) 10MG 30CPM MEDQ",
-        Laboratorio: "MEDQUIMICA",
-        TipoItem: "G",
-        Pliquido: 38.90,
-        PliquidoUni: 38.90,
-        Estoque: 1,
-        NomeDist: "Gauchofarma",
-        CodDist: 53,
-        Prazo: 0,
-        Condicao: "114942",
-        QtdMin: 64,
-        CX: 1
-      },
-      {
-        Ean: "7896862994372",
-        Descricao: "DAPAGLIFLOZINA (G) 10MG 30CPM MEDQ",
-        Laboratorio: "MEDQUIMICA",
-        TipoItem: "G",
-        Pliquido: 40.50,
-        PliquidoUni: 40.50,
-        Estoque: 1,
-        NomeDist: "Gauchofarma",
-        CodDist: 53,
-        Prazo: 0,
-        Condicao: "114942",
-        QtdMin: 24,
-        CX: 1
-      },
-      {
-        Ean: "7896862994372",
-        Descricao: "DAPAGLIFLOZINA (G) 10MG 30CPM MEDQ",
-        Laboratorio: "MEDQUIMICA",
-        TipoItem: "G",
-        Pliquido: 41.15,
-        PliquidoUni: 41.15,
-        Estoque: 1,
-        NomeDist: "Gauchofarma",
-        CodDist: 53,
-        Prazo: 0,
-        Condicao: "114942",
-        QtdMin: 12,
-        CX: 1
-      },
-      {
-        Ean: "7896862994372",
-        Descricao: "DAPAGLIFLOZINA (G) 10MG 30CPM MEDQ",
-        Laboratorio: "MEDQUIMICA",
-        TipoItem: "G",
-        Pliquido: 42.51,
-        PliquidoUni: 42.51,
-        Estoque: 1,
-        NomeDist: "Gauchofarma",
-        CodDist: 53,
-        Prazo: 7,
-        Condicao: "FIXA",
-        QtdMin: 0,
-        CX: 1
-      },
-      {
-        Ean: "7896862994372",
-        Descricao: "DAPAGLIFLOZINA (G) 10MG 30CPM MEDQ",
-        Laboratorio: "MEDQUIMICA",
-        TipoItem: "G",
-        Pliquido: 52.90,
-        PliquidoUni: 52.90,
-        Estoque: 2,
-        NomeDist: "Profarma",
-        CodDist: 4,
-        Prazo: 7,
-        Condicao: "FIXA",
-        QtdMin: 0,
-        CX: 1
-      },
-      {
-        Ean: "7896862994372",
-        Descricao: "DAPAGLIFLOZINA (G) 10MG 30CPM MEDQ",
-        Laboratorio: "MEDQUIMICA",
-        TipoItem: "G",
-        Pliquido: 59.70,
-        PliquidoUni: 59.70,
-        Estoque: 2,
-        NomeDist: "SMARTDISTRIBUIDORA",
-        CodDist: 624,
-        Prazo: 0,
-        Condicao: "FIXA",
-        QtdMin: 0,
-        CX: 1
-      },
-      {
-        Ean: "7896862994372",
-        Descricao: "DAPAGLIFLOZINA (G) 10MG 30CPM MEDQ",
-        Laboratorio: "MEDQUIMICA",
-        TipoItem: "G",
-        Pliquido: 60.17,
-        PliquidoUni: 60.17,
-        Estoque: 2,
-        NomeDist: "ANB",
-        CodDist: 59,
-        Prazo: 3,
-        Condicao: "FIXA",
-        QtdMin: 0,
-        CX: 1
-      }
-    ]
-  },
-  "7894916145008": {
-    ItemPedido: {
-      Ean: "7894916145008",
-      Descricao: "GL CLOPIDOGREL 75MG 28CP REV",
-      Laboratorio: "LEGRAND (GENERICOS)",
-      Pliquido: 19.91,
-      PliquidoUni: 19.91,
-      TipoItem: "G"
-    },
-    Substitutos: [
-      {
-        Ean: "7894916145008",
-        Descricao: "CLOPIDOGREL 75MG 28CPR REV - GEN LEG",
-        Laboratorio: "LEGRAND GEN",
-        TipoItem: "G",
-        Pliquido: 21.35,
-        PliquidoUni: 21.35,
-        Estoque: 2,
-        NomeDist: "NeoSul",
-        CodDist: 79,
-        Prazo: 7,
-        Condicao: "FIXA"
-      }
-    ]
-  },
-  "4005900521910": {
-    ItemPedido: {
-      Ean: "4005900521910",
-      Descricao: "SABONETE NIVEA 85G LEITE",
-      Laboratorio: "NIVEA",
-      Pliquido: 2.28,
-      PliquidoUni: 2.28,
-      TipoItem: "O"
-    },
-    Substitutos: [
-      {
-        Ean: "4005900521934",
-        Descricao: "SABONETE NIVEA ERVA DOCE&OLEOS 85G",
-        Laboratorio: "BEIERSDORF",
-        TipoItem: "O",
-        Pliquido: 2.78,
-        PliquidoUni: 2.78,
-        Estoque: 10,
-        NomeDist: "ANB"
-      }
-    ]
-  },
-  "7896004746937": {
-    ItemPedido: {
-      Ean: "7896004746937",
-      Descricao: "EZETIMIBA 10MG 2 BLT X 15 COMP (EMS)",
-      Laboratorio: "EMS",
-      Pliquido: 15.59,
-      PliquidoUni: 15.59,
-      TipoItem: "G"
-    },
-    Substitutos: [
-      {
-        Ean: "7898569762674",
-        Descricao: "EZETIMIBA GN 10MG 30CPR AL",
-        Laboratorio: "Althaia",
-        TipoItem: "G",
-        Pliquido: 15.23,
-        PliquidoUni: 15.23,
-        Estoque: 2,
-        NomeDist: "DrogaCenter"
-      },
-      {
-        Ean: "7899551301284",
-        Descricao: "EZETIMIBA GN 10MG 30CPR BGN",
-        Laboratorio: "Brainfarma",
-        TipoItem: "G",
-        Pliquido: 13.50,
-        PliquidoUni: 13.50,
-        Estoque: 5,
-        NomeDist: "DrogaCenter"
-      }
-    ]
-  },
-  "7896241225547": {
-    ItemPedido: {
-      Ean: "7896241225547",
-      Descricao: "ABLOK PLUS 100/25MG C/30 COMPRIMIDOS",
-      Laboratorio: "BIOLAB",
-      Pliquido: 40.99,
-      PliquidoUni: 40.99,
-      TipoItem: "O"
-    },
-    Substitutos: [
-      {
-        Ean: "7896241225127",
-        Descricao: "ABLOK PLUS 50/12.5MG 30CPR",
-        Laboratorio: "BIOLAB",
-        TipoItem: "O",
-        Pliquido: 24.15,
-        PliquidoUni: 24.15,
-        Estoque: 12,
-        NomeDist: "SantaCruz"
-      },
-      {
-        Ean: "7896241225523",
-        Descricao: "ABLOK 50MG 30CPR",
-        Laboratorio: "BIOLAB",
-        TipoItem: "O",
-        Pliquido: 18.61,
-        PliquidoUni: 18.61,
-        Estoque: 8,
-        NomeDist: "GAM"
-      }
-    ]
-  },
-  "7891317024994": {
-    ItemPedido: {
-      Ean: "7891317024994",
-      Descricao: "BUP 150MG C/30",
-      Laboratorio: "EUROFARMA",
-      Pliquido: 35.42,
-      PliquidoUni: 35.42,
-      TipoItem: "O"
-    },
-    Substitutos: [
-      {
-        Ean: "7891317438937",
-        Descricao: "BUPROPIONA 150MG C/30 GEN",
-        Laboratorio: "EUROFARMA",
-        TipoItem: "G",
-        Pliquido: 22.80,
-        PliquidoUni: 22.80,
-        Estoque: 4,
-        NomeDist: "Profarma"
-      },
-      {
-        Ean: "7899551301285",
-        Descricao: "BUPROPIONA 150MG C/30 BGN",
-        Laboratorio: "Brainfarma",
-        TipoItem: "G",
-        Pliquido: 19.50,
-        PliquidoUni: 19.50,
-        Estoque: 15,
-        NomeDist: "PanPharma"
-      }
-    ]
-  },
-  "7896255711005": {
-    ItemPedido: {
-      Ean: "7896255711005",
-      Descricao: "AKINETON 2MG C/80",
-      Laboratorio: "BAGO",
-      Pliquido: 28.50,
-      PliquidoUni: 28.50,
-      TipoItem: "O"
-    },
-    Substitutos: [
-      {
-        Ean: "7898940448128",
-        Descricao: "BIPERIDENO 2MG C/80 EMS",
-        Laboratorio: "EMS",
-        TipoItem: "G",
-        Pliquido: 14.20,
-        PliquidoUni: 14.20,
-        Estoque: 6,
-        NomeDist: "DrogaCenter"
-      }
-    ]
-  },
-  "7896422514460": {
-    ItemPedido: {
-      Ean: "7896422514460",
-      Descricao: "ALENTHUS XR 150MG C/30",
-      Laboratorio: "CELLERA",
-      Pliquido: 85.90,
-      PliquidoUni: 85.90,
-      TipoItem: "O"
-    },
-    Substitutos: [
-      {
-        Ean: "7896422528726",
-        Descricao: "VENLAFAXINA 150MG C/30 MEDLEY",
-        Laboratorio: "Medley",
-        TipoItem: "G",
-        Pliquido: 52.40,
-        PliquidoUni: 52.40,
-        Estoque: 3,
-        NomeDist: "SantaCruz"
-      }
-    ]
-  },
-  "7891317010751": {
-    ItemPedido: {
-      Ean: "7891317010751",
-      Descricao: "DEXALGEN INJETAVEL C/6 (GERAL)",
-      Laboratorio: "EUROFARMA",
-      Pliquido: 42.50,
-      PliquidoUni: 42.50,
-      TipoItem: "O"
-    },
-    Substitutos: [
-      {
-        Ean: "7891317030070",
-        Descricao: "CITOBE DEXA INJETAVEL C/3 MOMENTA",
-        Laboratorio: "Momenta",
-        TipoItem: "O",
-        Pliquido: 24.30,
-        PliquidoUni: 24.30,
-        Estoque: 12,
-        NomeDist: "DrogaCenter"
-      }
-    ]
-  }
-};
-
-// Simple utility function to parse formatted numbers from strings or numbers safely
-function parseFormattedNumber(val: any): number {
-  if (val === undefined || val === null) return 0;
-  if (typeof val === "number") return val;
-  if (typeof val === "string") {
-    const cleaned = val.replace(/[^\d,.-]/g, "").replace(",", ".");
-    const num = parseFloat(cleaned);
-    return isNaN(num) ? 0 : num;
-  }
-  return 0;
-}
-
-// Extract Maximum Consumer Price (PMC) from any key or format returned by the SmartPed API or ERP
-function extractPmc(item: any): number {
-  if (!item) return 0;
-  const keys = [
-    "PMC", "pmc", "Pmc", "VlrPmc", "vlrPmc", "Vlr_pmc", "vlr_pmc", "Vlrpmc", "vlrpmc", 
-    "VlrVendaMaximo", "vlrVendaMaximo", "VlrMaximo", "vlrMaximo", "PrecoConsumidor", "precoConsumidor",
-    "PrecoMax", "precoMax", "PrecoMaximoConsumidor", "precoMaximoConsumidor", "PrecoMaximo", "precoMaximo",
-    "VlrMaximoConsumidor", "vlrMaximoConsumidor"
-  ];
-  for (const key of keys) {
-    if (item[key] !== undefined && item[key] !== null) {
-      const val = parseFormattedNumber(item[key]);
-      if (val > 0) return val;
-    }
-  }
-  return 0;
-}
-
-// Extract Table Price (Preço de Fábrica/Tabela) from any key or format
-function extractTablePrice(item: any): number {
-  if (!item) return 0;
-  const keys = [
-    "Preco", "preco", "PrecoOriginal", "precoOriginal", "PrecoFabrica", "precoFabrica", 
-    "Preco_fabrica", "preco_fabrica", "PrecoTabela", "precoTabela", "vlr_venda_tabela", 
-    "VlrVendaTabela", "PrecoTabelaUni", "precoTabelaUni"
-  ];
-  for (const key of keys) {
-    if (item[key] !== undefined && item[key] !== null) {
-      const val = parseFormattedNumber(item[key]);
-      if (val > 0) return val;
-    }
-  }
-  return 0;
-}
-
-// Simple utility function to determine unit price (Evitar armadilha do zero)
-function getUnitCost(item: any): number {
-  if (!item) return 0;
-  const pliq = parseFormattedNumber(item.Pliquido !== undefined ? item.Pliquido : (item.pliquido !== undefined ? item.pliquido : 0));
-  const pliqUni = parseFormattedNumber(item.PliquidoUni !== undefined ? item.PliquidoUni : (item.pliquidoUni !== undefined ? item.pliquidoUni : (item.Pliquido_uni !== undefined ? item.Pliquido_uni : (item.pliquido_uni !== undefined ? item.pliquido_uni : 0))));
-
-  if (pliqUni > 0 && (pliq === 0 || pliqUni < pliq)) return pliqUni;
-  if (pliq > 0) return pliq;
-  return parseFormattedNumber(item.Preco !== undefined ? item.Preco : (item.preco !== undefined ? item.preco : (item.PrecoOriginal !== undefined ? item.PrecoOriginal : (item.precoOriginal !== undefined ? item.precoOriginal : 0))));
-}
-
-async function fetchSimilarGenerics(ean: string): Promise<any[]> {
-  try {
-    const response = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${ean}`);
-    if (!response.ok) return [];
-    const data = await response.json();
-    return data.produtos || data.items || [];
-  } catch (error) {
-    console.error(`Erro ao buscar similares para EAN ${ean}:`, error);
-    return [];
-  }
-}
-
-// Helper to identify a real distributor offer vs virtual/mock/not found offers
-function isRealOffer(s: any): boolean {
-  if (!s) return false;
-  const distId = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
-  const distName = String(s.NomeDist || s.nomeDist || s.distribuidora || "").trim().toLowerCase();
-  return Number(distId) > 0 && distName !== "" && distName !== "nao encontrados" && distName !== "não encontrados" && distName !== "sem estoque";
-}
-
-// Optimization logic (similar to python script)
-function findBestSubstitute(
-  itemPedido: any,
-  substitutos: any[],
-  margemMinima: number,
-  tiposAceitos: Set<string>,
-  exigirEstoque: boolean,
-  fallbackOriginalPrice?: number,
-  originalHasStock: boolean = true,
-  isGeneric: boolean = false,
-  cortesRecentes: Record<string, string[]> = {}
-): { melhor: any; economia: number; isFallback?: boolean } | null {
-  // Use the actual price in the uploaded file as the primary benchmark
-  let precoOriginal = (fallbackOriginalPrice !== undefined && fallbackOriginalPrice > 0)
-    ? fallbackOriginalPrice
-    : getUnitCost(itemPedido);
-
-  if (precoOriginal <= 0) return null;
-
-  const requestedQty = parseFloat(String(itemPedido?.qtd || itemPedido?.Qtd || 1).replace(",", ".")) || 1;
-  const origEan = cleanEan(itemPedido.Ean || itemPedido.ean || "");
-
-  const candidatos = (substitutos || []).filter((s) => {
-    const sEan = cleanEan(s.Ean || s.ean || "");
-    const isOriginalEan = sEan === origEan;
-
-    // Filtro por cortes recentes de estoque de distribuidora nos últimos 2 dias
-    const distNameClean = normalizeDistName(s.NomeDist || s.nomeDist || s.distribuidora || "");
-    const blockedDistsForEan = cortesRecentes[sEan] || [];
-    if (blockedDistsForEan.includes(distNameClean)) {
-      return false; // Bloqueado pois sofreu corte recentemente nesta distribuidora
-    }
-
-    // Se NÃO for o EAN original exato, aplica os filtros de tipos de substituição do painel
-    if (!isOriginalEan) {
-      // Filtro por tipo de item (G, S, O, R)
-      const tipoItem = s.TipoItem || s.tipoItem || "";
-      const tipoItemUpper = tipoItem.toUpperCase();
-      if (tipoItemUpper && !tiposAceitos.has(tipoItemUpper)) {
-        return false;
-      }
-    }
-
-    // Filtro por estoque
-    const estoque = parseInt(String(s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0)), 10) || 0;
-    if (exigirEstoque && estoque <= 0) {
-      return false;
-    }
-
-    // Verificação de preço válido
-    if (getUnitCost(s) <= 0) {
-      return false;
-    }
-
-    // Se NÃO for o EAN original exato, aplica a regra estrita de categoria (Genérico com Genérico / Marca com Marca)
-    if (!isOriginalEan) {
-      const sDesc = (s.Descricao || s.descricao || "").toLowerCase();
-      const sLab = (s.Laboratorio || s.laboratorio || "").toLowerCase();
-      
-      let isCandidateGeneric = false;
-      const tipoItem = s.TipoItem || s.tipoItem || "";
-      const tipoItemUpper = tipoItem.toUpperCase();
-      if (tipoItemUpper) {
-        isCandidateGeneric = tipoItemUpper === "G";
-      } else {
-        isCandidateGeneric = sDesc.includes(" gn ") || sDesc.includes("generico") || sDesc.includes("genérico") ||
-                             sLab.includes("generico") || sLab.includes("genérico");
-        if (isCandidateGeneric && sDesc.includes(" - ")) {
-          isCandidateGeneric = false;
-        }
-      }
-
-      // Se o original possuir estoque real (originalHasStock), aplicamos as travas estritas de categoria.
-      // Caso contrário (ruptura), liberamos a substituição cruzada para garantir o abastecimento da farmácia.
-      if (originalHasStock) {
-        if (isGeneric && !isCandidateGeneric) {
-          // Se o original é genérico, o candidato DEVE ser genérico
-          return false;
-        }
-        if (!isGeneric && isCandidateGeneric) {
-          // Se o original NÃO é genérico (é de marca/similar), o candidato NÃO PODE ser genérico (deve ser de marca/similar)
-          return false;
-        }
-      }
-    }
-
-    // Match de Equivalência Estrita de Troca (Sabor, Fragrância, Cor, Dosagem, Quantidade)
-    if (!validateSwapEquivalence(itemPedido, s)) {
-      return false;
-    }
-
-    return true;
-  });
-
-  if (candidatos.length === 0) return null;
-
-  // Separar em candidatos originais (mesmo EAN) e candidatos substitutos (EAN diferente)
-  let candidatosOriginais = candidatos.filter(c => cleanEan(c.Ean || c.ean || "") === origEan);
-  let candidatosSubstitutos = candidatos.filter(c => cleanEan(c.Ean || c.ean || "") !== origEan).filter(s => {
-    if (isRealOffer(s)) {
-      const estoque = parseInt(String(s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0)), 10) || 0;
-      return estoque > 0;
-    }
-    return true;
-  });
-
-  // Se houver qualquer oferta real de distribuidor para o EAN original, eliminamos ofertas fantasmas/não encontrados
-  const temOriginalReal = candidatosOriginais.some(c => isRealOffer(c));
-  if (temOriginalReal) {
-    candidatosOriginais = candidatosOriginais.filter(c => isRealOffer(c));
-  }
-
-  // Se houver qualquer substituto real válido, excluímos substitutos fantasmas ("Não Encontrados")
-  const temSubstitutoReal = candidatosSubstitutos.some(s => isRealOffer(s));
-  if (temSubstitutoReal) {
-    candidatosSubstitutos = candidatosSubstitutos.filter(s => isRealOffer(s));
-  }
-
-  let melhorOriginal: any = null;
-  if (candidatosOriginais.length > 0) {
-    candidatosOriginais.sort((a, b) => {
-      const aReal = isRealOffer(a);
-      const bReal = isRealOffer(b);
-      if (aReal && !bReal) return -1;
-      if (!aReal && bReal) return 1;
-      return getUnitCost(a) - getUnitCost(b);
-    });
-    melhorOriginal = candidatosOriginais[0];
-  }
-
-  // Verificamos se existe alguma oferta do EAN original com estoque > 0 em distribuidoras reais
-  const originalTemEstoqueReal = (substitutos || []).some(s => {
-    const sEan = cleanEan(s.Ean || s.ean || "");
-    if (sEan !== origEan) return false;
-    if (!isRealOffer(s)) return false;
-    const estoque = parseInt(String(s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0)), 10) || 0;
-    const preco = getUnitCost(s);
-    return estoque > 0 && preco > 0;
-  });
-
-  // Substitutos só são válidos se derem a economia mínima exigida (margemMinima)
-  // OU se o produto original não tiver estoque em nenhuma distribuidora real (Bypass de Falta)
-  let substitutosValidos = candidatosSubstitutos;
-  let benchmarkPreco = precoOriginal;
-
-  if (originalTemEstoqueReal) {
-    const origsComEstoque = (substitutos || []).filter(s => {
-      const sEan = cleanEan(s.Ean || s.ean || "");
-      if (sEan !== origEan) return false;
-      if (!isRealOffer(s)) return false;
-      const estoque = parseInt(String(s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0)), 10) || 0;
-      const preco = getUnitCost(s);
-      return estoque > 0 && preco > 0;
-    });
-    if (origsComEstoque.length > 0) {
-      origsComEstoque.sort((a, b) => getUnitCost(a) - getUnitCost(b));
-      benchmarkPreco = getUnitCost(origsComEstoque[0]);
-    } else if (melhorOriginal) {
-      benchmarkPreco = getUnitCost(melhorOriginal);
-    }
-
-    substitutosValidos = candidatosSubstitutos.filter(s => {
-      const economia = benchmarkPreco - getUnitCost(s);
-      return economia >= margemMinima && economia > 0;
-    });
-  } else {
-    // Se o original NÃO tiver estoque (Falta Absoluta), o substituto vencedor deve assumir a vaga no carrinho,
-    // mesmo que a economia seja negativa ou zero. Mas garantimos que ele possua estoque > 0.
-    benchmarkPreco = precoOriginal;
-    substitutosValidos = candidatosSubstitutos.filter(s => {
-      const estoque = parseInt(String(s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0)), 10) || 0;
-      return estoque > 0;
-    });
-  }
-
-  let melhorSubstituto: any = null;
-  if (substitutosValidos.length > 0) {
-    substitutosValidos.sort((a, b) => {
-      const aReal = isRealOffer(a);
-      const bReal = isRealOffer(b);
-      if (aReal && !bReal) return -1;
-      if (!aReal && bReal) return 1;
-      return getUnitCost(a) - getUnitCost(b);
-    });
-    melhorSubstituto = substitutosValidos[0];
-  }
-
-  // Tomar decisão de qual retornar:
-  if (melhorOriginal && melhorSubstituto) {
-    const origReal = isRealOffer(melhorOriginal);
-    const substReal = isRealOffer(melhorSubstituto);
-
-    if (origReal && !substReal) {
-      // Prioridade absoluta para o EAN original real sobre substituto fantasma
-      const economia = precoOriginal - getUnitCost(melhorOriginal);
-      return { melhor: melhorOriginal, economia };
-    } else if (!origReal && substReal) {
-      // Prioridade para o substituto real sobre original fantasma
-      const economia = benchmarkPreco - getUnitCost(melhorSubstituto);
-      return { melhor: melhorSubstituto, economia };
-    } else {
-      // Se ambos são reais (ou ambos fantasmas), escolhemos o mais barato de fato para maximizar a economia
-      if (getUnitCost(melhorSubstituto) < getUnitCost(melhorOriginal)) {
-        const economia = benchmarkPreco - getUnitCost(melhorSubstituto);
-        return { melhor: melhorSubstituto, economia };
-      } else {
-        const economia = precoOriginal - getUnitCost(melhorOriginal);
-        return { melhor: melhorOriginal, economia };
-      }
-    }
-  } else if (melhorOriginal) {
-    // Se apenas o original está disponível, ele é soberano e imune a margemMinima/economia negativa
-    const economia = precoOriginal - getUnitCost(melhorOriginal);
-    return { melhor: melhorOriginal, economia };
-  } else if (melhorSubstituto) {
-    // Se apenas o substituto válido está disponível
-    const economia = benchmarkPreco - getUnitCost(melhorSubstituto);
-    return { melhor: melhorSubstituto, economia };
-  }
-
-  // REGRA DOS 10% DE RUPTURA: Se o produto original for Genérico e estiver sem estoque original,
-  // permitimos substituição por outro Genérico de outra marca mesmo mais caro (até 10%), como último recurso
-  if (!originalHasStock && isGeneric && candidatosSubstitutos.length > 0) {
-    let substitutosGenericos = candidatosSubstitutos.filter(s => {
-      const tipo = (s.TipoItem || s.tipoItem || "").toUpperCase();
-      return tipo === "G" || !tipo;
-    });
-
-    const temGenericoReal = substitutosGenericos.some(s => isRealOffer(s));
-    if (temGenericoReal) {
-      substitutosGenericos = substitutosGenericos.filter(s => isRealOffer(s));
-    }
-
-    if (substitutosGenericos.length > 0) {
-      substitutosGenericos.sort((a, b) => {
-        const aReal = isRealOffer(a);
-        const bReal = isRealOffer(b);
-        if (aReal && !bReal) return -1;
-        if (!aReal && bReal) return 1;
-        return getUnitCost(a) - getUnitCost(b);
-      });
-      const melhorG = substitutosGenericos[0];
-      const maxAllowedPrice = precoOriginal * 1.10;
-      if (getUnitCost(melhorG) <= maxAllowedPrice) {
-        const economia = precoOriginal - getUnitCost(melhorG);
-        return { melhor: melhorG, economia, isFallback: true };
-      }
-    }
-  }
-
-  return null;
-}
+// Start SQLite cache purge
+startDbCachePurge();
 
 // API Health Check
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
-
-// Banco de dados local de equivalentes de mercado (Cross-Reference / Dicionário de Equivalentes de Alta Fidelidade)
-// Garante o mapeamento de produtos de grandes laboratórios concorrentes (Aché, Eurofarma, Sandoz, Medley, EMS, etc.)
-// para evitar "visão em túnel" de EANs originais.
-const LOCAL_EQUIVALENTS_DB: Record<string, { ean: string; descricao: string; laboratorio: string; molecula: string; dosagem: string; apresentacao: string }[]> = {
-  "PANTOPRAZOL 20MG 28CP": [
-    { ean: "7891317454313", descricao: "PANTOPRAZOL 20MG 28CP", laboratorio: "EUROFARMA", molecula: "PANTOPRAZOL", dosagem: "20MG", apresentacao: "28CP" },
-    { ean: "7891058021870", descricao: "PANTOPRAZOL 20MG 28CP", laboratorio: "ACHE", molecula: "PANTOPRAZOL", dosagem: "20MG", apresentacao: "28CP" },
-    { ean: "7897595630322", descricao: "PANTOPRAZOL 20MG 28CP", laboratorio: "SANDOZ", molecula: "PANTOPRAZOL", dosagem: "20MG", apresentacao: "28CP" },
-    { ean: "7896422505963", descricao: "PANTOPRAZOL 20MG 28CP", laboratorio: "MEDLEY", molecula: "PANTOPRAZOL", dosagem: "20MG", apresentacao: "28CP" },
-    { ean: "7896004717144", descricao: "PANTOPRAZOL 20MG 28CP", laboratorio: "EMS", molecula: "PANTOPRAZOL", dosagem: "20MG", apresentacao: "28CP" },
-    { ean: "7896714214221", descricao: "PANTOPRAZOL 20MG 28CP", laboratorio: "NEO QUIMICA", molecula: "PANTOPRAZOL", dosagem: "20MG", apresentacao: "28CP" },
-    { ean: "7896112400304", descricao: "PANTOPRAZOL 20MG 28CP", laboratorio: "GERMED", molecula: "PANTOPRAZOL", dosagem: "20MG", apresentacao: "28CP" },
-    { ean: "7894411244018", descricao: "PANTOPRAZOL 20MG 28CP", laboratorio: "TEUTO", molecula: "PANTOPRAZOL", dosagem: "20MG", apresentacao: "28CP" }
-  ],
-  "PANTOPRAZOL 40MG 28CP": [
-    { ean: "7891317454351", descricao: "PANTOPRAZOL 40MG 28CP", laboratorio: "EUROFARMA", molecula: "PANTOPRAZOL", dosagem: "40MG", apresentacao: "28CP" },
-    { ean: "7891058021894", descricao: "PANTOPRAZOL 40MG 28CP", laboratorio: "ACHE", molecula: "PANTOPRAZOL", dosagem: "40MG", apresentacao: "28CP" },
-    { ean: "7897595630346", descricao: "PANTOPRAZOL 40MG 28CP", laboratorio: "SANDOZ", molecula: "PANTOPRAZOL", dosagem: "40MG", apresentacao: "28CP" },
-    { ean: "7896422505987", descricao: "PANTOPRAZOL 40MG 28CP", laboratorio: "MEDLEY", molecula: "PANTOPRAZOL", dosagem: "40MG", apresentacao: "28CP" },
-    { ean: "7896004717151", descricao: "PANTOPRAZOL 40MG 28CP", laboratorio: "EMS", molecula: "PANTOPRAZOL", dosagem: "40MG", apresentacao: "28CP" },
-    { ean: "7896714214245", descricao: "PANTOPRAZOL 40MG 28CP", laboratorio: "NEO QUIMICA", molecula: "PANTOPRAZOL", dosagem: "40MG", apresentacao: "28CP" },
-    { ean: "7896112400328", descricao: "PANTOPRAZOL 40MG 28CP", laboratorio: "GERMED", molecula: "PANTOPRAZOL", dosagem: "40MG", apresentacao: "28CP" },
-    { ean: "7894411244032", descricao: "PANTOPRAZOL 40MG 28CP", laboratorio: "TEUTO", molecula: "PANTOPRAZOL", dosagem: "40MG", apresentacao: "28CP" }
-  ],
-  "DAPAGLIFLOZINA 10MG 30CP": [
-    { ean: "7896014194881", descricao: "FORXIGA 10MG 30CP", laboratorio: "ASTRAZENECA", molecula: "DAPAGLIFLOZINA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7896862994372", descricao: "DAPAGLIFLOZINA 10MG 30CP", laboratorio: "MEDQUIMICA", molecula: "DAPAGLIFLOZINA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7896004780285", descricao: "DAPAGLIFLOZINA 10MG 30CP", laboratorio: "EMS", molecula: "DAPAGLIFLOZINA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7891317025810", descricao: "DAPAGLIFLOZINA 10MG 30CP", laboratorio: "EUROFARMA", molecula: "DAPAGLIFLOZINA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7896422534574", descricao: "DAPAGLIFLOZINA 10MG 30CP", laboratorio: "MEDLEY", molecula: "DAPAGLIFLOZINA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7891058022983", descricao: "DAPAGLIFLOZINA 10MG 30CP", laboratorio: "ACHE", molecula: "DAPAGLIFLOZINA", dosagem: "10MG", apresentacao: "30CP" }
-  ],
-  "EZETIMIBA 10MG 30CP": [
-    { ean: "7891317004457", descricao: "EZETIMIBA 10MG 30CP", laboratorio: "EUROFARMA", molecula: "EZETIMIBA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7896004718547", descricao: "EZETIMIBA 10MG 30CP", laboratorio: "EMS", molecula: "EZETIMIBA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7891058013219", descricao: "EZETIMIBA 10MG 30CP", laboratorio: "ACHE", molecula: "EZETIMIBA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7896422515092", descricao: "EZETIMIBA 10MG 30CP", laboratorio: "MEDLEY", molecula: "EZETIMIBA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7896714217130", descricao: "EZETIMIBA 10MG 30CP", laboratorio: "NEO QUIMICA", molecula: "EZETIMIBA", dosagem: "10MG", apresentacao: "30CP" },
-    { ean: "7897595631244", descricao: "EZETIMIBA 10MG 30CP", laboratorio: "SANDOZ", molecula: "EZETIMIBA", dosagem: "10MG", apresentacao: "30CP" }
-  ]
-};
-
-// Retorna EANs de equivalentes a partir de um EAN ou sua descrição analisada por Princípio Ativo + Dosagem + Apresentação
-function getLocalEquivalents(ean: string, descricao?: string): string[] {
-  const cleaned = cleanEan(ean);
-  if (!cleaned) return [];
-
-  // 1. Procurar correspondência direta por EAN em alguma lista
-  for (const key of Object.keys(LOCAL_EQUIVALENTS_DB)) {
-    const list = LOCAL_EQUIVALENTS_DB[key];
-    if (list.some(item => cleanEan(item.ean) === cleaned)) {
-      return list.map(item => cleanEan(item.ean)).filter(eq => eq !== cleaned);
-    }
-  }
-
-  // 2. Se não bateu direto por EAN, tentar por interseção flexível de palavras-chave
-  if (descricao) {
-    const cleanTokens = (text: string) => {
-      if (!text) return [];
-      return text
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "") // remove acentos
-        .toUpperCase()
-        // Substitui os sais e termos de ligação de ruído por espaço
-        .replace(/\b(SODICO|SODICA|SÓDICO|SÓDICA|CLORIDRATO|MALEATO|MESILATO|HEMITARTARATO|TARTARATO|DE|DI|MONO|POTASSICO|POTÁSSICO|SULFATO|ZINCICO|ZÍNCICO|CALCICA|CALCICO|CÁLCICO|MONOHIDRATADO|MONOIDRATADO|LACTATO|CARBONATO|ACETATO|FOSFATO|BROMIDRATO|CITRATO|ESTEARATO|SUCCINATO)\b/gi, " ")
-        .split(/[\s+,\-/]/)
-        .map(w => w.trim())
-        .filter(w => w.length > 1);
-    };
-
-    const inputTokens = cleanTokens(descricao);
-
-    if (inputTokens.length > 0) {
-      for (const key of Object.keys(LOCAL_EQUIVALENTS_DB)) {
-        const keyTokens = cleanTokens(key);
-        
-        // Verifique se todos os termos essenciais remanescentes da busca estão contidos na chave do banco local
-        const allInputTokensInKey = inputTokens.every(it => 
-          keyTokens.some(kt => kt === it || kt.includes(it) || it.includes(kt))
-        );
-
-        if (allInputTokensInKey) {
-          return LOCAL_EQUIVALENTS_DB[key].map(item => cleanEan(item.ean)).filter(eq => eq !== cleaned);
-        }
-      }
-    }
-  }
-
-  return [];
-}
-
 // Main Optimization Endpoint
 app.post("/api/optimize", async (req, res) => {
   const logs: string[] = [];
@@ -1466,24 +67,24 @@ app.post("/api/optimize", async (req, res) => {
       cortesRecentes = {}
     } = req.body;
 
-    logs.push(`[INÍCIO] Iniciando processo de otimização.`);
-    logs.push(`[PARÂMETROS] Margem mínima: R$ ${margemMinima.toFixed(2)}, Tipos aceitos: [${tipos.join(", ")}], Exigir estoque: ${!permitirSemEstoque ? 'Sim' : 'Não'}, Sandbox: ${useTestUrl ? 'Sim' : 'Não'}, Simulação: ${simulationMode ? 'Sim' : 'Não'}, Dist. Desabilitados: ${disabledDistributors.length}`);
+    logs.push(`[INÃCIO] Iniciando processo de otimizaÃ§Ã£o.`);
+    logs.push(`[PARÃ‚METROS] Margem mÃ­nima: R$ ${margemMinima.toFixed(2)}, Tipos aceitos: [${tipos.join(", ")}], Exigir estoque: ${!permitirSemEstoque ? 'Sim' : 'NÃ£o'}, Sandbox: ${useTestUrl ? 'Sim' : 'NÃ£o'}, SimulaÃ§Ã£o: ${simulationMode ? 'Sim' : 'NÃ£o'}, Dist. Desabilitados: ${disabledDistributors.length}`);
     const disabledDistSet = new Set(disabledDistributors);
 
     if (!fileContent) {
-      logs.push(`[ERRO] O conteúdo do arquivo está vazio ou não foi enviado.`);
-      return res.status(400).json({ error: "O conteúdo do arquivo é obrigatório.", logs });
+      logs.push(`[ERRO] O conteÃºdo do arquivo estÃ¡ vazio ou nÃ£o foi enviado.`);
+      return res.status(400).json({ error: "O conteÃºdo do arquivo Ã© obrigatÃ³rio.", logs });
     }
 
     const tiposAceitos = new Set((tipos as string[]).map(t => t.trim().toUpperCase()));
     const exigirEstoque = !permitirSemEstoque;
 
     // Parse SICF Content
-    logs.push(`[PARSER] Iniciando análise do arquivo SICF carregado...`);
+    logs.push(`[PARSER] Iniciando anÃ¡lise do arquivo SICF carregado...`);
     let cleanedContent = fileContent || "";
     if (cleanedContent.startsWith("\ufeff")) {
       cleanedContent = cleanedContent.substring(1);
-      logs.push(`[PARSER] Removido indicador de codificação Byte Order Mark (BOM) do início do arquivo.`);
+      logs.push(`[PARSER] Removido indicador de codificaÃ§Ã£o Byte Order Mark (BOM) do inÃ­cio do arquivo.`);
     }
     const lines = cleanedContent.replace(/\r\n/g, "\n").split("\n");
     let headerLine = "";
@@ -1501,10 +102,10 @@ app.post("/api/optimize", async (req, res) => {
       if (tipo === "1") {
         headerLine = line;
         detectedCnpj = parts[1] || "";
-        logs.push(`[PARSER] Linha de cabeçalho (tipo 1) detectada. CNPJ do arquivo: ${detectedCnpj}`);
+        logs.push(`[PARSER] Linha de cabeÃ§alho (tipo 1) detectada. CNPJ do arquivo: ${detectedCnpj}`);
       } else if (tipo === "9") {
         footerLine = line;
-        logs.push(`[PARSER] Linha de rodapé (tipo 9) detectada.`);
+        logs.push(`[PARSER] Linha de rodapÃ© (tipo 9) detectada.`);
       } else if (tipo === "2") {
         if (parts.length < 7) {
           logs.push(`[PARSER] [Aviso] Linha ${i + 1} de dados (tipo 2) ignorada por conter menos de 7 campos.`);
@@ -1533,24 +134,24 @@ app.post("/api/optimize", async (req, res) => {
       }
     }
 
-    logs.push(`[PARSER] Concluído. Total de itens de dados (tipo 2) encontrados: ${parsedItems.length}`);
+    logs.push(`[PARSER] ConcluÃ­do. Total de itens de dados (tipo 2) encontrados: ${parsedItems.length}`);
 
     if (!headerLine) {
-      logs.push(`[ERRO] Cabeçalho do arquivo (tipo 1) não foi encontrado.`);
-      return res.status(400).json({ error: "Arquivo SICF inválido: cabeçalho (tipo 1) não encontrado.", logs });
+      logs.push(`[ERRO] CabeÃ§alho do arquivo (tipo 1) nÃ£o foi encontrado.`);
+      return res.status(400).json({ error: "Arquivo SICF invÃ¡lido: cabeÃ§alho (tipo 1) nÃ£o encontrado.", logs });
     }
 
     const finalCnpj = reqCnpj || detectedCnpj;
     if (!finalCnpj) {
-      logs.push(`[ERRO] Não foi possível encontrar nenhum CNPJ do cliente.`);
-      return res.status(400).json({ error: "CNPJ do cliente não fornecido e não encontrado no cabeçalho do arquivo.", logs });
+      logs.push(`[ERRO] NÃ£o foi possÃ­vel encontrar nenhum CNPJ do cliente.`);
+      return res.status(400).json({ error: "CNPJ do cliente nÃ£o fornecido e nÃ£o encontrado no cabeÃ§alho do arquivo.", logs });
     }
 
     const uniqueEans = Array.from(new Set(parsedItems.map(item => item.ean)));
-    logs.push(`[PROCESSAMENTO] Total de EANs únicos para consulta: ${uniqueEans.length}`);
+    logs.push(`[PROCESSAMENTO] Total de EANs Ãºnicos para consulta: ${uniqueEans.length}`);
 
-    // Pré-carregar similares de mercado de forma concorrente para todos os EANs únicos
-    logs.push(`[PROCESSAMENTO] Pré-carregando dicionário dinâmico de similares de mercado para ${uniqueEans.length} EANs...`);
+    // PrÃ©-carregar similares de mercado de forma concorrente para todos os EANs Ãºnicos
+    logs.push(`[PROCESSAMENTO] PrÃ©-carregando dicionÃ¡rio dinÃ¢mico de similares de mercado para ${uniqueEans.length} EANs...`);
     const marketSimilarMap: Record<string, any[]> = {};
     try {
       const startTimeSimilar = Date.now();
@@ -1565,7 +166,7 @@ app.post("/api/optimize", async (req, res) => {
       await Promise.all(similarPromises);
       logs.push(`[PROCESSAMENTO] Sucesso! Similares de mercado carregados concorrentemente em ${Date.now() - startTimeSimilar}ms.`);
     } catch (err: any) {
-      logs.push(`[AVISO] Falha ao pré-carregar produtos similares de mercado: ${err.message}`);
+      logs.push(`[AVISO] Falha ao prÃ©-carregar produtos similares de mercado: ${err.message}`);
     }
 
     // Gerar conjunto estendido de EANs a serem cotados (EAN original + equivalentes locais + similares de mercado)
@@ -1576,11 +177,11 @@ app.post("/api/optimize", async (req, res) => {
       
       eansToQuoteSet.add(orig);
 
-      // Localizar descrição do item para enriquecimento estático local
+      // Localizar descriÃ§Ã£o do item para enriquecimento estÃ¡tico local
       const itemPedidoOriginal = parsedItems.find(it => cleanEan(it.ean) === orig);
       const descStr = itemPedidoOriginal ? itemPedidoOriginal.descricao : "";
       
-      // Enriquecer com equivalentes locais (Dicionário Estático)
+      // Enriquecer com equivalentes locais (DicionÃ¡rio EstÃ¡tico)
       const localEquivs = getLocalEquivalents(orig, descStr);
       localEquivs.forEach(eq => {
         const eqClean = cleanEan(eq);
@@ -1592,7 +193,7 @@ app.post("/api/optimize", async (req, res) => {
         }
       });
 
-      // Enriquecer com os similares de mercado da API (Ferramentinhas) com trava estrita de equivalência
+      // Enriquecer com os similares de mercado da API (Ferramentinhas) com trava estrita de equivalÃªncia
       const apiSimilars = marketSimilarMap[orig] || [];
       apiSimilars.forEach(s => {
         const bar = cleanEan(s.cod_barra || s.Ean || s.ean || "");
@@ -1605,7 +206,7 @@ app.post("/api/optimize", async (req, res) => {
     });
 
     const eansToQuote = Array.from(eansToQuoteSet);
-    logs.push(`[MOTOR AGRUPAMENTO] Ampliado o leque de cotação de ${uniqueEans.length} EANs originais para ${eansToQuote.length} EANs totais de concorrentes.`);
+    logs.push(`[MOTOR AGRUPAMENTO] Ampliado o leque de cotaÃ§Ã£o de ${uniqueEans.length} EANs originais para ${eansToQuote.length} EANs totais de concorrentes.`);
 
     const apiResponses: Record<string, any> = {};
     
@@ -1621,7 +222,7 @@ app.post("/api/optimize", async (req, res) => {
         const d = resp.ItemPedido.Descricao || resp.ItemPedido.descricao;
         const l = resp.ItemPedido.Laboratorio || resp.ItemPedido.laboratorio;
         if (d) {
-          return { descricao: d, laboratorio: l || "GENÉRICO" };
+          return { descricao: d, laboratorio: l || "GENÃ‰RICO" };
         }
       }
 
@@ -1635,7 +236,7 @@ app.post("/api/optimize", async (req, res) => {
             if (d) {
               return { 
                 descricao: d, 
-                laboratorio: entry.ItemPedido.Laboratorio || entry.ItemPedido.laboratorio || "GENÉRICO" 
+                laboratorio: entry.ItemPedido.Laboratorio || entry.ItemPedido.laboratorio || "GENÃ‰RICO" 
               };
             }
           }
@@ -1647,7 +248,7 @@ app.post("/api/optimize", async (req, res) => {
               if (d) {
                 return { 
                   descricao: d, 
-                  laboratorio: sub.Laboratorio || sub.laboratorio || "GENÉRICO" 
+                  laboratorio: sub.Laboratorio || sub.laboratorio || "GENÃ‰RICO" 
                 };
               }
             }
@@ -1660,13 +261,13 @@ app.post("/api/optimize", async (req, res) => {
     const allMinimos: any[] = [];
 
     if (simulationMode) {
-      logs.push(`[MOCK] Modo Simulação Ativo. Usando banco de dados simulado local.`);
+      logs.push(`[MOCK] Modo SimulaÃ§Ã£o Ativo. Usando banco de dados simulado local.`);
       for (const ean of eansToQuote) {
         if (MOCK_API_DATABASE[ean]) {
           logs.push(`[MOCK] Carregado produto real mapeado para o EAN ${ean} (${MOCK_API_DATABASE[ean].ItemPedido?.Descricao || ""}).`);
           apiResponses[ean] = MOCK_API_DATABASE[ean];
         } else {
-          logs.push(`[MOCK] EAN ${ean} não encontrado no banco simulado.`);
+          logs.push(`[MOCK] EAN ${ean} nÃ£o encontrado no banco simulado.`);
         }
       }
     } else {
@@ -1685,26 +286,26 @@ app.post("/api/optimize", async (req, res) => {
 
       const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim(); 
 
-      // Se o token for o padrão de teste, usamos o CNPJ padrão associado "11111111111111"
+      // Se o token for o padrÃ£o de teste, usamos o CNPJ padrÃ£o associado "11111111111111"
       const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
       const apiCnpj = isSandboxToken ? "11111111111111" : finalCnpj.trim().replace(/\D/g, "");
 
-      logs.push(`[API CONEXÃO] Iniciando conexões reais com o servidor SmartPed.`);
-      logs.push(`[API CONEXÃO] URL Base: ${baseUrl}`);
-      logs.push(`[API CONEXÃO] Endpoint Rota: ${endpointPath}`);
+      logs.push(`[API CONEXÃƒO] Iniciando conexÃµes reais com o servidor SmartPed.`);
+      logs.push(`[API CONEXÃƒO] URL Base: ${baseUrl}`);
+      logs.push(`[API CONEXÃƒO] Endpoint Rota: ${endpointPath}`);
       if (isSandboxToken) {
-        logs.push(`[API CONEXÃO] Token de teste padrão detectado. Utilizando o CNPJ padrão "11111111111111" associado para evitar erros de vínculo.`);
+        logs.push(`[API CONEXÃƒO] Token de teste padrÃ£o detectado. Utilizando o CNPJ padrÃ£o "11111111111111" associado para evitar erros de vÃ­nculo.`);
       } else {
-        logs.push(`[API CONEXÃO] CNPJ de Homologação/Produção utilizado: ${apiCnpj} (Original: ${finalCnpj})`);
+        logs.push(`[API CONEXÃƒO] CNPJ de HomologaÃ§Ã£o/ProduÃ§Ã£o utilizado: ${apiCnpj} (Original: ${finalCnpj})`);
       }
-      logs.push(`[API CONEXÃO] Token de Acesso: ${actualToken.substring(0, 6)}...`);
+      logs.push(`[API CONEXÃƒO] Token de Acesso: ${actualToken.substring(0, 6)}...`);
 
       // Batch call (SmartPed endpoint CondicoesMolecula handles multiple EANs separated by comma)
       // Chunk EANs in batches of 40
       const batchSize = 40;
       for (let i = 0; i < eansToQuote.length; i += batchSize) {
         const batch = eansToQuote.slice(i, i + batchSize);
-        logs.push(`[API SOLICITAÇÃO] Enviando lote com ${batch.length} EANs (Lote ${Math.floor(i / batchSize) + 1} de ${Math.ceil(eansToQuote.length / batchSize)})...`);
+        logs.push(`[API SOLICITAÃ‡ÃƒO] Enviando lote com ${batch.length} EANs (Lote ${Math.floor(i / batchSize) + 1} de ${Math.ceil(eansToQuote.length / batchSize)})...`);
         
         try {
           const startTime = Date.now();
@@ -1774,7 +375,7 @@ app.post("/api/optimize", async (req, res) => {
           allMinimos.push(...minimosFromApi);
           updateMinimosCache(minimosFromApi);
 
-          logs.push(`[API RESPOSTA] Sucesso! Molecula retornou ${itensMolecula.length} moléculas. Condicoes/Ean retornou ${itensEan.length} itens.`);
+          logs.push(`[API RESPOSTA] Sucesso! Molecula retornou ${itensMolecula.length} molÃ©culas. Condicoes/Ean retornou ${itensEan.length} itens.`);
 
           for (const entry of itensMolecula) {
             const itemPedido = entry.ItemPedido || entry.itemPedido || entry;
@@ -1847,7 +448,7 @@ app.post("/api/optimize", async (req, res) => {
                     }
 
                     const descUpper = (entry.Descricao || "").toUpperCase();
-                    const inferredTipo = (descUpper.includes("(G)") || descUpper.includes("GENERICO") || descUpper.includes("GENÉRICO")) ? "G" : "O";
+                    const inferredTipo = (descUpper.includes("(G)") || descUpper.includes("GENERICO") || descUpper.includes("GENÃ‰RICO")) ? "G" : "O";
                     const finalTipoItem = entry.TipoItem || entry.tipoItem || firstCond.TipoItem || firstCond.tipoItem || inferredTipo;
 
                     if (!apiResponses[ean]) {
@@ -1877,7 +478,7 @@ app.post("/api/optimize", async (req, res) => {
                        }
                        if (!existingIp.TipoItem && !existingIp.tipoItem) {
                           const existingDescUpper = (existingIp.Descricao || entry.Descricao || "").toUpperCase();
-                          const existingInferredTipo = (existingDescUpper.includes("(G)") || existingDescUpper.includes("GENERICO") || existingDescUpper.includes("GENÉRICO")) ? "G" : "O";
+                          const existingInferredTipo = (existingDescUpper.includes("(G)") || existingDescUpper.includes("GENERICO") || existingDescUpper.includes("GENÃ‰RICO")) ? "G" : "O";
                           existingIp.TipoItem = existingIp.TipoItem || existingIp.tipoItem || entry.TipoItem || entry.tipoItem || firstCond.TipoItem || firstCond.tipoItem || existingInferredTipo;
                        }
                     }
@@ -1889,16 +490,16 @@ app.post("/api/optimize", async (req, res) => {
              }
           }
 
-          // Fallback para EANs que não obtiveram resposta da API mas que temos no banco simulado local
+          // Fallback para EANs que nÃ£o obtiveram resposta da API mas que temos no banco simulado local
           for (const ean of batch) {
             if (!apiResponses[ean] && MOCK_API_DATABASE[ean]) {
-              logs.push(`[SISTEMA CONTINGÊNCIA] Usando dados locais para EAN ${ean} como contingência de homologação.`);
+              logs.push(`[SISTEMA CONTINGÃŠNCIA] Usando dados locais para EAN ${ean} como contingÃªncia de homologaÃ§Ã£o.`);
               apiResponses[ean] = MOCK_API_DATABASE[ean];
             }
           }
         } catch (error: any) {
           console.error("Erro consultando lote da API SmartPed:", error.message);
-          logs.push(`[API ALERTA CRÍTICO] Falha de conexão: ${error.message}. Ativando contingência de simulação inteligente local.`);
+          logs.push(`[API ALERTA CRÃTICO] Falha de conexÃ£o: ${error.message}. Ativando contingÃªncia de simulaÃ§Ã£o inteligente local.`);
           
           for (const ean of batch) {
               if (MOCK_API_DATABASE[ean]) {
@@ -1909,8 +510,8 @@ app.post("/api/optimize", async (req, res) => {
       }
     }
 
-    // Passo de Enriquecimento por Fallback de Busca Textual (Princípio Ativo) para itens sem ofertas/estoque
-    logs.push(`[SISTEMA FALLBACK] Analisando itens do pedido para identificar ausência de estoque/ofertas e aplicar busca por princípio ativo...`);
+    // Passo de Enriquecimento por Fallback de Busca Textual (PrincÃ­pio Ativo) para itens sem ofertas/estoque
+    logs.push(`[SISTEMA FALLBACK] Analisando itens do pedido para identificar ausÃªncia de estoque/ofertas e aplicar busca por princÃ­pio ativo...`);
     const fallbackPromises: Promise<void>[] = [];
     const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
     const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
@@ -1930,7 +531,7 @@ app.post("/api/optimize", async (req, res) => {
       const apiSimilars = (marketSimilarMap[origEan] || []).map(s => cleanEan(s.cod_barra || s.Ean || s.ean || ""));
       const allEquivs = new Set<string>([origEan, ...localEquivs, ...apiSimilars]);
 
-      // Verificar se algum EAN equivalente tem oferta ativa com preço e estoque > 0
+      // Verificar se algum EAN equivalente tem oferta ativa com preÃ§o e estoque > 0
       let hasOffers = false;
       allEquivs.forEach(eqEan => {
         const resp = apiResponses[eqEan];
@@ -1945,7 +546,7 @@ app.post("/api/optimize", async (req, res) => {
         }
       });
 
-      // Se não encontramos estoque ativo para o original, OU se não há ofertas para nenhum equivalente, acoplamos a busca de fallback dinâmica
+      // Se nÃ£o encontramos estoque ativo para o original, OU se nÃ£o hÃ¡ ofertas para nenhum equivalente, acoplamos a busca de fallback dinÃ¢mica
       let originalHasOffersWithStock = false;
       const respOrig = apiResponses[origEan];
       if (respOrig) {
@@ -1960,9 +561,9 @@ app.post("/api/optimize", async (req, res) => {
 
       const shouldTriggerFallback = (!originalHasOffersWithStock || !hasOffers) && !simulationMode;
 
-      // Se elegível, disparamos a busca de fallback em tempo real na SmartPed
+      // Se elegÃ­vel, disparamos a busca de fallback em tempo real na SmartPed
       if (shouldTriggerFallback) {
-        logs.push(`[SISTEMA FALLBACK] Item "${item.descricao}" (EAN: ${origEan}) está sem ofertas de distribuidoras com estoque. Agendando busca dinâmica por molécula/texto...`);
+        logs.push(`[SISTEMA FALLBACK] Item "${item.descricao}" (EAN: ${origEan}) estÃ¡ sem ofertas de distribuidoras com estoque. Agendando busca dinÃ¢mica por molÃ©cula/texto...`);
         
         fallbackPromises.push((async () => {
           try {
@@ -1992,13 +593,13 @@ app.post("/api/optimize", async (req, res) => {
             }
 
             const PALAVRAS_GENERICAS_BLOQUEIO = new Set([
-              "KIT", "SAB", "SABONETE", "BOLA", "BALA", "BRINQUEDO", "DIVERSOS", "POTE", "PÇS", "PCS", "PEÇAS",
+              "KIT", "SAB", "SABONETE", "BOLA", "BALA", "BRINQUEDO", "DIVERSOS", "POTE", "PÃ‡S", "PCS", "PEÃ‡AS",
               "PECAS", "MINI", "GRANDE", "PEQUENO", "ESTOJO", "PORTA", "SUPORTE", "CABO", "FITA", "COLA", "BASE",
-              "MASCARA", "MÁSCARA", "SOMBRA", "PIRANHA", "CREME", "LOÇÃO", "LOCAO", "SHAMPOO", "CONDICIONADOR",
-              "AEROSOL", "SPRAY", "DESODORANTE", "DESOD", "PERFUME", "COLONIA", "COLÔNIA", "BODY", "SPLASH",
-              "POMADA", "TALCO", "ALGODAO", "ALGODÃO", "CURATIVO", "BANDAGEM", "ESCOVA", "PENTE", "LIXA",
-              "PINCA", "PINÇA", "TESOURA", "CURVADOR", "CARRINHO", "CARRO", "ANIMAIS", "BONECA", "CHUPETA",
-              "MAMADEIRA", "DOSADOR", "PRENDEDOR", "ELASTICO", "ELÁSTICO", "PRESILHA", "GRAMPO", "INF", "INFANTIL",
+              "MASCARA", "MÃSCARA", "SOMBRA", "PIRANHA", "CREME", "LOÃ‡ÃƒO", "LOCAO", "SHAMPOO", "CONDICIONADOR",
+              "AEROSOL", "SPRAY", "DESODORANTE", "DESOD", "PERFUME", "COLONIA", "COLÃ”NIA", "BODY", "SPLASH",
+              "POMADA", "TALCO", "ALGODAO", "ALGODÃƒO", "CURATIVO", "BANDAGEM", "ESCOVA", "PENTE", "LIXA",
+              "PINCA", "PINÃ‡A", "TESOURA", "CURVADOR", "CARRINHO", "CARRO", "ANIMAIS", "BONECA", "CHUPETA",
+              "MAMADEIRA", "DOSADOR", "PRENDEDOR", "ELASTICO", "ELÃSTICO", "PRESILHA", "GRAMPO", "INF", "INFANTIL",
               "GK1356", "GK1592", "REF", "COD"
             ]);
 
@@ -2144,8 +745,8 @@ app.post("/api/optimize", async (req, res) => {
               }
             };
 
-            incorporateRetornoItens(resDcb, "Princípio Ativo");
-            incorporateRetornoItens(resExtra, "Molécula Extra");
+            incorporateRetornoItens(resDcb, "PrincÃ­pio Ativo");
+            incorporateRetornoItens(resExtra, "MolÃ©cula Extra");
 
             // Incorporar resultados de Produtos/Buscar
             if (resBuscar) {
@@ -2164,8 +765,8 @@ app.post("/api/optimize", async (req, res) => {
                   const mappedSub = {
                     Ean: subEan,
                     Descricao: sub.Descricao || sub.descricao || "",
-                    Laboratorio: sub.Laboratorio || sub.laboratorio || "GENÉRICO",
-                    TipoItem: sub.TipoItem || sub.tipoItem || (sub.Descricao && (sub.Descricao.toUpperCase().includes("(G)") || sub.Descricao.toUpperCase().includes("GENERICO") || sub.Descricao.toUpperCase().includes("GENÉRICO")) ? "G" : "S"),
+                    Laboratorio: sub.Laboratorio || sub.laboratorio || "GENÃ‰RICO",
+                    TipoItem: sub.TipoItem || sub.tipoItem || (sub.Descricao && (sub.Descricao.toUpperCase().includes("(G)") || sub.Descricao.toUpperCase().includes("GENERICO") || sub.Descricao.toUpperCase().includes("GENÃ‰RICO")) ? "G" : "S"),
                     Pliquido: subPreco,
                     PliquidoUni: subPreco,
                     Estoque: subEstoque,
@@ -2199,20 +800,20 @@ app.post("/api/optimize", async (req, res) => {
             }
 
           } catch (err: any) {
-            logs.push(`[SISTEMA FALLBACK ALERTA] Erro na busca por princípio ativo para "${item.descricao}": ${err.message}`);
+            logs.push(`[SISTEMA FALLBACK ALERTA] Erro na busca por princÃ­pio ativo para "${item.descricao}": ${err.message}`);
           }
         })());
       }
     });
 
     if (fallbackPromises.length > 0) {
-      logs.push(`[SISTEMA FALLBACK] Aguardando a finalização concorrente de ${fallbackPromises.length} buscas textuais de emergência...`);
+      logs.push(`[SISTEMA FALLBACK] Aguardando a finalizaÃ§Ã£o concorrente de ${fallbackPromises.length} buscas textuais de emergÃªncia...`);
       await Promise.all(fallbackPromises);
-      logs.push(`[SISTEMA FALLBACK] Busca de fallback por princípio ativo concluída com sucesso.`);
+      logs.push(`[SISTEMA FALLBACK] Busca de fallback por princÃ­pio ativo concluÃ­da com sucesso.`);
     }
 
     // Process swaps and rewrite lines
-    logs.push(`[ANALISADOR] Iniciando filtragem de substitutos e verificação de condições comerciais.`);
+    logs.push(`[ANALISADOR] Iniciando filtragem de substitutos e verificaÃ§Ã£o de condiÃ§Ãµes comerciais.`);
     const finalLines: string[] = [headerLine];
     const report: any[] = [];
     let totalSavings = 0.0;
@@ -2224,7 +825,7 @@ app.post("/api/optimize", async (req, res) => {
       const localEquivs = getLocalEquivalents(origEan, item.descricao);
       const apiSimilars = (marketSimilarMap[origEan] || []).map(s => cleanEan(s.cod_barra || s.Ean || s.ean || ""));
       
-      // Verificar se o próprio EAN original possui alguma oferta ativa com preço e estoque > 0
+      // Verificar se o prÃ³prio EAN original possui alguma oferta ativa com preÃ§o e estoque > 0
       const origResp = apiResponses[origEan];
       let origHasStockOffer = false;
       if (origResp) {
@@ -2237,9 +838,9 @@ app.post("/api/optimize", async (req, res) => {
         }
       }
 
-      // Se o original já possui estoque ativo/oferta, limitamos a lista de equivalentes apenas ao próprio original.
-      // Isso impede "swaps" desnecessários ou equivocados de marcas concorrentes de produtos que já possuem ofertas ativas e estoque!
-      // Mantendo a equivalência dinâmica apenas para recuperar itens out-of-stock ("Sem Estoque").
+      // Se o original jÃ¡ possui estoque ativo/oferta, limitamos a lista de equivalentes apenas ao prÃ³prio original.
+      // Isso impede "swaps" desnecessÃ¡rios ou equivocados de marcas concorrentes de produtos que jÃ¡ possuem ofertas ativas e estoque!
+      // Mantendo a equivalÃªncia dinÃ¢mica apenas para recuperar itens out-of-stock ("Sem Estoque").
       const allEquivSet = origHasStockOffer 
         ? new Set<string>([origEan])
         : new Set<string>([origEan, ...localEquivs, ...apiSimilars]);
@@ -2248,7 +849,7 @@ app.post("/api/optimize", async (req, res) => {
       let combinedCondicoes: any[] = [];
       let mainItemPedido = null;
 
-      // Unificar respostas de cotações da SmartPed de todos os EANs equivalentes que de fato retornaram ofertas
+      // Unificar respostas de cotaÃ§Ãµes da SmartPed de todos os EANs equivalentes que de fato retornaram ofertas
       allEquivSet.forEach(equivEan => {
         const resp = apiResponses[equivEan];
         if (resp) {
@@ -2262,8 +863,8 @@ app.post("/api/optimize", async (req, res) => {
             combinedCondicoes.push(...resp.Condicoes);
           }
 
-          // Se o ItemPedido de um EAN concorrente/equivalente for retornado na SmartPed, e ele possuir preço,
-          // nós o transformamos em uma alternativa de troca elegível (Substituto)!
+          // Se o ItemPedido de um EAN concorrente/equivalente for retornado na SmartPed, e ele possuir preÃ§o,
+          // nÃ³s o transformamos em uma alternativa de troca elegÃ­vel (Substituto)!
           if (resp.ItemPedido && equivEan !== origEan) {
             const cost = getUnitCost(resp.ItemPedido);
             if (cost > 0) {
@@ -2276,7 +877,7 @@ app.post("/api/optimize", async (req, res) => {
                 Pliquido: cost,
                 PliquidoUni: cost,
                 Estoque: condEstoque,
-                NomeDist: resp.ItemPedido.NomeDist || resp.ItemPedido.nomeDist || "Não Encontrados",
+                NomeDist: resp.ItemPedido.NomeDist || resp.ItemPedido.nomeDist || "NÃ£o Encontrados",
                 CodDist: resp.ItemPedido.CodDist !== undefined ? resp.ItemPedido.CodDist : (resp.ItemPedido.codDist !== undefined ? resp.ItemPedido.codDist : 0),
                 Condicao: resp.ItemPedido.Condicao || resp.ItemPedido.condicao || "FIXA",
                 Prazo: resp.ItemPedido.Prazo !== undefined ? resp.ItemPedido.Prazo : (resp.ItemPedido.prazo || 7)
@@ -2290,10 +891,10 @@ app.post("/api/optimize", async (req, res) => {
         mainItemPedido = { Ean: origEan, Descricao: item.descricao, Laboratorio: item.laboratorio, Pliquido: item.precoOriginal };
       }
 
-      // Filtrar estritamente combinedSubstitutos com o Hard Block de equivalência
+      // Filtrar estritamente combinedSubstitutos com o Hard Block de equivalÃªncia
       combinedSubstitutos = combinedSubstitutos.filter((s: any) => validateSwapEquivalence(mainItemPedido, s));
 
-      // Adicionar também os similares brutos do Ferramentinhas que não foram achados pela SmartPed como fallback, caso não haja nenhum substituto cotado
+      // Adicionar tambÃ©m os similares brutos do Ferramentinhas que nÃ£o foram achados pela SmartPed como fallback, caso nÃ£o haja nenhum substituto cotado
       const similaresMercado = marketSimilarMap[origEan] || [];
       const mappedSimilares = similaresMercado.map((s: any) => {
          const est = parseInt(String(s.qtd_estoque !== undefined ? s.qtd_estoque : (s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0))), 10) || 0;
@@ -2305,15 +906,15 @@ app.post("/api/optimize", async (req, res) => {
             Estoque: est,
             Pliquido: price,
             PliquidoUni: price,
-            TipoItem: s.TipoItem || s.tipoItem || (s.nom_produto && (s.nom_produto.toUpperCase().includes("(G)") || s.nom_produto.toUpperCase().includes("GENERICO") || s.nom_produto.toUpperCase().includes("GENÉRICO")) ? "G" : "S"),
-            NomeDist: s.NomeDist || s.nomeDist || s.nom_distribuidora || "Não Encontrados",
+            TipoItem: s.TipoItem || s.tipoItem || (s.nom_produto && (s.nom_produto.toUpperCase().includes("(G)") || s.nom_produto.toUpperCase().includes("GENERICO") || s.nom_produto.toUpperCase().includes("GENÃ‰RICO")) ? "G" : "S"),
+            NomeDist: s.NomeDist || s.nomeDist || s.nom_distribuidora || "NÃ£o Encontrados",
             CodDist: s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0),
             Condicao: s.Condicao || s.condicao || "FIXA",
             Prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7)
          };
       }).filter((s: any) => validateSwapEquivalence(mainItemPedido, s));
 
-      // Mesclar os similares de fallback nos substitutos de forma que se não houver ofertas reais na SmartPed, o usuário ainda os veja no painel
+      // Mesclar os similares de fallback nos substitutos de forma que se nÃ£o houver ofertas reais na SmartPed, o usuÃ¡rio ainda os veja no painel
       const eansExistentes = new Set(combinedSubstitutos.map((s: any) => cleanEan(s.Ean || s.ean || "")));
       const novosSimilares = mappedSimilares.filter((s: any) => !eansExistentes.has(cleanEan(s.Ean || s.ean || "")));
       
@@ -2401,7 +1002,7 @@ app.post("/api/optimize", async (req, res) => {
             return {
               ean: altEan,
               descricao: altDesc,
-              laboratorio: resolvedLab || originalLab || "GENÉRICO",
+              laboratorio: resolvedLab || originalLab || "GENÃ‰RICO",
               preco: unitPrice,
               pmc: unitPmc,
               condicao: condicao,
@@ -2440,9 +1041,9 @@ app.post("/api/optimize", async (req, res) => {
           const labLower = originalLab.toLowerCase();
           isGeneric = descLower.includes(" gn ") || 
                       descLower.includes("generico") || 
-                      descLower.includes("genérico") ||
+                      descLower.includes("genÃ©rico") ||
                       labLower.includes("generico") || 
-                      labLower.includes("genérico");
+                      labLower.includes("genÃ©rico");
           if (isGeneric && descLower.includes(" - ")) {
             isGeneric = false;
           }
@@ -2463,8 +1064,8 @@ app.post("/api/optimize", async (req, res) => {
 
         const effectiveOriginalHasStock = !exigirEstoque || originalHasStock;
 
-        logs.push(`[PRODUTO] Analisando EAN ${item.ean} - "${originalDesc}" | Qtd Solicitada: ${requestedQty} | Preço Base: R$ ${item.precoOriginal.toFixed(2)} | Genérico: ${isGeneric ? 'Sim' : 'Não'} | Tem Estoque: ${originalHasStock ? 'Sim' : 'Não'}`);
-        logs.push(`[PRODUTO] Total de medicamentos substitutos elegíveis cadastrados no distribuidor: ${substitutos.length}`);
+        logs.push(`[PRODUTO] Analisando EAN ${item.ean} - "${originalDesc}" | Qtd Solicitada: ${requestedQty} | PreÃ§o Base: R$ ${item.precoOriginal.toFixed(2)} | GenÃ©rico: ${isGeneric ? 'Sim' : 'NÃ£o'} | Tem Estoque: ${originalHasStock ? 'Sim' : 'NÃ£o'}`);
+        logs.push(`[PRODUTO] Total de medicamentos substitutos elegÃ­veis cadastrados no distribuidor: ${substitutos.length}`);
         
         const result = findBestSubstitute(itemPedido, [...condicoes, ...substitutos], margemMinima, tiposAceitos, exigirEstoque, item.precoOriginal, effectiveOriginalHasStock, isGeneric, cortesRecentes);
         let finalResult = result;
@@ -2483,7 +1084,7 @@ app.post("/api/optimize", async (req, res) => {
                 Pliquido: price,
                 PliquidoUni: price,
                 TipoItem: "G",
-                NomeDist: s.NomeDist || s.nomeDist || "Não Encontrados",
+                NomeDist: s.NomeDist || s.nomeDist || "NÃ£o Encontrados",
                 CodDist: s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0),
                 Condicao: s.Condicao || s.condicao || "FIXA",
                 Prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7)
@@ -2502,7 +1103,7 @@ app.post("/api/optimize", async (req, res) => {
              return (!exigirEstoque || s.Estoque > 0) && s.Pliquido > 0;
           });
 
-          // Se houver qualquer oferta de distribuidora real, removemos as ofertas fantasmas ("Não Encontrados")
+          // Se houver qualquer oferta de distribuidora real, removemos as ofertas fantasmas ("NÃ£o Encontrados")
           const temRealCand = candidatos.some(c => isRealOffer(c));
           if (temRealCand) {
             candidatos = candidatos.filter(c => isRealOffer(c));
@@ -2518,12 +1119,12 @@ app.post("/api/optimize", async (req, res) => {
             });
             const melhor = candidatos[0];
             finalResult = { melhor, economia: item.precoOriginal - getUnitCost(melhor), isFallback: true };
-            logs.push(`[SUCESSO] Alternativa genérica encontrada: EAN ${melhor.Ean} (${melhor.Descricao}) com estoque: ${melhor.Estoque}`);
+            logs.push(`[SUCESSO] Alternativa genÃ©rica encontrada: EAN ${melhor.Ean} (${melhor.Descricao}) com estoque: ${melhor.Estoque}`);
           }
         }
 
-          // Computar a melhor opção original mesmo se encontrarmos um substituto, para o caso do usuário clicar em "Manter original"
-          let bestOriginalDist = "Não Encontrados";
+          // Computar a melhor opÃ§Ã£o original mesmo se encontrarmos um substituto, para o caso do usuÃ¡rio clicar em "Manter original"
+          let bestOriginalDist = "NÃ£o Encontrados";
           let bestOriginalCodDist = 0;
           let bestOriginalEstoque = 0;
           let bestOriginalCondicao = "FIXA";
@@ -2549,10 +1150,10 @@ app.post("/api/optimize", async (req, res) => {
             }
             return true;
           });
-          // Sempre indicar a condição mais barata mesmo que precise de quantidade maior
+          // Sempre indicar a condiÃ§Ã£o mais barata mesmo que precise de quantidade maior
           let condicoesOriginalCompativeis = todasCondicoesOriginal;
 
-          // Se houver qualquer oferta de distribuidora real, removemos as ofertas fantasmas ("Não Encontrados")
+          // Se houver qualquer oferta de distribuidora real, removemos as ofertas fantasmas ("NÃ£o Encontrados")
           const temOrigRealComp = condicoesOriginalCompativeis.some((c: any) => isRealOffer(c));
           if (temOrigRealComp) {
             condicoesOriginalCompativeis = condicoesOriginalCompativeis.filter((c: any) => isRealOffer(c));
@@ -2577,7 +1178,7 @@ app.post("/api/optimize", async (req, res) => {
               return getUnitCost(a) - getUnitCost(b);
             });
             ref = condicoesOriginalCompativeis[0];
-            bestOriginalDist = ref.NomeDist || ref.nomeDist || "Não Encontrados";
+            bestOriginalDist = ref.NomeDist || ref.nomeDist || "NÃ£o Encontrados";
             bestOriginalCodDist = ref.CodDist !== undefined ? ref.CodDist : (ref.codDist !== undefined ? ref.codDist : 0);
             bestOriginalEstoque = ref.Estoque !== undefined ? ref.Estoque : 0;
             bestOriginalCondicao = ref.Condicao || ref.condicao || "FIXA";
@@ -2605,7 +1206,7 @@ app.post("/api/optimize", async (req, res) => {
             }
           }
 
-        // Verificar se há fornecedores externos cadastrados com preços melhores
+        // Verificar se hÃ¡ fornecedores externos cadastrados com preÃ§os melhores
         let matchedExternal: any = null;
         let matchedSupplierName = "";
         
@@ -2657,7 +1258,7 @@ app.post("/api/optimize", async (req, res) => {
             
             for (const extProd of supplier.products) {
               if (!validateSwapEquivalence(sicfDesc, extProd.description)) {
-                continue; // Rejeição estrita se houver divergência de sabor, dosagem ou apresentação!
+                continue; // RejeiÃ§Ã£o estrita se houver divergÃªncia de sabor, dosagem ou apresentaÃ§Ã£o!
               }
               const extClean = cleanString(extProd.description);
               const extWords = extClean.split(" ").filter(w => w.length > 1 && !stopWords.has(w));
@@ -2666,16 +1267,16 @@ app.post("/api/optimize", async (req, res) => {
               // Extrair e validar dosagens e quantidades
               const extInfo = extractDosageAndQty(extProd.description);
               
-              // Se ambas as descrições tiverem dosagem, elas devem bater exatamente
+              // Se ambas as descriÃ§Ãµes tiverem dosagem, elas devem bater exatamente
               if (sicfInfo.dosages.length > 0 && extInfo.dosages.length > 0) {
                 const dosageMatch = sicfInfo.dosages.some(d => extInfo.dosages.includes(d));
-                if (!dosageMatch) continue; // Pula se houver divergência de dosagem
+                if (!dosageMatch) continue; // Pula se houver divergÃªncia de dosagem
               }
               
-              // Se ambas as descrições tiverem quantidade de comprimidos/capsulas, elas devem bater exatamente
+              // Se ambas as descriÃ§Ãµes tiverem quantidade de comprimidos/capsulas, elas devem bater exatamente
               if (sicfInfo.quantities.length > 0 && extInfo.quantities.length > 0) {
                 const qtyMatch = sicfInfo.quantities.some(q => extInfo.quantities.includes(q));
-                if (!qtyMatch) continue; // Pula se houver divergência de apresentação/quantidade
+                if (!qtyMatch) continue; // Pula se houver divergÃªncia de apresentaÃ§Ã£o/quantidade
               }
 
               let matches = 0;
@@ -2713,7 +1314,7 @@ app.post("/api/optimize", async (req, res) => {
         }
 
         if (matchedExternal && (bestSmartPedPrice - matchedExternal.price) >= margemMinima) {
-          logs.push(`⭐ [FORNECEDOR WHATSAPP] Melhor preço no fornecedor externo "${matchedSupplierName}": R$ ${matchedExternal.price.toFixed(2)} (SmartPed: R$ ${bestSmartPedPrice.toFixed(2)}) para "${matchedExternal.description}"`);
+          logs.push(`â­ [FORNECEDOR WHATSAPP] Melhor preÃ§o no fornecedor externo "${matchedSupplierName}": R$ ${matchedExternal.price.toFixed(2)} (SmartPed: R$ ${bestSmartPedPrice.toFixed(2)}) para "${matchedExternal.description}"`);
           const melhorExt = {
             Ean: item.ean,
             Descricao: matchedExternal.description,
@@ -2775,7 +1376,7 @@ app.post("/api/optimize", async (req, res) => {
             }
           }
           if (!novoLab) {
-            novoLab = item.laboratorio || "GENÉRICO";
+            novoLab = item.laboratorio || "GENÃ‰RICO";
           }
 
           lineFinal = [
@@ -2789,11 +1390,11 @@ app.post("/api/optimize", async (req, res) => {
           ].join(";");
           
           if (isFallback) {
-             logs.push(`⚠️ [SUBSTITUIÇÃO POR FALTA] Original sem estoque! Trocado pelo genérico EAN ${novoEan} (${novaDescricao}) do laboratório ${novoLab}`);
+             logs.push(`âš ï¸ [SUBSTITUIÃ‡ÃƒO POR FALTA] Original sem estoque! Trocado pelo genÃ©rico EAN ${novoEan} (${novaDescricao}) do laboratÃ³rio ${novoLab}`);
           } else {
-             logs.push(`🚀 [SUBSTITUIÇÃO APROVADA] Trocar por EAN ${novoEan} (${novaDescricao}) do laboratório ${novoLab}`);
+             logs.push(`ðŸš€ [SUBSTITUIÃ‡ÃƒO APROVADA] Trocar por EAN ${novoEan} (${novaDescricao}) do laboratÃ³rio ${novoLab}`);
           }
-          logs.push(`   Preço original: R$ ${item.precoOriginal.toFixed(2)} | Preço otimizado: R$ ${precoNovo.toFixed(2)} | Economia unitária: R$ ${economia.toFixed(2)} | Economia total (Qtd ${qtdNum}): R$ ${economiaTotal.toFixed(2)}`);
+          logs.push(`   PreÃ§o original: R$ ${item.precoOriginal.toFixed(2)} | PreÃ§o otimizado: R$ ${precoNovo.toFixed(2)} | Economia unitÃ¡ria: R$ ${economia.toFixed(2)} | Economia total (Qtd ${qtdNum}): R$ ${economiaTotal.toFixed(2)}`);
 
           const codDist = melhor.CodDist !== undefined ? melhor.CodDist : (melhor.codDist !== undefined ? melhor.codDist : 0);
           const condicao = melhor.Condicao || melhor.condicao || "FIXA";
@@ -2878,7 +1479,7 @@ app.post("/api/optimize", async (req, res) => {
             alternatives: finalAlternatives
           });
         } else {
-          logs.push(`⏹️ [MANTER ORIGINAL] Mantendo original. Motivo: nenhuma opção elegível mais barata com economia mínima de R$ ${margemMinima.toFixed(2)} ou sem estoque suficiente.`);
+          logs.push(`â¹ï¸ [MANTER ORIGINAL] Mantendo original. Motivo: nenhuma opÃ§Ã£o elegÃ­vel mais barata com economia mÃ­nima de R$ ${margemMinima.toFixed(2)} ou sem estoque suficiente.`);
           
           let originalDist = bestOriginalDist;
           let originalCodDist = bestOriginalCodDist;
@@ -2900,7 +1501,7 @@ app.post("/api/optimize", async (req, res) => {
 
             if (validSubstitutos.length > 0) {
               const ref = validSubstitutos[0];
-              originalDist = ref.NomeDist || ref.nomeDist || "Não Encontrados";
+              originalDist = ref.NomeDist || ref.nomeDist || "NÃ£o Encontrados";
               originalCodDist = ref.CodDist !== undefined ? ref.CodDist : (ref.codDist !== undefined ? ref.codDist : 0);
               originalEstoque = ref.Estoque !== undefined ? ref.Estoque : 0;
               originalCondicao = ref.Condicao || ref.condicao || "FIXA";
@@ -3006,7 +1607,7 @@ app.post("/api/optimize", async (req, res) => {
           });
         }
       } else {
-        logs.push(`⚠️ [MANTER ORIGINAL] EAN ${item.ean} (${item.descricao}) não obteve retorno da API SmartPed. Mantendo original.`);
+        logs.push(`âš ï¸ [MANTER ORIGINAL] EAN ${item.ean} (${item.descricao}) nÃ£o obteve retorno da API SmartPed. Mantendo original.`);
         
         const qtdNum = parseFloat(item.qtd.replace(",", "."));
         const fallbackPmc = 0;
@@ -3026,7 +1627,7 @@ app.post("/api/optimize", async (req, res) => {
           qtd: qtdNum,
           economiaUnit: 0,
           economiaTotal: 0,
-          distribuidora: "Não Encontrados",
+          distribuidora: "NÃ£o Encontrados",
           estoque: 0,
           codDist: 0,
           condicao: "FIXA",
@@ -3058,15 +1659,15 @@ app.post("/api/optimize", async (req, res) => {
 
     const optimizedFileContent = finalLines.join("\r\n");
     
-    logs.push(`[SUCESSO] Processo de otimização concluído com sucesso!`);
+    logs.push(`[SUCESSO] Processo de otimizaÃ§Ã£o concluÃ­do com sucesso!`);
     logs.push(`[SUCESSO] Itens Otimizados com Economia: ${itemsSwappedCount} de ${parsedItems.length}`);
     logs.push(`[SUCESSO] Economia Estimada Total: R$ ${totalSavings.toFixed(2)}`);
 
-    // Filtrar itens sem estoque real na SmartPed ("Não Encontrados" / estoque 0)
+    // Filtrar itens sem estoque real na SmartPed ("NÃ£o Encontrados" / estoque 0)
     const filteredReport = report.filter((item: any) => {
       const dist = String(item.distribuidora || "").toLowerCase();
       const estoque = Number(item.estoque !== undefined ? item.estoque : 0);
-      const isNotFound = !item.distribuidora || dist.includes("não encontrado") || dist.includes("nao encontrado") || dist.includes("sem estoque");
+      const isNotFound = !item.distribuidora || dist.includes("nÃ£o encontrado") || dist.includes("nao encontrado") || dist.includes("sem estoque");
       return !isNotFound && estoque > 0;
     });
     if (filteredReport.length < report.length) {
@@ -3087,16 +1688,12 @@ app.post("/api/optimize", async (req, res) => {
       logs
     });
   } catch (err: any) {
-    console.error("Erro interno do servidor durante otimização:", err);
-    logs.push(`[ERRO CRÍTICO] Falha inesperada interna: ${err.message}`);
+    console.error("Erro interno do servidor durante otimizaÃ§Ã£o:", err);
+    logs.push(`[ERRO CRÃTICO] Falha inesperada interna: ${err.message}`);
     res.status(500).json({ error: "Erro interno do servidor: " + err.message, logs });
   }
 });
-
-// Simulated check counter to show progressive status change (Awaiting -> Finalized) in simulation mode
-const SIMULATED_CHECKS: Record<string, number> = {};
-
-// Endpoint de Faturamento SmartPed (Simulação e Integração Real)
+// Endpoint de Faturamento SmartPed (SimulaÃ§Ã£o e IntegraÃ§Ã£o Real)
 app.post("/api/faturar", async (req, res) => {
   const logs: string[] = [];
   try {
@@ -3135,16 +1732,16 @@ app.post("/api/faturar", async (req, res) => {
       const originalCodDistNum = typeof item.originalCodDist === "number" ? item.originalCodDist : (item.originalCodDist !== undefined && item.originalCodDist !== null ? parseInt(String(item.originalCodDist), 10) : NaN);
       const distNameLower = String(item.distribuidora || "").toLowerCase();
 
-      // Blindagem 4 (Regra de Ouro 2): Itens sem distribuidora ou "Não Encontrados"/"Sem Estoque" ou com codDist === 0 ou originalCodDist === 0 ou inválidos
+      // Blindagem 4 (Regra de Ouro 2): Itens sem distribuidora ou "NÃ£o Encontrados"/"Sem Estoque" ou com codDist === 0 ou originalCodDist === 0 ou invÃ¡lidos
       if (
         parsedCodDist === 0 || 
         originalCodDistNum === 0 || 
         isNaN(parsedCodDist) ||
-        distNameLower.includes("não encontrado") || 
+        distNameLower.includes("nÃ£o encontrado") || 
         distNameLower.includes("sem estoque") ||
         distNameLower.trim() === ""
       ) {
-        logs.push(`[BLINDAGEM] Item bloqueado (Filtro Distribuidora/Estoque): ${item.novaDescricao || item.originalDescricao} (${item.novoEan || item.originalEan}) possui codDist/originalCodDist zerado ou inválido (codDist: ${rawCodDist}, originalCodDist: ${item.originalCodDist}) ou distribuidora "${item.distribuidora || ''}". Ignorando faturamento.`);
+        logs.push(`[BLINDAGEM] Item bloqueado (Filtro Distribuidora/Estoque): ${item.novaDescricao || item.originalDescricao} (${item.novoEan || item.originalEan}) possui codDist/originalCodDist zerado ou invÃ¡lido (codDist: ${rawCodDist}, originalCodDist: ${item.originalCodDist}) ou distribuidora "${item.distribuidora || ''}". Ignorando faturamento.`);
         continue;
       }
 
@@ -3152,7 +1749,7 @@ app.post("/api/faturar", async (req, res) => {
       const codProdDistStr = String(item.codProdutoDist || "").trim();
       const codProdutoStr = String(item.codProduto || "").trim();
 
-      // Blindagem 1: Swaps para distribuidores reais devem ter IDs de produto válidos (não '0' ou vazio ou null ou undefined ou strings "null"/"undefined")
+      // Blindagem 1: Swaps para distribuidores reais devem ter IDs de produto vÃ¡lidos (nÃ£o '0' ou vazio ou null ou undefined ou strings "null"/"undefined")
       if (isSwapped && codDistNum !== 9999) {
         const isProdDistInvalid = !codProdDistStr || 
                                   codProdDistStr === "0" || 
@@ -3165,20 +1762,20 @@ app.post("/api/faturar", async (req, res) => {
                               codProdutoStr.toLowerCase() === "undefined";
 
         if (isProdDistInvalid || isProdInvalid) {
-          logs.push(`[BLINDAGEM] Item bloqueado (Código Invalido/Zero/Null): ${item.novaDescricao || item.originalDescricao} (${item.novoEan || item.originalEan}) é substituto mas possui CodProdutoDist/CodProduto inválidos ou nulos/zeros. Ignorando faturamento deste item.`);
+          logs.push(`[BLINDAGEM] Item bloqueado (CÃ³digo Invalido/Zero/Null): ${item.novaDescricao || item.originalDescricao} (${item.novoEan || item.originalEan}) Ã© substituto mas possui CodProdutoDist/CodProduto invÃ¡lidos ou nulos/zeros. Ignorando faturamento deste item.`);
           continue;
         }
       }
 
-      // Blindagem 2: Swaps sem EAN de destino válido
+      // Blindagem 2: Swaps sem EAN de destino vÃ¡lido
       if (isSwapped) {
         if (!item.novoEan || String(item.novoEan).length < 5) {
-          logs.push(`[BLINDAGEM] Item bloqueado: Swap EAN inválido para ${item.originalDescricao}.`);
+          logs.push(`[BLINDAGEM] Item bloqueado: Swap EAN invÃ¡lido para ${item.originalDescricao}.`);
           continue;
         }
       }
 
-      // Blindagem 3: Garantir que não existam valores nulos/undefined críticos
+      // Blindagem 3: Garantir que nÃ£o existam valores nulos/undefined crÃ­ticos
       if (!item.novoEan && !item.originalEan) {
         logs.push(`[BLINDAGEM] Item bloqueado: EAN ausente.`);
         continue;
@@ -3188,13 +1785,13 @@ app.post("/api/faturar", async (req, res) => {
     }
 
     if (validatedItems.length === 0) {
-      logs.push(`[FATURAMENTO ERRO] Nenhum item passou pelas regras de Blindagem de segurança.`);
-      return res.status(400).json({ error: "Nenhum dos itens selecionados passou nas validações de segurança dos códigos de produto.", logs });
+      logs.push(`[FATURAMENTO ERRO] Nenhum item passou pelas regras de Blindagem de seguranÃ§a.`);
+      return res.status(400).json({ error: "Nenhum dos itens selecionados passou nas validaÃ§Ãµes de seguranÃ§a dos cÃ³digos de produto.", logs });
     }
 
     logs.push(`[FATURAMENTO] Itens aprovados pela blindagem: ${validatedItems.length} de ${items.length}`);
 
-    // Agrupar itens por distribuidora para logs e cálculos locais
+    // Agrupar itens por distribuidora para logs e cÃ¡lculos locais
     const distribuidorasMap: Record<string, typeof validatedItems> = {};
     let totalValor = 0;
     let totalEconomia = 0;
@@ -3212,7 +1809,7 @@ app.post("/api/faturar", async (req, res) => {
     const pedidosDistribuidoras: any[] = [];
     const protocoloLote = "SP-" + new Date().getFullYear() + "-" + String(new Date().getMonth() + 1).padStart(2, "0") + String(new Date().getDate()).padStart(2, "0") + "-" + Math.floor(1000 + Math.random() * 9000);
 
-    logs.push(`[FATURAMENTO] Agrupamento concluído em ${Object.keys(distribuidorasMap).length} distribuidora(s).`);
+    logs.push(`[FATURAMENTO] Agrupamento concluÃ­do em ${Object.keys(distribuidorasMap).length} distribuidora(s).`);
 
     for (const [distName, distItems] of Object.entries(distribuidorasMap)) {
       const valorPedido = distItems.reduce((acc, item) => acc + (item.novoPreco || item.originalPreco) * (item.qtd || 1), 0);
@@ -3231,14 +1828,14 @@ app.post("/api/faturar", async (req, res) => {
       });
     }
 
-    // Geramos um ID de pedido SmartPed numérico para monitoramento (ex: 3221)
+    // Geramos um ID de pedido SmartPed numÃ©rico para monitoramento (ex: 3221)
     let numPedidoSmartPed = Math.floor(2000 + Math.random() * 8000);
     let distribuidorasBloqueadas: any[] = [];
 
     if (!simulationMode) {
       let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
       const endpointEnvio = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Envio`;
-      logs.push(`[API CONEXÃO] Registrando faturamento na API SmartPed: ${endpointEnvio}...`);
+      logs.push(`[API CONEXÃƒO] Registrando faturamento na API SmartPed: ${endpointEnvio}...`);
 
       // Mapeamento dos itens para a estrutura oficial da SmartPed (api/Pedido/Envio)
       const apiItens = validatedItems.map((it: any) => ({
@@ -3285,7 +1882,7 @@ app.post("/api/faturar", async (req, res) => {
           const isErrorMsg = resData.Mensagem && (
             resData.Mensagem.toLowerCase().includes("erro") ||
             resData.Mensagem.toLowerCase().includes("falha") ||
-            resData.Mensagem.toLowerCase().includes("inválido") ||
+            resData.Mensagem.toLowerCase().includes("invÃ¡lido") ||
             resData.Mensagem.toLowerCase().includes("invalido")
           );
 
@@ -3300,8 +1897,8 @@ app.post("/api/faturar", async (req, res) => {
 
           const hasRetorno = resData.Retorno && (resData.Retorno.NumPedido || resData.Retorno.numPedido);
           if (!hasRetorno) {
-            logs.push(`[API ERRO] Resposta da SmartPed sem ID de pedido válido (Retorno ou NumPedido nulo).`);
-            const errMsg = resData.Mensagem || "Resposta sem tag Retorno ou NumPedido de confirmação de faturamento.";
+            logs.push(`[API ERRO] Resposta da SmartPed sem ID de pedido vÃ¡lido (Retorno ou NumPedido nulo).`);
+            const errMsg = resData.Mensagem || "Resposta sem tag Retorno ou NumPedido de confirmaÃ§Ã£o de faturamento.";
             return res.status(400).json({
               sucesso: false,
               error: `Falha no faturamento SmartPed: ${errMsg}`,
@@ -3310,7 +1907,7 @@ app.post("/api/faturar", async (req, res) => {
           }
 
           numPedidoSmartPed = parseInt(resData.Retorno.NumPedido || resData.Retorno.numPedido);
-          logs.push(`[API CONEXÃO SUCESSO] Pedido cadastrado com sucesso! ID SmartPed: ${numPedidoSmartPed}`);
+          logs.push(`[API CONEXÃƒO SUCESSO] Pedido cadastrado com sucesso! ID SmartPed: ${numPedidoSmartPed}`);
 
           // Extrair distribuidoras bloqueadas (DistBloqEnv)
           if (resData.Retorno && resData.Retorno.DistBloqEnv) {
@@ -3321,30 +1918,30 @@ app.post("/api/faturar", async (req, res) => {
           }
         } else {
           const errText = await resFaturar.text().catch(() => "Sem detalhes de erro");
-          logs.push(`[API CONEXÃO ERRO] Endpoint SmartPed retornou falha (Status ${resFaturar.status}). Detalhes: ${errText}`);
+          logs.push(`[API CONEXÃƒO ERRO] Endpoint SmartPed retornou falha (Status ${resFaturar.status}). Detalhes: ${errText}`);
           return res.status(400).json({
             sucesso: false,
-            error: `Erro de comunicação HTTP ${resFaturar.status} com a SmartPed.`,
+            error: `Erro de comunicaÃ§Ã£o HTTP ${resFaturar.status} com a SmartPed.`,
             logs
           });
         }
       } catch (e: any) {
-        logs.push(`[API CONEXÃO ERRO] Falha de comunicação: ${e.message}`);
+        logs.push(`[API CONEXÃƒO ERRO] Falha de comunicaÃ§Ã£o: ${e.message}`);
         return res.status(400).json({
           sucesso: false,
-          error: `Não foi possível estabelecer comunicação com o servidor SmartPed: ${e.message}`,
+          error: `NÃ£o foi possÃ­vel estabelecer comunicaÃ§Ã£o com o servidor SmartPed: ${e.message}`,
           logs
         });
       }
     } else {
-      logs.push(`[MOCK] Modo de Simulação Ativo. Lote processado localmente.`);
+      logs.push(`[MOCK] Modo de SimulaÃ§Ã£o Ativo. Lote processado localmente.`);
     }
 
-    logs.push(`[SUCESSO] Faturamento concluído no Otimizador!`);
+    logs.push(`[SUCESSO] Faturamento concluÃ­do no Otimizador!`);
     logs.push(`[SUCESSO] Protocolo Lote: ${protocoloLote} | ID SmartPed: ${numPedidoSmartPed}`);
     logs.push(`[SUCESSO] Valor do Lote: R$ ${totalValor.toFixed(2)} | Economia Estimada: R$ ${totalEconomia.toFixed(2)}`);
 
-    // Alimentar o cache global de faturamento para complementar dados de retorno de itens futuros (Chaves duplas para segurança máxima!)
+    // Alimentar o cache global de faturamento para complementar dados de retorno de itens futuros (Chaves duplas para seguranÃ§a mÃ¡xima!)
     if (numPedidoSmartPed && Array.isArray(validatedItems)) {
       validatedItems.forEach((it: any) => {
         const codDistVal = typeof it.codDist === "number" ? it.codDist : parseInt(it.codDist) || 2;
@@ -3420,7 +2017,7 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
     const endpointListar = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Listar`;
     const endpointRetorno = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Retorno`;
 
-    // Data de hoje e de 7 dias atrás no formato DD/MM/AAAA
+    // Data de hoje e de 7 dias atrÃ¡s no formato DD/MM/AAAA
     const hoje = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     const seteDiasAtras = new Date(hoje);
     seteDiasAtras.setDate(hoje.getDate() - 7);
@@ -3429,7 +2026,7 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
     const dataIni = formatDate(seteDiasAtras);
     const dataFim = formatDate(hoje);
 
-    logs.push(`[MONITORAMENTO] Buscando pedidos de ${dataIni} até ${dataFim}...`);
+    logs.push(`[MONITORAMENTO] Buscando pedidos de ${dataIni} atÃ© ${dataFim}...`);
     logs.push(`[MONITORAMENTO] Endpoint Listar: ${endpointListar}`);
     
     let pedidosResumidos: any[] = [];
@@ -3464,7 +2061,7 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
         logs.push(`[MONITORAMENTO ERRO] Erro na API Listar: ${err.message}`);
       }
     } else {
-      logs.push(`[MOCK] Modo Simulação (Token de testes). Gerando pedidos fictícios do dia.`);
+      logs.push(`[MOCK] Modo SimulaÃ§Ã£o (Token de testes). Gerando pedidos fictÃ­cios do dia.`);
       const now = new Date();
       const formatDate = (d: Date) => {
         const dd = String(d.getDate()).padStart(2, '0');
@@ -3547,7 +2144,7 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
             NumeroPedCliente: "REG-52",
             dists: [{ NomeDist: "Profarma", Status: 3, DesStatus: "3 - Pedido Finalizado", CodDist: 4 }],
             Itens: [
-              { CodProdutoDist: "900501", Ean: "7896422505987", Descricao: "PANTOPRAZOL SÓDICO SESQUI-HIDRATADO 40MG 28CP AD", Laboratorio: "MEDLEY", Quant: 10, QuantFaturada: 10, Preco: 22.50, Desconto: 10.00, ST: 0.80, PrecoLiquido: 20.25, NomeDist: "Profarma", CodDist: 4, Condicao: "FIXA", DifMedio: 0.00, Motivo: "" }
+              { CodProdutoDist: "900501", Ean: "7896422505987", Descricao: "PANTOPRAZOL SÃ“DICO SESQUI-HIDRATADO 40MG 28CP AD", Laboratorio: "MEDLEY", Quant: 10, QuantFaturada: 10, Preco: 22.50, Desconto: 10.00, ST: 0.80, PrecoLiquido: 20.25, NomeDist: "Profarma", CodDist: 4, Condicao: "FIXA", DifMedio: 0.00, Motivo: "" }
             ]
           };
         } else if (numP === 51) {
@@ -3637,7 +2234,7 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
     res.json({ pedidos: relatorioFinal, logs });
   } catch (err: any) {
     console.error("Erro em pedidos-do-dia:", err);
-    logs.push(`[ERRO CRÍTICO] Falha no monitoramento: ${err.message}`);
+    logs.push(`[ERRO CRÃTICO] Falha no monitoramento: ${err.message}`);
     res.status(500).json({ error: "Erro interno: " + err.message, logs });
   }
 });
@@ -3671,7 +2268,7 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
 
     if (!isSandboxToken) {
       // Passo 1: Listar pedidos do dia
-      logs.push(`[ITENS CONFIRMADOS] Buscando pedidos de ${finalDataIni} até ${finalDataFim}...`);
+      logs.push(`[ITENS CONFIRMADOS] Buscando pedidos de ${finalDataIni} atÃ© ${finalDataFim}...`);
       const resListar = await fetch(`${baseUrl}/api/Pedido/Listar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3680,7 +2277,7 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
       const dataListar = await resListar.json();
       const pedidos = dataListar.Retorno || [];
       
-      // Desduplicar pedidos para evitar duplicar itens se a API retornar múltiplas linhas do mesmo pedido
+      // Desduplicar pedidos para evitar duplicar itens se a API retornar mÃºltiplas linhas do mesmo pedido
       const seenPedidos = new Set<string>();
       const uniquePedidos: any[] = [];
       for (const ped of pedidos) {
@@ -3735,7 +2332,7 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
         }
       }
     } else {
-      logs.push(`[MOCK] Modo Simulação (Token de testes). Gerando itens confirmados fictícios para os pedidos do dia.`);
+      logs.push(`[MOCK] Modo SimulaÃ§Ã£o (Token de testes). Gerando itens confirmados fictÃ­cios para os pedidos do dia.`);
       itensConfirmados = [
         {
           ean: "7896004715438",
@@ -3866,7 +2463,7 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
       ];
     }
     
-    // Passo 4: Tradução EAN (Descrição)
+    // Passo 4: TraduÃ§Ã£o EAN (DescriÃ§Ã£o)
     const eans = [...new Set(itensConfirmados.map(it => it.ean))].filter(Boolean);
     const descricoes = await fetchEanDescriptions(baseUrl, actualToken, apiCnpj, eans, logs);
     
@@ -3909,7 +2506,7 @@ app.post("/api/pedido-retorno", async (req, res) => {
     } = req.body;
 
     if (!numPedido) {
-      return res.status(400).json({ error: "Número do pedido é obrigatório." });
+      return res.status(400).json({ error: "NÃºmero do pedido Ã© obrigatÃ³rio." });
     }
 
     const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
@@ -3930,7 +2527,7 @@ app.post("/api/pedido-retorno", async (req, res) => {
     let fallbackToSimulated = false;
 
     if (!isSandboxToken) {
-      logs.push(`[API CONEXÃO] Chamando endpoint real: ${endpointRetorno}...`);
+      logs.push(`[API CONEXÃƒO] Chamando endpoint real: ${endpointRetorno}...`);
       try {
         const resRetorno = await fetch(endpointRetorno, {
           method: "POST",
@@ -3954,28 +2551,28 @@ app.post("/api/pedido-retorno", async (req, res) => {
           apiResponseData = await resRetorno.json();
           logs.push(`[API SUCESSO] Dados retornados com sucesso pela SmartPed.`);
         } else {
-          logs.push(`[API CONEXÃO ALERTA] Retorno real indisponível. Ativando simulação inteligente para CNPJ real.`);
+          logs.push(`[API CONEXÃƒO ALERTA] Retorno real indisponÃ­vel. Ativando simulaÃ§Ã£o inteligente para CNPJ real.`);
           fallbackToSimulated = true;
         }
       } catch (e: any) {
-        logs.push(`[API CONEXÃO ERRO] Erro ao consultar retorno: ${e.message}. Ativando simulação.`);
+        logs.push(`[API CONEXÃƒO ERRO] Erro ao consultar retorno: ${e.message}. Ativando simulaÃ§Ã£o.`);
         fallbackToSimulated = true;
       }
     } else {
-      logs.push(`[MOCK] Token de homologação detectado. Utilizando simulação controlada.`);
+      logs.push(`[MOCK] Token de homologaÃ§Ã£o detectado. Utilizando simulaÃ§Ã£o controlada.`);
       fallbackToSimulated = true;
     }
 
-    // Se estivermos em simulação ou o serviço real falhar, criamos um retorno simulado super realístico!
+    // Se estivermos em simulaÃ§Ã£o ou o serviÃ§o real falhar, criamos um retorno simulado super realÃ­stico!
     if (fallbackToSimulated || !apiResponseData) {
-      // Se não houver itemsFaturados, criamos itens fictícios padrão para que a consulta direta funcione
+      // Se nÃ£o houver itemsFaturados, criamos itens fictÃ­cios padrÃ£o para que a consulta direta funcione
       const finalItemsFaturados = (itemsFaturados && itemsFaturados.length > 0) ? itemsFaturados : [
         { ean: "7894916145008", descricao: "GL CLOPIDOGREL 75MG 28CP REV", preco: 19.91, qtd: 3, distribuidora: "GAM", codDist: 60, condicao: "FIXA" },
         { ean: "7896004746937", descricao: "EZETIMIBA 10MG 30CPR BGN", preco: 13.50, qtd: 5, distribuidora: "DrogaCenter", codDist: 9, condicao: "FIXA" },
         { ean: "7891317024994", descricao: "BUPROPIONA 150MG C/30 BGN", preco: 19.50, qtd: 2, distribuidora: "PanPharma", codDist: 2, condicao: "FIXA" }
       ];
 
-      // Agrupar as distribuidoras presentes nos itens faturados com seus respectivos códigos
+      // Agrupar as distribuidoras presentes nos itens faturados com seus respectivos cÃ³digos
       const distsMap: Record<string, number> = {};
       finalItemsFaturados.forEach((it: any) => {
         const dName = it.distribuidora || "Distribuidor";
@@ -3983,17 +2580,17 @@ app.post("/api/pedido-retorno", async (req, res) => {
         distsMap[dName] = dCod;
       });
       
-      // Decidimos o Status do pedido com base no número de consultas (para simular de fato a espera de processamento real!)
+      // Decidimos o Status do pedido com base no nÃºmero de consultas (para simular de fato a espera de processamento real!)
       // Primeira consulta: Status 2 (Aguardando Retorno)
       // Segunda consulta ou superior: Status 3 (Finalizado)
-      // Se for homologação sandbox clássica, mantemos 0 ou 3 a depender do desejo de testar.
-      // Vamos simular a transição real! Se checkCount === 1, retornamos status 2 para manter realístico!
+      // Se for homologaÃ§Ã£o sandbox clÃ¡ssica, mantemos 0 ou 3 a depender do desejo de testar.
+      // Vamos simular a transiÃ§Ã£o real! Se checkCount === 1, retornamos status 2 para manter realÃ­stico!
       const simulatedStatus = checkCount === 1 ? 2 : 3;
       const descStatus = simulatedStatus === 2 
         ? "2 - Pedido Enviado Aguardando Retorno" 
         : "3 - Pedido Finalizado";
 
-      logs.push(`[SIMULADOR] Simulação de retorno da API. Consulta #${checkCount} | Status Definido: ${descStatus}`);
+      logs.push(`[SIMULADOR] SimulaÃ§Ã£o de retorno da API. Consulta #${checkCount} | Status Definido: ${descStatus}`);
 
       const distsList = Object.entries(distsMap).map(([distName, distCod], dIdx) => ({
         NumPedidos: [String(numPedido + dIdx)],
@@ -4022,7 +2619,7 @@ app.post("/api/pedido-retorno", async (req, res) => {
             logs.push(`[FATURADO] Item EAN ${it.ean} - faturadas ${quantFaturada} de ${it.qtd} unidades.`);
           }
         } else {
-          // No status 2 (Aguardando), a quantidade faturada ainda é 0 em processamento
+          // No status 2 (Aguardando), a quantidade faturada ainda Ã© 0 em processamento
           quantFaturada = 0;
           motivo = "Aguardando faturamento final do distribuidor...";
         }
@@ -4056,7 +2653,7 @@ app.post("/api/pedido-retorno", async (req, res) => {
       };
     }
 
-    // Enriquecer as descrições dos itens se for ambiente real (não sandbox)
+    // Enriquecer as descriÃ§Ãµes dos itens se for ambiente real (nÃ£o sandbox)
     if (!isSandboxToken && apiResponseData) {
       const apiRet = apiResponseData.Retorno || apiResponseData.retorno || apiResponseData;
       const apiItens = apiRet.Itens || apiRet.itens || [];
@@ -4067,7 +2664,7 @@ app.post("/api/pedido-retorno", async (req, res) => {
           if (eanVal) eansToEnrich.push(String(eanVal).trim());
         }
         if (eansToEnrich.length > 0) {
-          logs.push(`[ENRIQUECIMENTO] Buscando descrições para os ${eansToEnrich.length} itens do retorno...`);
+          logs.push(`[ENRIQUECIMENTO] Buscando descriÃ§Ãµes para os ${eansToEnrich.length} itens do retorno...`);
           try {
             const descMap = await fetchEanDescriptions(baseUrl, actualToken, apiCnpj, eansToEnrich, logs);
             let enrichedCount = 0;
@@ -4081,9 +2678,9 @@ app.post("/api/pedido-retorno", async (req, res) => {
                 enrichedCount++;
               }
             }
-            logs.push(`[ENRIQUECIMENTO SUCESSO] ${enrichedCount} itens enriquecidos com descrição e laboratório.`);
+            logs.push(`[ENRIQUECIMENTO SUCESSO] ${enrichedCount} itens enriquecidos com descriÃ§Ã£o e laboratÃ³rio.`);
           } catch (enrichErr: any) {
-            logs.push(`[ENRIQUECIMENTO ERRO] Falha no enriquecimento de descrições: ${enrichErr.message}`);
+            logs.push(`[ENRIQUECIMENTO ERRO] Falha no enriquecimento de descriÃ§Ãµes: ${enrichErr.message}`);
           }
         }
       }
@@ -4108,7 +2705,7 @@ app.post("/api/distribuidores", async (req, res) => {
     const { token, cnpj, useTestUrl = true, customTestUrl, customProductionUrl, customEndpoint } = req.body;
     
     if (!token || !cnpj) {
-      return res.status(400).json({ error: "Token e CNPJ são obrigatórios." });
+      return res.status(400).json({ error: "Token e CNPJ sÃ£o obrigatÃ³rios." });
     }
 
     let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
@@ -4187,7 +2784,7 @@ app.post("/api/search-products", async (req, res) => {
         // Busca paralela no endpoint de Ean e de Molecula da SmartPed para trazer tanto o produto exato quanto todos os substitutos
         const endpointEan = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`;
         const endpointMolecula = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Molecula`;
-        log(`[API CONEXÃO] Query numérica detectada (EAN). Chamando Condicoes/Ean ${onlyExactEan ? "" : "e Condicoes/Molecula em paralelo"}.`);
+        log(`[API CONEXÃƒO] Query numÃ©rica detectada (EAN). Chamando Condicoes/Ean ${onlyExactEan ? "" : "e Condicoes/Molecula em paralelo"}.`);
         
         try {
           const pEan = fetch(endpointEan, {
@@ -4223,7 +2820,7 @@ app.post("/api/search-products", async (req, res) => {
           });
 
           const [resEan, resMolecula] = await Promise.all([pEan, pMolecula]);
-          log(`[API CONEXÃO] Chamadas concluídas. Status Ean: ${resEan.status} | Status Molecula: ${resMolecula ? resMolecula.status : "ignorado (EAN Exato)"}`);
+          log(`[API CONEXÃƒO] Chamadas concluÃ­das. Status Ean: ${resEan.status} | Status Molecula: ${resMolecula ? resMolecula.status : "ignorado (EAN Exato)"}`);
 
           let distsMap: Record<number, string> = {};
           let minimosFromApi: any[] = [];
@@ -4257,7 +2854,7 @@ app.post("/api/search-products", async (req, res) => {
                 const desc = entry.Descricao || entry.descricao || `PRODUTO EAN ${searchQuery}`;
                 const lab = entry.Laboratorio || entry.laboratorio || "N/A";
                 
-                log(`[API CONEXÃO SUCESSO] SmartPed Condicoes/Ean retornou ${condicoes.length} ofertas para o EAN ${searchQuery}.`);
+                log(`[API CONEXÃƒO SUCESSO] SmartPed Condicoes/Ean retornou ${condicoes.length} ofertas para o EAN ${searchQuery}.`);
                 
                 for (const cond of condicoes) {
                   const codDist = cond.CodDist !== undefined ? cond.CodDist : cond.codDist;
@@ -4333,7 +2930,7 @@ app.post("/api/search-products", async (req, res) => {
             }
           }
 
-          // 2. Processa retorno de Condicoes/Molecula (substitutos, genéricos, similares)
+          // 2. Processa retorno de Condicoes/Molecula (substitutos, genÃ©ricos, similares)
           if (resMolecula && resMolecula.ok) {
             const resDataMolecula = await resMolecula.json();
             const retornoMolecula = resDataMolecula.Retorno || resDataMolecula.retorno;
@@ -4349,7 +2946,7 @@ app.post("/api/search-products", async (req, res) => {
             }
 
             if (itensMolecula.length > 0) {
-              log(`[API CONEXÃO SUCESSO] SmartPed Condicoes/Molecula retornou ${itensMolecula.length} moléculas.`);
+              log(`[API CONEXÃƒO SUCESSO] SmartPed Condicoes/Molecula retornou ${itensMolecula.length} molÃ©culas.`);
               for (const entry of itensMolecula) {
                 const subsRaw = entry.Substitutos || entry.substitutos || [];
                 const substitutos: any[] = [];
@@ -4372,7 +2969,7 @@ app.post("/api/search-products", async (req, res) => {
                 const origDesc = itemPedido.Descricao || itemPedido.descricao || "";
                 const origLab = itemPedido.Laboratorio || itemPedido.laboratorio || "";
                 
-                log(`[API INFO] Molécula do EAN ${searchQuery} retornou ${substitutos.length} substitutos.`);
+                log(`[API INFO] MolÃ©cula do EAN ${searchQuery} retornou ${substitutos.length} substitutos.`);
 
                 for (const sub of substitutos) {
                   const codDist = sub.CodDist !== undefined ? sub.CodDist : sub.codDist;
@@ -4454,7 +3051,7 @@ app.post("/api/search-products", async (req, res) => {
             }
           }
 
-          // Remover duplicatas de foundItems para garantir ofertas únicas e limpas
+          // Remover duplicatas de foundItems para garantir ofertas Ãºnicas e limpas
           const uniqueFoundMap = new Map<string, any>();
           for (const item of foundItems) {
             const key = `${cleanEan(item.Ean || item.ean)}_${item.CodDist}_${item.Condicao}_${parseFloat(item.Pliquido || item.pliquido || 0).toFixed(4)}_${item.Prazo}`;
@@ -4471,12 +3068,12 @@ app.post("/api/search-products", async (req, res) => {
           foundItems = Array.from(uniqueFoundMap.values());
 
         } catch (e: any) {
-          log(`[API CONEXÃO ERRO] Erro na busca paralela de EAN/Molecula: ${e.message}.`);
+          log(`[API CONEXÃƒO ERRO] Erro na busca paralela de EAN/Molecula: ${e.message}.`);
         }
       } else {
-        // 1. Busca Cadastral: Chamar /api/Produtos/Buscar apenas para listar as opções e obter os EANs corretos
+        // 1. Busca Cadastral: Chamar /api/Produtos/Buscar apenas para listar as opÃ§Ãµes e obter os EANs corretos
         const endpointBusca = `${baseUrl.replace(/\/$/, "")}/api/Produtos/Buscar`;
-        log(`[API CONEXÃO] 1. Busca Cadastral em Produtos/Buscar para: "${searchQuery}"`);
+        log(`[API CONEXÃƒO] 1. Busca Cadastral em Produtos/Buscar para: "${searchQuery}"`);
 
         try {
           const resBusca = await fetch(endpointBusca, {
@@ -4502,16 +3099,16 @@ app.post("/api/search-products", async (req, res) => {
               log(`[DEBUG-BUSCAR] Retorno NAO e array: ${typeof produtosCadastrais}. Conteudo: ${JSON.stringify(produtosCadastrais).substring(0, 200)}`);
             }
             if (Array.isArray(produtosCadastrais) && produtosCadastrais.length > 0) {
-              log(`[API CONEXÃO SUCESSO] Busca Cadastral retornou ${produtosCadastrais.length} produtos.`);
+              log(`[API CONEXÃƒO SUCESSO] Busca Cadastral retornou ${produtosCadastrais.length} produtos.`);
 
-              // Extrair EANs únicos obtidos da busca cadastral
+              // Extrair EANs Ãºnicos obtidos da busca cadastral
               const eansUnicos = Array.from(new Set(
                 produtosCadastrais.map((p: any) => cleanEan(p.Ean || p.ean || p.CodBarra || p.codBarra)).filter(Boolean)
               ));
-              log(`[API CONEXÃO] EANs extraídos para cotação comercial (Bypass): ${eansUnicos.join(", ")}`);
+              log(`[API CONEXÃƒO] EANs extraÃ­dos para cotaÃ§Ã£o comercial (Bypass): ${eansUnicos.join(", ")}`);
 
               if (eansUnicos.length > 0) {
-                // 2. Cotação Comercial (Bypass): Fazer chamada automática aos endpoints /api/Condicoes/Ean E /api/Condicoes/Molecula usando esses EANs em paralelo
+                // 2. CotaÃ§Ã£o Comercial (Bypass): Fazer chamada automÃ¡tica aos endpoints /api/Condicoes/Ean E /api/Condicoes/Molecula usando esses EANs em paralelo
                 const endpointEan = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`;
                 const endpointMolecula = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Molecula`;
                 const cotacaoPromises = eansUnicos.map(async (eanTarget) => {
@@ -4801,13 +3398,13 @@ app.post("/api/search-products", async (req, res) => {
                 usedRealApi = true;
                 const totalQtdMinPositivo = foundItems.filter(i => (i.QtdMin || 0) > 0).length;
                 const eansComDados = new Set(foundItems.map(i => i.Ean)).size;
-                log(`[API CONEXÃO SUCESSO] Cotação Comercial (Bypass) retornou ${foundItems.length} ofertas de ${eansComDados} EANs.`);
+                log(`[API CONEXÃƒO SUCESSO] CotaÃ§Ã£o Comercial (Bypass) retornou ${foundItems.length} ofertas de ${eansComDados} EANs.`);
                 log(`[RESUMO FINAL] QtdMin>0: ${totalQtdMinPositivo} | QtdMin=0: ${foundItems.length - totalQtdMinPositivo} | Total: ${foundItems.length}`);
               }
             }
           }
         } catch (e: any) {
-          log(`[API CONEXÃO ERRO] Erro na busca por descrição: ${e.message}.`);
+          log(`[API CONEXÃƒO ERRO] Erro na busca por descriÃ§Ã£o: ${e.message}.`);
         }
       }
     }
@@ -4817,7 +3414,7 @@ app.post("/api/search-products", async (req, res) => {
       log("[BUSCA INFO] Nenhum dado retornado pela API real.");
     }
 
-    // Se onlyExactEan for true e for busca numérica, garantimos que apenas itens com o mesmo EAN sejam exibidos
+    // Se onlyExactEan for true e for busca numÃ©rica, garantimos que apenas itens com o mesmo EAN sejam exibidos
     if (onlyExactEan && isPureNumeric) {
       const cleanSearchQuery = cleanEan(searchQuery);
       foundItems = foundItems.filter(item => cleanEan(item.Ean || item.ean) === cleanSearchQuery);
@@ -4825,7 +3422,7 @@ app.post("/api/search-products", async (req, res) => {
     }
 
     // PROCESSAMENTO E REGRAS SOLICITADAS:
-    // 1. Filtrar de acordo com o parâmetro de estoque (permitirSemEstoque) e cortes recentes
+    // 1. Filtrar de acordo com o parÃ¢metro de estoque (permitirSemEstoque) e cortes recentes
     const filteredStockItems = foundItems.filter((it: any) => {
       const distName = (it.NomeDist || it.nomeDist || it.distribuidora || "").toUpperCase().trim();
       const distNameClean = normalizeDistName(distName);
@@ -4847,25 +3444,25 @@ app.post("/api/search-products", async (req, res) => {
       return stock > 0;
     });
 
-    log(`[FILTRO ESTOQUE] Total de ofertas encontradas: ${foundItems.length} | Passaram pelo filtro de estoque: ${filteredStockItems.length} (Permitir sem estoque: ${permitirSemEstoque ? 'Sim' : 'Não'})`);
+    log(`[FILTRO ESTOQUE] Total de ofertas encontradas: ${foundItems.length} | Passaram pelo filtro de estoque: ${filteredStockItems.length} (Permitir sem estoque: ${permitirSemEstoque ? 'Sim' : 'NÃ£o'})`);
 
-    // Mapear campos de forma resiliente e tratar tipo string/number para EAN e Preço
+    // Mapear campos de forma resiliente e tratar tipo string/number para EAN e PreÃ§o
     const mappedItems = filteredStockItems.map((it: any) => {
       const eanStr = String(it.Ean || it.ean || "");
       const precoUnit = getUnitCost(it);
       const desc = it.Descricao || it.descricao || "";
-      const lab = it.Laboratorio || it.laboratorio || "Laboratório";
+      const lab = it.Laboratorio || it.laboratorio || "LaboratÃ³rio";
       const tipo = it.TipoItem || it.tipoItem || "";
 
-      // Verificar se é Genérico
+      // Verificar se Ã© GenÃ©rico
       const descLower = desc.toLowerCase();
       const labLower = lab.toLowerCase();
       let isGeneric = false;
       if (tipo) {
         isGeneric = tipo.toUpperCase() === "G";
       } else {
-        isGeneric = descLower.includes(" gn ") || descLower.includes("generico") || descLower.includes("genérico") ||
-                    labLower.includes("generico") || labLower.includes("genérico");
+        isGeneric = descLower.includes(" gn ") || descLower.includes("generico") || descLower.includes("genÃ©rico") ||
+                    labLower.includes("generico") || labLower.includes("genÃ©rico");
         if (isGeneric && descLower.includes(" - ")) {
           isGeneric = false;
         }
@@ -4910,12 +3507,12 @@ app.post("/api/search-products", async (req, res) => {
       };
     });
 
-    // 2. Filtrar por tipos de substituição aceitos (G ou O)
+    // 2. Filtrar por tipos de substituiÃ§Ã£o aceitos (G ou O)
     const normalizedTipos = (tipos || ["G", "O"]).map((t: string) => t.trim().toUpperCase());
     const processedItems = mappedItems.filter((it: any) => {
       const isSearchQueryEan = isPureNumeric && cleanEan(it.ean) === cleanEan(searchQuery);
       if (isSearchQueryEan) {
-        // O EAN buscado originalmente é soberano e imune ao filtro de tipos
+        // O EAN buscado originalmente Ã© soberano e imune ao filtro de tipos
         return true;
       }
       const itemTipo = it.isGeneric ? "G" : "O";
@@ -4924,15 +3521,15 @@ app.post("/api/search-products", async (req, res) => {
 
     log(`[FILTRO TIPOS] Filtro de tipos aceitos: [${normalizedTipos.join(", ")}] | Itens correspondentes: ${processedItems.length}`);
 
-    // 3. Ordenar por preço líquido ascendente
+    // 3. Ordenar por preÃ§o lÃ­quido ascendente
     processedItems.sort((a, b) => a.precoLiquido - b.precoLiquido);
 
-    // 4. Indicar qual é o genérico mais barato
+    // 4. Indicar qual Ã© o genÃ©rico mais barato
     const genericItems = processedItems.filter(it => it.isGeneric);
     let cheapestGenericEan = "";
     if (genericItems.length > 0) {
       cheapestGenericEan = genericItems[0].ean;
-      log(`[DICA INTELIGENTE] O Genérico com estoque mais barato é: "${genericItems[0].descricao}" da distribuidora ${genericItems[0].distribuidora} custando R$ ${genericItems[0].precoLiquido.toFixed(2)}`);
+      log(`[DICA INTELIGENTE] O GenÃ©rico com estoque mais barato Ã©: "${genericItems[0].descricao}" da distribuidora ${genericItems[0].distribuidora} custando R$ ${genericItems[0].precoLiquido.toFixed(2)}`);
     }
 
     // Adicionar as flags isCheapest e isCheapestGeneric
@@ -4952,229 +3549,7 @@ app.post("/api/search-products", async (req, res) => {
     res.status(500).json({ error: "Erro interno ao buscar produtos: " + err.message });
   }
 });
-
-// Função utilitária para limpar descrição tirando dosagens, apresentações e termos industriais
-function cleanDescription(desc: string): string {
-  if (!desc) return "";
-  let d = desc.toUpperCase();
-
-  // 1. Remover dosagens complexas (ex: 50MG+1000MG, 10MG/ML, 200MG/ML, 6MMX0,25MM, 0,25MG, 0.9%)
-  // Tratando números com vírgula ou ponto, seguidos de unidades (MG, ML, G, UI, %, MM, MCG) e possíveis multiplicadores (+, X, /)
-  d = d.replace(/\b\d+([.,]\d+)?\s*(MG|ML|G|UI|%|MM|MCG|UN)?\s*[\/X+]\s*\d+([.,]\d+)?\s*(MG|ML|G|UI|%|MM|MCG|UN)?\b/gi, " ");
-  d = d.replace(/\b\d+([.,]\d+)?\s*(MG|ML|G|UI|%|MM|MCG|UN)\b/gi, " ");
-
-  // 2. Remover quantidades de comprimidos ou cápsulas ou unidades (ex: 30CP, 60CAPS, 2CP, 28CP, 10UN, 6UN, 60CP)
-  d = d.replace(/\b\d+\s*(CP|CAPS|COMP|UN|FR|TB|SACH|BG|GTS|SACHES|AMP)\b/gi, " ");
-
-  // 3. Remover termos de apresentação no final do nome do medicamento (ex: SUBL, REV, L.P, L.R, SOL TOP, GTS, INJ, BL, C/, C/6, LP, LR, REV, LP)
-  d = d.replace(/\bC\/\s*\d+\b/gi, " "); // remove "C/6", "C/30", etc.
-  d = d.replace(/\b(SUBL|REV|L\.P|L\.R|SOL\s+TOP|SOL|TOP|AD|PED|GTS|INJ|LP|LR|REV|AER|AEROSOL|EMULSAO|SUSP|GTS|AMP|BL)\b/gi, " ");
-
-  // 4. Limpar espaços extras e hífens sobrando no final
-  d = d.trim().replace(/\s+/g, " ");
-  d = d.replace(/[-\s+]+$/, "").trim();
-
-  return d;
-}
-
-// Função utilitária adicional para extrair a molécula base do medicamento (composto ativo primário)
-function getMoleculeBase(desc: string): string {
-  if (!desc) return "";
-  let d = desc.toUpperCase();
-
-  // 1. Remover dosagens complexas (ex: 50MG+1000MG, 10MG/ML, 200MG/ML, 6MMX0,25MM, 0,25MG, 0.9%)
-  d = d.replace(/\b\d+([.,]\d+)?\s*(MG|ML|G|UI|%|MM|MCG|UN)?\s*[\/X+]\s*\d+([.,]\d+)?\s*(MG|ML|G|UI|%|MM|MCG|UN)?\b/gi, " ");
-  d = d.replace(/\b\d+([.,]\d+)?\s*(MG|ML|G|UI|%|MM|MCG|UN)\b/gi, " ");
-
-  // 2. Remover quantidades de comprimidos ou cápsulas ou unidades (ex: 30CP, 60CAPS, 2CP, 28CP, 10UN, 6UN, 60CP)
-  d = d.replace(/\b\d+\s*(CP|CAPS|COMP|UN|FR|TB|SACH|BG|GTS|SACHES|AMP)\b/gi, " ");
-
-  // 3. Remover termos de apresentação no final do nome do medicamento (ex: SUBL, REV, L.P, L.R, SOL TOP, GTS, INJ, BL, C/, C/6, LP, LR, REV, LP)
-  d = d.replace(/\bC\/\s*\d+\b/gi, " "); // remove "C/6", "C/30", etc.
-  d = d.replace(/\b(SUBL|REV|L\.P|L\.R|SOL\s+TOP|SOL|TOP|AD|PED|GTS|INJ|LP|LR|REV|AER|AEROSOL|EMULSAO|SUSP|GTS|AMP|BL)\b/gi, " ");
-
-  // 4. Filtrar termos de laboratório e marcas conhecidas
-  const words = d.trim().split(/\s+/).filter(w => {
-    const ignore = [
-      "GEN", "GENERICO", "GENÉRICO", "MEDLEY", "EMS", "EUROFARMA", "NEO", "QUIMICA", "QUÍMICA", 
-      "TEUTO", "PRATI", "GERMED", "SANDOZ", "GEOLAB", "BIOSINTETICA", "BIOSINTÉTICA", "GLOBO",
-      "BIOLAB", "ACHE", "ACHÉ", "LEGRAND", "SANOFI", "AVENTIS", "ZYDUS", "ALCON", "CIMED", "UNIPHAR",
-      "BD", "ULTRA", "FINE", "RISQUE", "RISQUÉ", "COTY", "VITAMEDIC", "BEIERSDORF", "NIVEA", "NÍVEA",
-      "UNILEVER", "DOVE", "CIFARMA", "JANSSEN", "CILAG", "MERCK", "SHARP", "DOHME", "MSD", "BASTON",
-      "ABOVE", "CLINICAL", "DERMACLIN", "GARDENIA", "AMENDOAS", "BOTANICALS"
-    ];
-    return !ignore.includes(w);
-  });
-
-  if (words.length === 0) return "";
-
-  const PALAVRAS_GENERICAS_TRUNCAMENTO = new Set([
-    "KIT", "SAB", "SABONETE", "BOLA", "BALA", "BRINQUEDO", "DIVERSOS", "POTE", "PÇS", "PCS", "PEÇAS",
-    "PECAS", "MINI", "GRANDE", "PEQUENO", "ESTOJO", "PORTA", "SUPORTE", "CABO", "FITA", "COLA", "BASE",
-    "MASCARA", "MÁSCARA", "SOMBRA", "PIRANHA", "CREME", "LOÇÃO", "LOCAO", "SHAMPOO", "CONDICIONADOR",
-    "AEROSOL", "SPRAY", "DESODORANTE", "DESOD", "PERFUME", "COLONIA", "COLÔNIA", "BODY", "SPLASH",
-    "POMADA", "TALCO", "ALGODAO", "ALGODÃO", "CURATIVO", "BANDAGEM", "ESCOVA", "PENTE", "LIXA",
-    "PINCA", "PINÇA", "TESOURA", "CURVADOR", "CARRINHO", "CARRO", "ANIMAIS", "BONECA", "CHUPETA",
-    "MAMADEIRA", "DOSADOR", "PRENDEDOR", "ELASTICO", "ELÁSTICO", "PRESILHA", "GRAMPO", "INF", "INFANTIL",
-    "GK1356", "GK1592", "REF", "COD", "CHA", "CHÁ", "OLEO", "ÓLEO", "AGUA", "ÁGUA", "GEL", "PASTA",
-    "BARRA", "BALSAMO", "BÁLSAMO", "FLUIDO", "FLÚIDO"
-  ]);
-
-  // Se a primeira palavra for considerada genérica/conveniência, não devemos truncar como molécula de medicamento.
-  // Em vez disso, tentamos pegar as palavras específicas não genéricas que dão a especificidade ao produto.
-  if (PALAVRAS_GENERICAS_TRUNCAMENTO.has(words[0])) {
-    const especificas = words.filter(w => !PALAVRAS_GENERICAS_TRUNCAMENTO.has(w));
-    if (especificas.length > 0) {
-      return especificas.slice(0, 3).join(" ");
-    }
-    // Se não sobrar nada, retorna as 3 primeiras palavras do nome completo
-    return words.slice(0, 3).join(" ");
-  }
-
-  // Começar com a primeira palavra
-  let base = words[0];
-  
-  // Se a segunda palavra existir, verificar se é uma palavra complementar
-  if (words.length > 1) {
-    const w1 = words[1];
-    // Se for um conector ("DE", "DO", "DA", "DI", "C/"), ou termo de sal farmacêutico comum
-    if (["DE", "DO", "DA", "DI", "C/", "SÓDICO", "SODICO", "SÓDICA", "SODICA", "POTASSICO", "POTÁSSICO", "OLAMINA", "MONOIDRATADO", "FISIOLOGICO", "FISIOLÓGICO", "SULFATO", "CLORIDRATO", "MALEATO", "BROMIDRATO", "DIPROPIONATO", "FOSFATO", "MESILATO", "TARTARATO", "HEMITARTARATO"].includes(w1)) {
-      base += " " + w1;
-      if (words.length > 2) {
-        base += " " + words[2];
-      }
-    } else if (["SORO", "CLORIDRATO", "PANTOPRAZOL", "CICLOPIROX", "ACIDO", "ÁCIDO", "LAVITAN"].includes(words[0])) {
-      // Forçar 2 palavras para esses inícios conhecidos
-      base += " " + w1;
-    }
-  }
-
-  return base.trim();
-}
-
-// Função utilitária para limpar a descrição preservando a dosagem (ex: "750MG", "100MG") mas removendo quantidades físicas e laboratórios
-function cleanDescriptionKeepDosage(desc: string): string {
-  if (!desc) return "";
-  let d = desc.toUpperCase();
-
-  // 1. Remover apenas quantidades físicas de comprimidos, cápsulas, etc. (ex: 30CP, 60CAPS, 2CP, 28CP, 10UN, 6UN, 60CP, etc.)
-  d = d.replace(/\b\d+\s*(CP|CAPS|COMP|UN|FR|TB|SACH|BG|GTS|SACHES|AMP)\b/gi, " ");
-
-  // 2. Remover termos de apresentação finais e conectores de quantidade (ex: C/30, C/6)
-  d = d.replace(/\bC\/\s*\d+\b/gi, " ");
-  d = d.replace(/\b(SUBL|REV|L\.P|L\.R|SOL\s+TOP|SOL|TOP|AD|PED|GTS|INJ|LP|LR|REV|AER|AEROSOL|EMULSAO|SUSP|GTS|AMP|BL)\b/gi, " ");
-
-  // 3. Filtrar termos de laboratório e marcas conhecidas
-  const words = d.trim().split(/\s+/).filter(w => {
-    const ignore = [
-      "GEN", "GENERICO", "GENÉRICO", "MEDLEY", "EMS", "EUROFARMA", "NEO", "QUIMICA", "QUÍMICA", 
-      "TEUTO", "PRATI", "GERMED", "SANDOZ", "GEOLAB", "BIOSINTETICA", "BIOSINTÉTICA", "GLOBO",
-      "BIOLAB", "ACHE", "ACHÉ", "LEGRAND", "SANOFI", "AVENTIS", "ZYDUS", "ALCON", "CIMED", "UNIPHAR",
-      "BD", "ULTRA", "FINE", "RISQUE", "RISQUÉ", "COTY", "VITAMEDIC", "BEIERSDORF", "NIVEA", "NÍVEA",
-      "UNILEVER", "DOVE", "CIFARMA", "JANSSEN", "CILAG", "MERCK", "SHARP", "DOHME", "MSD", "BASTON",
-      "ABOVE", "CLINICAL", "DERMACLIN", "GARDENIA", "AMENDOAS", "BOTANICALS"
-    ];
-    return !ignore.includes(w);
-  });
-
-  return words.join(" ").trim();
-}
-
-// Função utilitária para gerar buscas dinâmicas com curinga (%) para contornar variações de grafia e dosagem nos cadastros das distribuidoras
-function getWildcardQueries(desc: string): string[] {
-  if (!desc) return [];
-  const upper = desc.toUpperCase();
-
-  const ignoreList = [
-    "GEN", "GENERICO", "GENÉRICO", "MEDLEY", "EMS", "EUROFARMA", "NEO", "QUIMICA", "QUÍMICA", 
-    "TEUTO", "PRATI", "GERMED", "SANDOZ", "GEOLAB", "BIOSINTETICA", "BIOSINTÉTICA", "GLOBO",
-    "BIOLAB", "ACHE", "ACHÉ", "LEGRAND", "SANOFI", "AVENTIS", "ZYDUS", "ALCON", "CIMED", "UNIPHAR",
-    "BD", "ULTRA", "FINE", "RISQUE", "RISQUÉ", "COTY", "VITAMEDIC", "BEIERSDORF", "NIVEA", "NÍVEA",
-    "UNILEVER", "DOVE", "CIFARMA", "JANSSEN", "CILAG", "MERCK", "SHARP", "DOHME", "MSD", "BASTON",
-    "ABOVE", "CLINICAL", "DERMACLIN", "GARDENIA", "AMENDOAS", "BOTANICALS"
-  ];
-
-  const presentationWords = [
-    "CP", "CPS", "COMP", "COMPRIMIDOS", "CAPS", "CAPSULAS", "CAP", "CX", "CAIXA", "AMP", "AMPOLA", 
-    "FR", "FRASCO", "UN", "UNIDADE", "BL", "BLISTER", "C/", "COM", "CART", "CARTELA", "FLAC", "FLACONETE",
-    "CO", "PCT", "PACOTE", "SACHE", "SACHET", "ENV", "ENVELOPE", "GOTAS", "GTS", "SER", "SERINGA",
-    "LATA", "POT", "POTE", "BISN", "BISNAGA", "S/A", "LT", "KG", "GRS",
-    "KIT", "SAB", "SABONETE", "BOLA", "BALA", "BRINQUEDO", "DIVERSOS", "POTE", "PÇS", "PCS", "PEÇAS",
-    "PECAS", "MINI", "GRANDE", "PEQUENO", "ESTOJO", "PORTA", "SUPORTE", "CABO", "FITA", "COLA", "BASE",
-    "MASCARA", "MÁSCARA", "SOMBRA", "PIRANHA", "CREME", "LOÇÃO", "LOCAO", "SHAMPOO", "CONDICIONADOR",
-    "AEROSOL", "SPRAY", "DESODORANTE", "DESOD", "PERFUME", "COLONIA", "COLÔNIA", "BODY", "SPLASH",
-    "POMADA", "TALCO", "ALGODAO", "ALGODÃO", "CURATIVO", "BANDAGEM", "ESCOVA", "PENTE", "LIXA",
-    "PINCA", "PINÇA", "TESOURA", "CURVADOR", "CARRINHO", "CARRO", "ANIMAIS", "BONECA", "CHUPETA",
-    "MAMADEIRA", "DOSADOR", "PRENDEDOR", "ELASTICO", "ELÁSTICO", "PRESILHA", "GRAMPO", "INF", "INFANTIL",
-    "GK1356", "GK1592", "REF", "COD"
-  ];
-
-  const queries: string[] = [];
-
-  // Normalizar caracteres não alfanuméricos para espaço
-  const normalized = upper.replace(/[^A-Z0-9]/g, " ");
-  const rawWords = normalized.split(/\s+/).filter(w => w.length > 0);
-
-  const cleanWords: string[] = [];
-  for (const w of rawWords) {
-    if (ignoreList.includes(w) || presentationWords.includes(w)) {
-      continue;
-    }
-    // Limpar sufixo de apresentação colado ao número (ex: 30CP -> 30, 30COMP -> 30)
-    const cleaned = w.replace(/^(\d+)(CP|CPS|COMP|COMPRIMIDOS|CAPS|CAPSULAS|CAP|CX|CAIXA|AMP|AMPOLA|FR|FRASCO|UN|UNIDADE|BL|BLISTER|CO|FLAC|FLACONETE|CART|CARTELA|PCT|PACOTE|SACHE|SACHET|ENV|ENVELOPE|GOTAS|GTS|SER|SERINGA|LATA|POT|POTE|BISN|BISNAGA|KG|GRS)$/i, "$1");
-    
-    if (cleaned && cleaned.length > 0 && !ignoreList.includes(cleaned) && !presentationWords.includes(cleaned)) {
-      cleanWords.push(cleaned);
-    }
-  }
-
-  if (cleanWords.length === 0) return [];
-
-  // 1. Queries Progressivas Curtas (ex: COLA%CILIOS, COLA%CILIOS%I)
-  if (cleanWords.length >= 2) {
-    queries.push(`${cleanWords[0]}%${cleanWords[1]}`);
-  }
-  if (cleanWords.length >= 3) {
-    queries.push(`${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}`);
-  }
-  if (cleanWords.length >= 4) {
-    queries.push(`${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}%${cleanWords[3]}`);
-  }
-  if (cleanWords.length >= 5) {
-    queries.push(`${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}%${cleanWords[3]}%${cleanWords[4]}`);
-  }
-
-  // 2. Combinando primeiro ingrediente/termo ativo com números/dosagens subsequentes
-  const baseActive = cleanWords[0];
-  const numberOrDosageWords = cleanWords.slice(1).filter(w => /\d+/.test(w));
-  
-  if (baseActive && baseActive.length > 2) {
-    if (numberOrDosageWords.length > 0) {
-      // Ex: PARACETAMOL%750%20
-      queries.push(`${baseActive}%${numberOrDosageWords.join("%")}`);
-      
-      // Ex: PARACETAMOL%750 (removendo o último número/apresentação se houver mais de um)
-      if (numberOrDosageWords.length >= 2) {
-        queries.push(`${baseActive}%${numberOrDosageWords.slice(0, numberOrDosageWords.length - 1).join("%")}`);
-      }
-      queries.push(`${baseActive}%${numberOrDosageWords[0]}`);
-    } else {
-      queries.push(`${baseActive}%`);
-    }
-  }
-
-  // 3. Descrição inteira limpa unida por %
-  if (cleanWords.length >= 2) {
-    queries.push(cleanWords.join("%"));
-  }
-
-  // Filtrar nulos, duplicados e queries muito curtas
-  return Array.from(new Set(queries))
-    .map(q => q.trim())
-    .filter(q => q.length > 2 && q.includes("%"));
-}
-
-// Endpoint para buscar alternativas de verdade na SmartPed em tempo real para itens "Sem Estoque" ou "Não Encontrados"
+// Endpoint para buscar alternativas de verdade na SmartPed em tempo real para itens "Sem Estoque" ou "NÃ£o Encontrados"
 app.post("/api/smartped-find-substitutes", async (req, res) => {
   const { ean, descricao, token, cnpj, useTestUrl = true, cortesRecentes = {} } = req.body;
   const logs: string[] = [];
@@ -5190,14 +3565,14 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
     
     // Passo A: Descobrir o DCB se temos o EAN
     if (ean && String(ean).trim().length > 0) {
-      log(`[DESCOBERTA DCB] Buscando informações de DCB/composição para o EAN ${ean}...`);
+      log(`[DESCOBERTA DCB] Buscando informaÃ§Ãµes de DCB/composiÃ§Ã£o para o EAN ${ean}...`);
       try {
         const dcbRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${ean}`);
         if (dcbRes.ok) {
           const dcbData = await dcbRes.json();
           const pList = dcbData.produtos || dcbData.items || [];
           if (pList.length > 0) {
-            // Pegar o primeiro produto que tenha um cod_dcb ou princípio ativo
+            // Pegar o primeiro produto que tenha um cod_dcb ou princÃ­pio ativo
             const pWithDcb = pList.find((p: any) => p.cod_dcb && String(p.cod_dcb).trim().length > 0);
             if (pWithDcb) {
               dcbDescoberto = String(pWithDcb.cod_dcb).trim();
@@ -5205,7 +3580,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
             } else {
               const firstP = pList[0];
               if (firstP.nom_produto) {
-                log(`[DESCOBERTA DCB] Nenhum código DCB explícito. Usando nome do produto como referência: "${firstP.nom_produto}"`);
+                log(`[DESCOBERTA DCB] Nenhum cÃ³digo DCB explÃ­cito. Usando nome do produto como referÃªncia: "${firstP.nom_produto}"`);
               }
             }
           }
@@ -5215,19 +3590,19 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       }
     }
 
-    // Heurística robusta de limpeza de descrição usando Regex
+    // HeurÃ­stica robusta de limpeza de descriÃ§Ã£o usando Regex
     const descricaoLimpa = cleanDescription(descricao);
     const baseMolecula = getMoleculeBase(descricao);
-    log(`[DESCOBERTA DESCRIÇÃO] Descrição original: "${descricao}" -> Limpa por Regex: "${descricaoLimpa}"`);
-    log(`[DESCOBERTA DESCRIÇÃO] Base molécula extraída: "${baseMolecula}"`);
+    log(`[DESCOBERTA DESCRIÃ‡ÃƒO] DescriÃ§Ã£o original: "${descricao}" -> Limpa por Regex: "${descricaoLimpa}"`);
+    log(`[DESCOBERTA DESCRIÃ‡ÃƒO] Base molÃ©cula extraÃ­da: "${baseMolecula}"`);
 
-    // Se não achou por EAN, usar a molécula base como referência principal
+    // Se nÃ£o achou por EAN, usar a molÃ©cula base como referÃªncia principal
     if (!dcbDescoberto && baseMolecula) {
       dcbDescoberto = baseMolecula;
-      log(`[DESCOBERTA DCB] Usando base de molécula limpa como molécula/DCB primário: "${dcbDescoberto}"`);
+      log(`[DESCOBERTA DCB] Usando base de molÃ©cula limpa como molÃ©cula/DCB primÃ¡rio: "${dcbDescoberto}"`);
     } else if (!dcbDescoberto && descricaoLimpa) {
       dcbDescoberto = descricaoLimpa;
-      log(`[DESCOBERTA DCB] Usando descrição limpa como molécula/DCB primário: "${dcbDescoberto}"`);
+      log(`[DESCOBERTA DCB] Usando descriÃ§Ã£o limpa como molÃ©cula/DCB primÃ¡rio: "${dcbDescoberto}"`);
     }
 
     // Passo B: Fazer chamadas em paralelo para a SmartPed
@@ -5256,7 +3631,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
 
     // 2. Busca por Condicoes/Molecula por EAN
     if (ean) {
-      log(`[SMARTPED CONSULTA] Agendando busca por Molécula do EAN em Condicoes/Molecula...`);
+      log(`[SMARTPED CONSULTA] Agendando busca por MolÃ©cula do EAN em Condicoes/Molecula...`);
       apiPromises.push(
         fetch(`${baseUrl}/api/Condicoes/Molecula`, {
           method: "POST",
@@ -5272,13 +3647,13 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
     }
 
     const PALAVRAS_GENERICAS_BLOQUEIO = new Set([
-      "KIT", "SAB", "SABONETE", "BOLA", "BALA", "BRINQUEDO", "DIVERSOS", "POTE", "PÇS", "PCS", "PEÇAS",
+      "KIT", "SAB", "SABONETE", "BOLA", "BALA", "BRINQUEDO", "DIVERSOS", "POTE", "PÃ‡S", "PCS", "PEÃ‡AS",
       "PECAS", "MINI", "GRANDE", "PEQUENO", "ESTOJO", "PORTA", "SUPORTE", "CABO", "FITA", "COLA", "BASE",
-      "MASCARA", "MÁSCARA", "SOMBRA", "PIRANHA", "CREME", "LOÇÃO", "LOCAO", "SHAMPOO", "CONDICIONADOR",
-      "AEROSOL", "SPRAY", "DESODORANTE", "DESOD", "PERFUME", "COLONIA", "COLÔNIA", "BODY", "SPLASH",
-      "POMADA", "TALCO", "ALGODAO", "ALGODÃO", "CURATIVO", "BANDAGEM", "ESCOVA", "PENTE", "LIXA",
-      "PINCA", "PINÇA", "TESOURA", "CURVADOR", "CARRINHO", "CARRO", "ANIMAIS", "BONECA", "CHUPETA",
-      "MAMADEIRA", "DOSADOR", "PRENDEDOR", "ELASTICO", "ELÁSTICO", "PRESILHA", "GRAMPO", "INF", "INFANTIL",
+      "MASCARA", "MÃSCARA", "SOMBRA", "PIRANHA", "CREME", "LOÃ‡ÃƒO", "LOCAO", "SHAMPOO", "CONDICIONADOR",
+      "AEROSOL", "SPRAY", "DESODORANTE", "DESOD", "PERFUME", "COLONIA", "COLÃ”NIA", "BODY", "SPLASH",
+      "POMADA", "TALCO", "ALGODAO", "ALGODÃƒO", "CURATIVO", "BANDAGEM", "ESCOVA", "PENTE", "LIXA",
+      "PINCA", "PINÃ‡A", "TESOURA", "CURVADOR", "CARRINHO", "CARRO", "ANIMAIS", "BONECA", "CHUPETA",
+      "MAMADEIRA", "DOSADOR", "PRENDEDOR", "ELASTICO", "ELÃSTICO", "PRESILHA", "GRAMPO", "INF", "INFANTIL",
       "GK1356", "GK1592", "REF", "COD"
     ]);
 
@@ -5286,7 +3661,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
 
     // 3. Busca por Condicoes/Molecula por texto do DCB Descoberto
     if (dcbDescoberto && dcbDescoberto.trim().length > 2 && !ehGenericoCompleto) {
-      log(`[SMARTPED CONSULTA] Agendando busca por Texto de Molécula ("${dcbDescoberto}") em Condicoes/Molecula...`);
+      log(`[SMARTPED CONSULTA] Agendando busca por Texto de MolÃ©cula ("${dcbDescoberto}") em Condicoes/Molecula...`);
       apiPromises.push(
         fetch(`${baseUrl}/api/Condicoes/Molecula`, {
           method: "POST",
@@ -5299,12 +3674,12 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       );
     } else {
       if (ehGenericoCompleto) {
-        log(`[SMARTPED CONSULTA] Ignorando busca por molécula textual ampla para "${dcbDescoberto}" por conter apenas palavras-chave genéricas.`);
+        log(`[SMARTPED CONSULTA] Ignorando busca por molÃ©cula textual ampla para "${dcbDescoberto}" por conter apenas palavras-chave genÃ©ricas.`);
       }
       apiPromises.push(Promise.resolve(null));
     }
 
-    // 3.1. Busca por Condicoes/Molecula pela Descrição Limpa ou Molécula Base
+    // 3.1. Busca por Condicoes/Molecula pela DescriÃ§Ã£o Limpa ou MolÃ©cula Base
     const moleculaExtraQuery = baseMolecula && baseMolecula !== dcbDescoberto ? baseMolecula : (descricaoLimpa && descricaoLimpa !== dcbDescoberto ? descricaoLimpa : "");
     const extraEhGenerico = moleculaExtraQuery && moleculaExtraQuery.split(/\s+/).every(w => PALAVRAS_GENERICAS_BLOQUEIO.has(w));
 
@@ -5322,19 +3697,19 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       );
     } else {
       if (extraEhGenerico) {
-        log(`[SMARTPED CONSULTA] Ignorando busca adicional por molécula para "${moleculaExtraQuery}" por conter apenas palavras-chave genéricas.`);
+        log(`[SMARTPED CONSULTA] Ignorando busca adicional por molÃ©cula para "${moleculaExtraQuery}" por conter apenas palavras-chave genÃ©ricas.`);
       }
       apiPromises.push(Promise.resolve(null));
     }
 
-    // 3.2. Busca por Produtos/Buscar pela Descrição Preservando a Dosagem (ex: "PARACETAMOL 750MG")
+    // 3.2. Busca por Produtos/Buscar pela DescriÃ§Ã£o Preservando a Dosagem (ex: "PARACETAMOL 750MG")
     const descricaoComDosagem = cleanDescriptionKeepDosage(descricao);
     const hasComDosagemQuery = descricaoComDosagem && 
                                descricaoComDosagem !== moleculaExtraQuery && 
                                descricaoComDosagem !== dcbDescoberto && 
                                descricaoComDosagem.trim().length > 2;
     if (hasComDosagemQuery) {
-      log(`[SMARTPED CONSULTA] Agendando busca adicional por "${descricaoComDosagem}" (Descrição com Dosagem) em Produtos/Buscar...`);
+      log(`[SMARTPED CONSULTA] Agendando busca adicional por "${descricaoComDosagem}" (DescriÃ§Ã£o com Dosagem) em Produtos/Buscar...`);
       apiPromises.push(
         fetch(`${baseUrl}/api/Produtos/Buscar`, {
           method: "POST",
@@ -5383,9 +3758,9 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       apiPromises.push(Promise.resolve(null));
     }
 
-    // 6. Buscas curingas (%) dinâmicas adicionais com base na descrição para maximizar o faturamento (utilizando Produtos/Buscar para faturamento certeiro)
+    // 6. Buscas curingas (%) dinÃ¢micas adicionais com base na descriÃ§Ã£o para maximizar o faturamento (utilizando Produtos/Buscar para faturamento certeiro)
     const wildcardQueries = getWildcardQueries(descricao);
-    const wildcardStartIndex = apiPromises.length; // índice 7
+    const wildcardStartIndex = apiPromises.length; // Ã­ndice 7
     for (const q of wildcardQueries) {
       log(`[SMARTPED CONSULTA] Agendando busca adicional curinga por "${q}" em Produtos/Buscar...`);
       apiPromises.push(
@@ -5411,7 +3786,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
 
     const wildcardResults = allResults.slice(wildcardStartIndex);
     
-    log(`[SMARTPED CONSULTA] Respostas recebidas concorrentemente! Iniciando consolidação de ofertas.`);
+    log(`[SMARTPED CONSULTA] Respostas recebidas concorrentemente! Iniciando consolidaÃ§Ã£o de ofertas.`);
 
     const foundAlternatives: any[] = [];
     const distsMap: Record<number, string> = {};
@@ -5448,7 +3823,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       if (resData) extractMetadata(resData);
     });
 
-    // Mapa de Catálogo Cadastral por EAN para preservar nomes comerciais ricos e laboratórios originais
+    // Mapa de CatÃ¡logo Cadastral por EAN para preservar nomes comerciais ricos e laboratÃ³rios originais
     const eanCatalogMap = new Map<string, { descricao: string; laboratorio: string }>();
 
     const recordCatalogInfo = (eanCode: string, desc?: string, lab?: string) => {
@@ -5461,14 +3836,14 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       } else {
         const existing = eanCatalogMap.get(cEan)!;
         const newD = d.length > existing.descricao.length ? d : existing.descricao;
-        const newL = (l && l.toUpperCase() !== "GENÉRICO") ? l : existing.laboratorio;
+        const newL = (l && l.toUpperCase() !== "GENÃ‰RICO") ? l : existing.laboratorio;
         eanCatalogMap.set(cEan, { descricao: newD, laboratorio: newL });
       }
     };
 
     const resolveBestDescription = (eanCode: string, ...candidates: (string | undefined)[]) => {
       const userSearchQuery = (descricao || "").trim().toLowerCase();
-      // 1. Procurar no array de candidatos por algo que seja não-vazio e diferente da query simples em minúsculo
+      // 1. Procurar no array de candidatos por algo que seja nÃ£o-vazio e diferente da query simples em minÃºsculo
       for (const cand of candidates) {
         if (!cand) continue;
         const trimmed = String(cand).trim();
@@ -5476,7 +3851,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
           return trimmed;
         }
       }
-      // 2. Procurar no catálogo de EANs descobertos durante as chamadas da SmartPed
+      // 2. Procurar no catÃ¡logo de EANs descobertos durante as chamadas da SmartPed
       if (eanCode && eanCatalogMap.has(eanCode)) {
         const catalogItem = eanCatalogMap.get(eanCode)!;
         if (catalogItem.descricao && catalogItem.descricao.toLowerCase() !== userSearchQuery) {
@@ -5490,24 +3865,24 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
           return dbRec.descricao;
         }
       }
-      // 4. Se tiver algum candidato não-vazio, retornar
+      // 4. Se tiver algum candidato nÃ£o-vazio, retornar
       for (const cand of candidates) {
         if (cand && String(cand).trim().length > 0) return String(cand).trim();
       }
-      return descricao ? descricao.toUpperCase() : "PRODUTO FARMACÊUTICO";
+      return descricao ? descricao.toUpperCase() : "PRODUTO FARMACÃŠUTICO";
     };
 
     const resolveBestLaboratorio = (eanCode: string, ...candidates: (string | undefined)[]) => {
       for (const cand of candidates) {
         if (!cand) continue;
         const trimmed = String(cand).trim();
-        if (trimmed.length > 0 && trimmed.toUpperCase() !== "GENÉRICO" && trimmed.toUpperCase() !== "N/A") {
+        if (trimmed.length > 0 && trimmed.toUpperCase() !== "GENÃ‰RICO" && trimmed.toUpperCase() !== "N/A") {
           return trimmed;
         }
       }
       if (eanCode && eanCatalogMap.has(eanCode)) {
         const catalogItem = eanCatalogMap.get(eanCode)!;
-        if (catalogItem.laboratorio && catalogItem.laboratorio.toUpperCase() !== "GENÉRICO" && catalogItem.laboratorio.toUpperCase() !== "N/A") {
+        if (catalogItem.laboratorio && catalogItem.laboratorio.toUpperCase() !== "GENÃ‰RICO" && catalogItem.laboratorio.toUpperCase() !== "N/A") {
           return catalogItem.laboratorio;
         }
       }
@@ -5520,7 +3895,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       for (const cand of candidates) {
         if (cand && String(cand).trim().length > 0) return String(cand).trim();
       }
-      return "GENÉRICO";
+      return "GENÃ‰RICO";
     };
 
     const processReturnItens = (data: any, sourceTag: string, fallbackEan?: string) => {
@@ -5663,7 +4038,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       }
     };
 
-    // Função para processar retornos no formato de Produtos/Buscar
+    // FunÃ§Ã£o para processar retornos no formato de Produtos/Buscar
     const processProdutosBuscar = (data: any, sourceTag: string) => {
       if (!data) return;
       const itens = data.Retorno || data.retorno || [];
@@ -5725,7 +4100,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
     processReturnItens(resMoleculaText, "Condicoes/Molecula (Texto/DCB)");
     processReturnItens(resDescricaoLimpa, "Condicoes/Molecula (Descricao Limpa Regex)");
     
-    // Processa como Produtos/Buscar para obter ofertas de dosagem exata com descrição comercial
+    // Processa como Produtos/Buscar para obter ofertas de dosagem exata com descriÃ§Ã£o comercial
     processProdutosBuscar(resDescricaoComDosagem, "Produtos/Buscar (Descricao com Dosagem)");
     
     processReturnItens(resSimilares, "Condicoes/Similares");
@@ -5740,11 +4115,11 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
     });
 
     // =========================================================================
-    // FASE DE EXPANSÃO HÍBRIDA POR EANS:
-    // Se a busca foi realizada por texto/descrição (sem EAN direto ou para enriquecer EANs cadastrais descobertos),
+    // FASE DE EXPANSÃƒO HÃBRIDA POR EANS:
+    // Se a busca foi realizada por texto/descriÃ§Ã£o (sem EAN direto ou para enriquecer EANs cadastrais descobertos),
     // consultamos em lote com Promise.allSettled o endpoint /api/Condicoes/Ean para os EANs encontrados.
-    // Isso garante que todas as regras ricas de promoções (QtdMin, descontos por escala e condições especiais)
-    // sejam carregadas mesmo quando o usuário pesquisou por texto, sem que a falha de 1 EAN quebre os demais!
+    // Isso garante que todas as regras ricas de promoÃ§Ãµes (QtdMin, descontos por escala e condiÃ§Ãµes especiais)
+    // sejam carregadas mesmo quando o usuÃ¡rio pesquisou por texto, sem que a falha de 1 EAN quebre os demais!
     // =========================================================================
     const discoveredEans = Array.from(new Set(
       foundAlternatives
@@ -5753,7 +4128,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
     )).slice(0, 15); // Top 15 EANs mais relevantes descobertos
 
     if (discoveredEans.length > 0) {
-      log(`[EXPANSÃO HÍBRIDA] Agendando cotações comerciais ricas via Condicoes/Ean para ${discoveredEans.length} EANs descobertos...`);
+      log(`[EXPANSÃƒO HÃBRIDA] Agendando cotaÃ§Ãµes comerciais ricas via Condicoes/Ean para ${discoveredEans.length} EANs descobertos...`);
       
       const expansionPromises = discoveredEans.map(async (e) => {
         try {
@@ -5793,7 +4168,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
 
           return { ean: e, eanData, molData };
         } catch (err: any) {
-          console.error(`[EXPANSÃO HÍBRIDA SILENT] Falha ao expandir EAN ${e}:`, err.message);
+          console.error(`[EXPANSÃƒO HÃBRIDA SILENT] Falha ao expandir EAN ${e}:`, err.message);
           return { ean: e, eanData: null, molData: null };
         }
       });
@@ -5806,22 +4181,22 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
           const { ean: targetEan, eanData, molData } = result.value;
           if (eanData) {
             extractMetadata(eanData);
-            processReturnItens(eanData, "Expansão Híbrida (Condicoes/Ean)", targetEan);
+            processReturnItens(eanData, "ExpansÃ£o HÃ­brida (Condicoes/Ean)", targetEan);
             expandedOffersCount++;
           }
           if (molData) {
             extractMetadata(molData);
-            processReturnItens(molData, "Expansão Híbrida (Condicoes/Molecula)", targetEan);
+            processReturnItens(molData, "ExpansÃ£o HÃ­brida (Condicoes/Molecula)", targetEan);
           }
         }
       }
-      log(`[EXPANSÃO HÍBRIDA SUCESSO] ${expandedOffersCount}/${discoveredEans.length} consultas ricas de EAN integradas (Ean + Molecula).`);
+      log(`[EXPANSÃƒO HÃBRIDA SUCESSO] ${expandedOffersCount}/${discoveredEans.length} consultas ricas de EAN integradas (Ean + Molecula).`);
     }
 
     // =========================================================================
-    // DEDUPLICAÇÃO FINAL POR CHAVE COMERCIAL COMBINADA (Ean + CodDist + Condicao + Prazo)
-    // Limpa duplicidades brutas geradas pelas múltiplas chamadas à SmartPed
-    // mantendo a oferta de menor preço líquido se houver choque
+    // DEDUPLICAÃ‡ÃƒO FINAL POR CHAVE COMERCIAL COMBINADA (Ean + CodDist + Condicao + Prazo)
+    // Limpa duplicidades brutas geradas pelas mÃºltiplas chamadas Ã  SmartPed
+    // mantendo a oferta de menor preÃ§o lÃ­quido se houver choque
     // =========================================================================
     const uniqueOffersMap = new Map<string, any>();
 
@@ -5851,9 +4226,9 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
 
     const finalDeduplicatedAlternatives = Array.from(uniqueOffersMap.values());
 
-    // Deduplicação Inteligente: EAN + CodDist
-    // Critério 1: Menor Preço Líquido (pliquido / pliquidoUni)
-    // Critério 2: Empate no preço -> Maior Prazo
+    // DeduplicaÃ§Ã£o Inteligente: EAN + CodDist
+    // CritÃ©rio 1: Menor PreÃ§o LÃ­quido (pliquido / pliquidoUni)
+    // CritÃ©rio 2: Empate no preÃ§o -> Maior Prazo
     const uniqueAltsMap = new Map<string, any>();
     finalDeduplicatedAlternatives.forEach(alt => {
       if (!alt.ean || alt.preco <= 0) return;
@@ -5878,11 +4253,11 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
         const existingPLiquido = getUnitCost(existing);
         const existingPrazo = Number(existing.prazo) || 0;
 
-        // Se a nova oferta tiver preço líquido menor, substitui
+        // Se a nova oferta tiver preÃ§o lÃ­quido menor, substitui
         if (currentPLiquido < existingPLiquido - 0.0001) {
           uniqueAltsMap.set(key, alt);
         } else if (Math.abs(currentPLiquido - existingPLiquido) <= 0.0001) {
-          // Se houver empate no preço líquido, escolhe o com MAIOR PRAZO (melhor condição de pagamento)
+          // Se houver empate no preÃ§o lÃ­quido, escolhe o com MAIOR PRAZO (melhor condiÃ§Ã£o de pagamento)
           if (currentPrazo > existingPrazo) {
             uniqueAltsMap.set(key, alt);
           } else if (currentPrazo === existingPrazo && (alt.estoque || 0) > (existing.estoque || 0)) {
@@ -5898,14 +4273,14 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
       return pA - pB;
     });
 
-    // Enriquecer todas as alternativas encontradas com o valor de pedido mínimo a partir do MINIMOS_GLOBAL_CACHE
+    // Enriquecer todas as alternativas encontradas com o valor de pedido mÃ­nimo a partir do MINIMOS_GLOBAL_CACHE
     const enrichAltWithMinimos = (item: any) => {
       const minVal = getMinimoFromCache(item.codDist, item.condicao, item.prazo);
-      if (minVal > 0) {
-        if (!item.VlrMinimo || Number(item.VlrMinimo) <= 0) item.VlrMinimo = minVal;
-        if (!item.vlrMinimo || Number(item.vlrMinimo) <= 0) item.vlrMinimo = minVal;
-        if (!item.pedidoMinimo || Number(item.pedidoMinimo) <= 0) item.pedidoMinimo = minVal;
-        if (!item.PedidoMinimo || Number(item.PedidoMinimo) <= 0) item.PedidoMinimo = minVal;
+      if (minVal && minVal.VlrMinimo > 0) {
+        if (!item.VlrMinimo || Number(item.VlrMinimo) <= 0) item.VlrMinimo = minVal.VlrMinimo;
+        if (!item.vlrMinimo || Number(item.vlrMinimo) <= 0) item.vlrMinimo = minVal.VlrMinimo;
+        if (!item.pedidoMinimo || Number(item.pedidoMinimo) <= 0) item.pedidoMinimo = minVal.VlrMinimo;
+        if (!item.PedidoMinimo || Number(item.PedidoMinimo) <= 0) item.PedidoMinimo = minVal.VlrMinimo;
       }
     };
 
@@ -5936,7 +4311,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
 
     const qtdMinPositivo = finalAlts.filter(a => (a.QtdMin || a.qtdMin || 0) > 0).length;
     const qtdMinZero = finalAlts.length - qtdMinPositivo;
-    log(`[SUCESSO] Total de ${finalAlts.length} ofertas deduplicadas (melhor prazo/preço por distribuidora) e ${finalDeduplicatedAlternatives.length} ofertas brutas únicas na SmartPed.`);
+    log(`[SUCESSO] Total de ${finalAlts.length} ofertas deduplicadas (melhor prazo/preÃ§o por distribuidora) e ${finalDeduplicatedAlternatives.length} ofertas brutas Ãºnicas na SmartPed.`);
     log(`[RESUMO QTDMIN] QtdMin>0: ${qtdMinPositivo} | QtdMin=0: ${qtdMinZero} | Total: ${finalAlts.length}`);
 
     res.json({
@@ -5957,38 +4332,7 @@ app.post("/api/smartped-find-substitutes", async (req, res) => {
     });
   }
 });
-
-// Helper function to extract search keywords from a product description
-function getCleanSearchWords(desc: string): string[] {
-  if (!desc) return [];
-  let d = desc.toUpperCase();
-
-  // Remover dosagens e unidades (ex: 20G, 10ML, 500MG, 120G, C/10, S/10, SACHES, CAPS, CP, COMP)
-  d = d.replace(/\b\d+([.,]\d+)?\s*(MG|ML|G|UI|%|MM|MCG|UN)?\b/gi, " ");
-  d = d.replace(/\b\d+\s*(CP|CAPS|COMP|UN|FR|TB|SACH|BG|GTS|SACHES|AMP|SACHETS)\b/gi, " ");
-  d = d.replace(/\bC\/\s*\d+\b/gi, " ");
-  d = d.replace(/\b(SACHES|SACHE|UNIDADES|COMPRIMIDOS|CAPSULAS|CAPS|CP|C\/|FRASCO|FRASCOS|BLISTER|SACHETS|XAROPE|GOTAS|POMADA|CREME|COMP|INJETAVEL|GTS|UN|CX|FR)\b/gi, " ");
-
-  // Dividir em palavras e limpar pontuação
-  const words = d.split(/[\s,.\-\/+()]+/gi)
-    .map(w => w.trim())
-    .filter(w => {
-      // Filtrar palavras curtas irrelevantes (exceto termos chave como "CHA", "DOR")
-      if (w.length < 3) {
-        return w === "CHA" || w === "DOR" || w === "GEL";
-      }
-      // Ignorar stop words ou nomes comuns de laboratórios na busca
-      const stopWords = [
-        "GENERICO", "GEN", "EMS", "MEDLEY", "PRATI", "TEUTO", "CIMED", "LEGRAND", "EUROFARMA",
-        "SANDOZ", "GERMED", "NEO", "QUIMICA", "GLOBO", "ACHE", "BIOLAB", "VITAMEDIC"
-      ];
-      return !stopWords.includes(w);
-    });
-
-  return words;
-}
-
-// Endpoint para buscar produtos similares (mesmo DCB + Concentração) com fallback inteligente por similaridade de descrição
+// Endpoint para buscar produtos similares (mesmo DCB + ConcentraÃ§Ã£o) com fallback inteligente por similaridade de descriÃ§Ã£o
 app.get("/api/similares/:ean", async (req, res) => {
   const { ean: rawEan } = req.params;
   const ean = cleanEan(rawEan);
@@ -5998,10 +4342,10 @@ app.get("/api/similares/:ean", async (req, res) => {
     const dbRecord = getEanDatabaseRecord(ean);
     if ((!descricao || descricao.trim().length === 0 || descricao === "undefined" || descricao === "null") && dbRecord?.descricao) {
       descricao = dbRecord.descricao;
-      console.log(`[SIMILARES] Descrição ausente na query. Recuperada automaticamente do EAN_DATABASE para ${ean}: "${descricao}"`);
+      console.log(`[SIMILARES] DescriÃ§Ã£o ausente na query. Recuperada automaticamente do EAN_DATABASE para ${ean}: "${descricao}"`);
     }
 
-    console.log(`[SIMILARES] Buscando similares locais na Trier para EAN ${ean} (original: ${rawEan}), Descrição: "${descricao || "não informada"}", forceDesc: ${forceDesc}`);
+    console.log(`[SIMILARES] Buscando similares locais na Trier para EAN ${ean} (original: ${rawEan}), DescriÃ§Ã£o: "${descricao || "nÃ£o informada"}", forceDesc: ${forceDesc}`);
     
     let trierEncontrou = false;
     let trierData: any = null;
@@ -6012,7 +4356,7 @@ app.get("/api/similares/:ean", async (req, res) => {
       if (response.ok) {
         const data = await response.json();
         if (data && data.encontrou && Array.isArray(data.produtos) && data.produtos.length > 0) {
-          console.log(`[SIMILARES REGISTRO] Carregados ${data.produtos.length} produtos oficiais da Trier para o EAN ${ean}. Populando base em memória.`);
+          console.log(`[SIMILARES REGISTRO] Carregados ${data.produtos.length} produtos oficiais da Trier para o EAN ${ean}. Populando base em memÃ³ria.`);
           for (const prod of data.produtos) {
             const pEan = cleanEan(prod.ean || prod.cod_barra || prod.cod_barras || "");
             const pDesc = prod.nom_produto || prod.descricao;
@@ -6051,22 +4395,22 @@ app.get("/api/similares/:ean", async (req, res) => {
       });
     }
 
-    // 2. Se a busca direta falhou, retornou vazia ou forceDesc = true, aciona a busca inteligente por similaridade de descrição usando o regex/getMoleculeBase
+    // 2. Se a busca direta falhou, retornou vazia ou forceDesc = true, aciona a busca inteligente por similaridade de descriÃ§Ã£o usando o regex/getMoleculeBase
     if (descricao && descricao.trim().length > 0) {
       const baseMolecula = getMoleculeBase(descricao).toUpperCase();
-      console.log(`[SIMILARES DESCRIÇÃO] EAN ${ean}. Molécula base extraída: "${baseMolecula}"`);
+      console.log(`[SIMILARES DESCRIÃ‡ÃƒO] EAN ${ean}. MolÃ©cula base extraÃ­da: "${baseMolecula}"`);
       
       const searchWords = baseMolecula.split(/\s+/).filter(w => w.length > 0);
-      console.log(`[SIMILARES DESCRIÇÃO] Palavras-chave extraídas da molécula:`, searchWords);
+      console.log(`[SIMILARES DESCRIÃ‡ÃƒO] Palavras-chave extraÃ­das da molÃ©cula:`, searchWords);
 
       if (searchWords.length > 0 || baseMolecula.length > 0) {
-        // Palavras genéricas ou muito comuns que sozinhas não devem gerar correspondência
+        // Palavras genÃ©ricas ou muito comuns que sozinhas nÃ£o devem gerar correspondÃªncia
         const PALAVRAS_GENERICAS = new Set([
           "KIT", "INF", "INFANTIL", "C/", "S/", "COM", "SEM", "COD", "REF", "UN", "PCT", "CX", "MED", "PROD",
-          "GENERICO", "GEN", "SAB", "CROM", "BOLA", "BRINQUEDO", "DIVERSOS", "POTE", "PÇS", "PCS", "PEÇAS",
-          "PECAS", "DE", "PARA", "EM", "DO", "DA", "CRIANCA", "CRIANÇAS", "CRIANCAS", "MINI", "GRANDE", "PEQUENO",
-          "MEDICAMENTO", "REMEDIO", "APOIO", "SUPORTE", "TIPO", "DIVERSAS", "REFGK", "CHA", "CHÁ", "OLEO", "ÓLEO",
-          "SABONETE", "GEL", "CREME", "LOÇÃO", "LOCAO"
+          "GENERICO", "GEN", "SAB", "CROM", "BOLA", "BRINQUEDO", "DIVERSOS", "POTE", "PÃ‡S", "PCS", "PEÃ‡AS",
+          "PECAS", "DE", "PARA", "EM", "DO", "DA", "CRIANCA", "CRIANÃ‡AS", "CRIANCAS", "MINI", "GRANDE", "PEQUENO",
+          "MEDICAMENTO", "REMEDIO", "APOIO", "SUPORTE", "TIPO", "DIVERSAS", "REFGK", "CHA", "CHÃ", "OLEO", "Ã“LEO",
+          "SABONETE", "GEL", "CREME", "LOÃ‡ÃƒO", "LOCAO"
         ]);
 
         const especificas = searchWords.filter(w => !PALAVRAS_GENERICAS.has(w));
@@ -6084,7 +4428,7 @@ app.get("/api/similares/:ean", async (req, res) => {
           let especificasMatches = 0;
           let genericasMatches = 0;
 
-          // Se a molécula base extraída de ambos for idêntica, pontuação máxima!
+          // Se a molÃ©cula base extraÃ­da de ambos for idÃªntica, pontuaÃ§Ã£o mÃ¡xima!
           if (baseMolecula && itemMolecula && baseMolecula === itemMolecula) {
             score += 100;
             especificasMatches += 2;
@@ -6128,19 +4472,19 @@ app.get("/api/similares/:ean", async (req, res) => {
             }
           }
 
-          // Bônus se a descrição do item contiver a descrição de busca completa
+          // BÃ´nus se a descriÃ§Ã£o do item contiver a descriÃ§Ã£o de busca completa
           if (itemDesc.includes(descricao.toUpperCase())) {
             score += 25;
           } else if (temEspecificas && itemDesc.includes(especificas.join(" "))) {
             score += 15;
           }
 
-          // Condição de aceitação estrita: 
-          // Se houver palavras específicas na busca, EXIGE pelo menos um match de palavra específica.
-          // Se só houver palavras genéricas, exige pelo menos um match genérico.
+          // CondiÃ§Ã£o de aceitaÃ§Ã£o estrita: 
+          // Se houver palavras especÃ­ficas na busca, EXIGE pelo menos um match de palavra especÃ­fica.
+          // Se sÃ³ houver palavras genÃ©ricas, exige pelo menos um match genÃ©rico.
           const passaFiltro = temEspecificas ? (especificasMatches >= 1) : (genericasMatches >= 1);
 
-          // Exige também uma pontuação mínima de relevância
+          // Exige tambÃ©m uma pontuaÃ§Ã£o mÃ­nima de relevÃ¢ncia
           const scoreMinimo = temEspecificas ? 5 : 1;
 
           if (passaFiltro && score >= scoreMinimo) {
@@ -6164,10 +4508,10 @@ app.get("/api/similares/:ean", async (req, res) => {
           }
         }
 
-        // Ordena por maior pontuação de relevância (score)
+        // Ordena por maior pontuaÃ§Ã£o de relevÃ¢ncia (score)
         candidates.sort((a, b) => b.score - a.score);
 
-        console.log(`[SIMILARES DESCRIÇÃO] Encontrados ${candidates.length} candidatos válidos com score mínimo.`);
+        console.log(`[SIMILARES DESCRIÃ‡ÃƒO] Encontrados ${candidates.length} candidatos vÃ¡lidos com score mÃ­nimo.`);
 
         if (candidates.length > 0) {
           const resultProdutos = candidates.slice(0, 50).map(c => ({
@@ -6211,7 +4555,7 @@ app.get("/api/similares/:ean", async (req, res) => {
   }
 });
 
-// Endpoint para buscar histórico de vendas detalhadas
+// Endpoint para buscar histÃ³rico de vendas detalhadas
 app.get("/api/vendas-detalhadas/:ean", async (req, res) => {
   const { ean } = req.params;
   try {
@@ -6227,7 +4571,7 @@ app.get("/api/vendas-detalhadas/:ean", async (req, res) => {
   }
 });
 
-// Endpoint para buscar histórico de vendas semanais
+// Endpoint para buscar histÃ³rico de vendas semanais
 app.get("/api/vendas-semanais/:ean", async (req, res) => {
   const { ean } = req.params;
   try {
@@ -6243,11 +4587,11 @@ app.get("/api/vendas-semanais/:ean", async (req, res) => {
   }
 });
 
-// Endpoint de diagnóstico para consultar os retornos reais brutos da API SmartPed para um determinado EAN
+// Endpoint de diagnÃ³stico para consultar os retornos reais brutos da API SmartPed para um determinado EAN
 app.post("/api/diagnostico-ean", async (req, res) => {
   const { ean, token, cnpj, useTestUrl } = req.body;
   if (!ean) {
-    return res.status(400).json({ success: false, error: "EAN é obrigatório." });
+    return res.status(400).json({ success: false, error: "EAN Ã© obrigatÃ³rio." });
   }
 
   const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
@@ -6258,9 +4602,9 @@ app.post("/api/diagnostico-ean", async (req, res) => {
   const cleanEanValue = cleanEan(ean);
 
   const logs: string[] = [];
-  logs.push(`[DIAGNÓSTICO] Iniciando busca para EAN ${cleanEanValue}`);
-  logs.push(`[DIAGNÓSTICO] URL Base: ${baseUrl}`);
-  logs.push(`[DIAGNÓSTICO] CNPJ: ${apiCnpj}`);
+  logs.push(`[DIAGNÃ“STICO] Iniciando busca para EAN ${cleanEanValue}`);
+  logs.push(`[DIAGNÃ“STICO] URL Base: ${baseUrl}`);
+  logs.push(`[DIAGNÃ“STICO] CNPJ: ${apiCnpj}`);
 
   try {
     const pMolecula = fetch(`${baseUrl}/api/Condicoes/Molecula`, {
@@ -6282,7 +4626,7 @@ app.post("/api/diagnostico-ean", async (req, res) => {
     });
 
     const [responseMolecula, responseEan] = await Promise.all([pMolecula, pEan]);
-    logs.push(`[DIAGNÓSTICO] Status Molecula: ${responseMolecula.status}, Status Ean: ${responseEan.status}`);
+    logs.push(`[DIAGNÃ“STICO] Status Molecula: ${responseMolecula.status}, Status Ean: ${responseEan.status}`);
 
     const resDataMolecula = responseMolecula.ok ? await responseMolecula.json().catch(() => ({})) : {};
     const resDataEan = responseEan.ok ? await responseEan.json().catch(() => ({})) : {};
@@ -6300,17 +4644,14 @@ app.post("/api/diagnostico-ean", async (req, res) => {
       }
     });
   } catch (error: any) {
-    console.error("Erro no diagnóstico de EAN:", error);
+    console.error("Erro no diagnÃ³stico de EAN:", error);
     return res.status(500).json({
       success: false,
       error: error.message,
-      logs: [...logs, `[ERRO CRÍTICO] ${error.message}`]
+      logs: [...logs, `[ERRO CRÃTICO] ${error.message}`]
     });
   }
 });
-
-loadEanDatabase();
-
 if (process.env.SKIP_SERVER_LISTEN !== "true") {
   if (process.env.NODE_ENV !== "production") {
     createViteServer({
@@ -6333,4 +4674,3 @@ if (process.env.SKIP_SERVER_LISTEN !== "true") {
     });
   }
 }
-

@@ -229,6 +229,16 @@ export function formatPercentage(value: number): string {
   }).format(value);
 }
 
+export const cleanEan = (ean: string | number | undefined | null): string => {
+  if (ean === undefined || ean === null) return "";
+  const cleaned = String(ean).trim().replace(/\D/g, "");
+  if (!cleaned) return "";
+  if (cleaned.length <= 13) {
+    return cleaned.padStart(13, "0");
+  }
+  return cleaned;
+};
+
 export const resolveEstoque = (item: any): number => {
   if (!item) return 0;
   return Number(

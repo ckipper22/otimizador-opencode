@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, Suspense } from "react";
 import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, ArrowDown, ChevronRight, XCircle, Copy, Lock, Mail, Eye, EyeOff, Settings, ArrowUp, GripVertical } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import UploadBox from "./components/UploadBox";
@@ -14,9 +14,18 @@ import VisualChart from "./components/VisualChart";
 import { DailyItemsView } from "./components/DailyItemsView";
 import { OptimizerConfig, OptimizationResponse, SwapReportItem, DistributorOption, ExternalSupplier, AuthorizedCompany } from "./types";
 import { EanEyeButton } from "./components/EanEyeButton";
-import { HOMOLOGACAO_SICF_FILE, formatCurrency, resolveEstoque, resolveQtdMinima, resolvePedidoMinimo, safeEanCompare, resolvePrecoLiquido } from "./utils";
-import { auth, googleProvider } from "./lib/firebaseClient";
-import { signInWithPopup, signOut } from "firebase/auth";
+import { HOMOLOGACAO_SICF_FILE, formatCurrency, resolveEstoque, resolveQtdMinima, resolvePedidoMinimo } from "./utils";
+import { useAuth } from "./hooks/useAuth";
+import { useOptimizerConfig } from "./hooks/useOptimizerConfig";
+import { useDailyOrders } from "./hooks/useDailyOrders";
+import { useOptimizationResult } from "./hooks/useOptimizationResult";
+import { useBilling } from "./hooks/useBilling";
+import { useManualSearch } from "./hooks/useManualSearch";
+
+const LazySwapsTable = React.lazy(() => import("./components/SwapsTable"));
+const LazyOrderReturnView = React.lazy(() => import("./components/OrderReturnView").then(m => ({ default: m.OrderReturnView })));
+const LazyDailyItemsView = React.lazy(() => import("./components/DailyItemsView").then(m => ({ default: m.DailyItemsView })));
+const LazyPendingOrdersTable = React.lazy(() => import("./components/PendingOrdersTable").then(m => ({ default: m.PendingOrdersTable })));
 
 const normalizeDistName = (name: string) => 
   (name || "")
@@ -26,317 +35,158 @@ const normalizeDistName = (name: string) =>
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
 
-const cleanEan = (ean: string | number | undefined | null): string => {
-  if (ean === undefined || ean === null) return "";
-  const cleaned = String(ean).trim().replace(/\D/g, "");
-  if (!cleaned) return "";
-  if (cleaned.length <= 13) {
-    return cleaned.padStart(13, "0");
-  }
-  return cleaned;
-};
-
-const getRecentCutsMap = (orders: any[]) => {
-  const cutsMap: Record<string, string[]> = {};
-  if (!orders || !Array.isArray(orders)) return cutsMap;
-
-  // Calculate strings of the last 2 business days in DD/MM/YYYY
-  const getRecentBusinessDays = (count: number) => {
-    const dates = new Set<string>();
-    const d = new Date();
-    
-    const formatDateStr = (date: Date) => {
-      const dd = String(date.getDate()).padStart(2, '0');
-      const mm = String(date.getMonth() + 1).padStart(2, '0');
-      const yyyy = date.getFullYear();
-      return `${dd}/${mm}/${yyyy}`;
-    };
-
-    dates.add(formatDateStr(d));
-
-    let businessDaysFound = (d.getDay() === 0 || d.getDay() === 6) ? 0 : 1;
-    const tempDate = new Date(d.getTime());
-    
-    for (let i = 1; i <= 10; i++) {
-      tempDate.setDate(tempDate.getDate() - 1);
-      const dayOfWeek = tempDate.getDay();
-      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-      dates.add(formatDateStr(tempDate));
-      if (!isWeekend) {
-        businessDaysFound++;
-        if (businessDaysFound >= count) {
-          break;
-        }
-      }
-    }
-    return dates;
-  };
-
-  const allowedDates = getRecentBusinessDays(2);
-
-  orders.forEach(order => {
-    const orderDate = String(order.dataPedido || order.DataPedido || "").trim();
-    if (allowedDates.has(orderDate) && order.detalhes?.Itens) {
-      order.detalhes.Itens.forEach((item: any) => {
-        const ean = cleanEan(item.Ean || item.ean || "");
-        if (!ean) return;
-
-        // Check if cut happened
-        const q = Number(item.Quant || 0);
-        const qF = Number(item.QuantFaturada !== undefined ? item.QuantFaturada : q);
-        
-        // If QuantFaturada is less than Quant, or explicitly mentioned lack of stock, or QuantFaturada is 0
-        const isCut = q > 0 && (
-          qF < q || 
-          String(item.Motivo || "").toLowerCase().includes("estoque") || 
-          String(item.Motivo || "").toLowerCase().includes("falta") || 
-          String(item.Motivo || "").toLowerCase().includes("corte")
-        );
-        
-        if (isCut) {
-          const distNameClean = normalizeDistName(item.NomeDist || item.Nome || item.distribuidora || "");
-          if (distNameClean) {
-            if (!cutsMap[ean]) {
-              cutsMap[ean] = [];
-            }
-            if (!cutsMap[ean].includes(distNameClean)) {
-              cutsMap[ean].push(distNameClean);
-            }
-          }
-        }
-      });
-    }
-  });
-
-  return cutsMap;
-};
-
 export default function App() {
   const dragControls = useDragControls();
   const isDragging = useRef(false);
 
-  // Estados de Autenticação de Segurança
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem("app_authenticated") === "true";
-  });
-  const [currentUserEmail, setCurrentUserEmail] = useState<string>(() => {
-    return localStorage.getItem("current_user_email") || "";
-  });
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [loginError, setLoginError] = useState("");
+  // Custom Hooks
+  const {
+    isAuthenticated,
+    currentUserEmail,
+    loginEmail,
+    setLoginEmail,
+    loginPassword,
+    setLoginPassword,
+    showPassword,
+    setShowPassword,
+    loginError,
+    setLoginError,
+    authorizedCompanies,
+    setAuthorizedCompanies,
+    isAdmin,
+    handleLoginSubmit,
+    handleGoogleLogin,
+    handleLogout,
+  } = useAuth();
 
-  const [authorizedCompanies, setAuthorizedCompanies] = useState<AuthorizedCompany[]>(() => {
-    try {
-      const saved = localStorage.getItem("authorized_companies");
-      return saved ? JSON.parse(saved) : [
-        { id: "comp_1", email: "aga706panambi@gmail.com", nome: "Farmácia Aga706 Panambi", token: "fddfd9871b77f44f243e145207c8e93a", cnpj: "13408443000168" }
-      ];
-    } catch {
-      return [];
-    }
-  });
-
-  useEffect(() => {
-    localStorage.setItem("authorized_companies", JSON.stringify(authorizedCompanies));
-  }, [authorizedCompanies]);
-
-  const isAdmin = currentUserEmail === "ckipper22@gmail.com" || currentUserEmail === "aga706panambi@gmail.com" || !currentUserEmail;
-
-  const handleLoginSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanEmail = loginEmail.trim().toLowerCase();
-    const password = loginPassword;
-    
-    if ((cleanEmail === "ckipper22@gmail.com" || cleanEmail === "aga706panambi@gmail.com") && password === "Aq1sw2de#fr4") {
-      localStorage.setItem("app_authenticated", "true");
-      localStorage.setItem("current_user_email", cleanEmail);
-      setCurrentUserEmail(cleanEmail);
-      setIsAuthenticated(true);
-      setLoginError("");
-    } else {
-      const foundComp = authorizedCompanies.find(c => c.email.toLowerCase() === cleanEmail);
-      if (foundComp) {
-        localStorage.setItem("app_authenticated", "true");
-        localStorage.setItem("current_user_email", cleanEmail);
-        setCurrentUserEmail(cleanEmail);
-        setIsAuthenticated(true);
-        setLoginError("");
-      } else {
-        setLoginError("E-mail ou senha incorretos, ou farmácia não cadastrada.");
-      }
-    }
-  };
-
-  const handleGoogleLogin = async () => {
-    try {
-      setLoginError("");
-      const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-      const verifiedEmail = user.email?.toLowerCase();
-
-      if (verifiedEmail) {
-        if (verifiedEmail === "ckipper22@gmail.com" || verifiedEmail === "aga706panambi@gmail.com") {
-          localStorage.setItem("app_authenticated", "true");
-          localStorage.setItem("current_user_email", verifiedEmail);
-          setCurrentUserEmail(verifiedEmail);
-          setIsAuthenticated(true);
-          setLoginError("");
-          return;
-        } else {
-          const foundComp = authorizedCompanies.find(c => c.email.toLowerCase() === verifiedEmail);
-          if (foundComp) {
-            localStorage.setItem("app_authenticated", "true");
-            localStorage.setItem("current_user_email", verifiedEmail);
-            setCurrentUserEmail(verifiedEmail);
-            setIsAuthenticated(true);
-            setLoginError("");
-            return;
-          } else {
-            await signOut(auth);
-            setLoginError(`Acesso negado. A conta Google autenticada ("${verifiedEmail}") não está cadastrada. Solicite ao administrador (ckipper22@gmail.com) o cadastro.`);
-          }
-        }
-      } else {
-        setLoginError("Não foi possível obter o e-mail da conta Google autenticada.");
-      }
-    } catch (error: any) {
-      console.error("Google login error:", error);
-      if (error.code === 'auth/popup-closed-by-user') {
-        setLoginError("Autenticação Google cancelada pelo usuário.");
-      } else {
-        setLoginError(`Erro na autenticação Google: ${error.message || error}`);
-      }
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await signOut(auth);
-    } catch (e) {
-      // ignore
-    }
-    localStorage.removeItem("app_authenticated");
-    localStorage.removeItem("current_user_email");
-    setIsAuthenticated(false);
-    setCurrentUserEmail("");
-  };
+  const {
+    config,
+    setConfig,
+    distributors,
+    disabledDistributors,
+    isLoadingDistributors,
+    externalSuppliers,
+    backendStatus,
+    handleToggleDistributor,
+    handleUpdateExternalSuppliers,
+  } = useOptimizerConfig();
 
   // Application State
   const [activeTab, setActiveTab] = useState<"production" | "homologation" | "daily_items">("production");
   const [mainView, setMainView] = useState<"optimize" | "returns" | "daily_items">("optimize");
-  
-  // Direct Return tracking states
-  const [directNumPedido, setDirectNumPedido] = useState<string>("");
-  const [directOrderReturn, setDirectOrderReturn] = useState<any | null>(null);
-  const [isCheckingDirectReturn, setIsCheckingDirectReturn] = useState<boolean>(false);
-  const [directReturnCheckLogs, setDirectReturnCheckLogs] = useState<string[]>([]);
-  const [directAutoPollReturn, setDirectAutoPollReturn] = useState<boolean>(false);
 
-  const [dailyOrders, setDailyOrders] = useState<any[]>([]);
-  const [isCheckingDaily, setIsCheckingDaily] = useState<boolean>(false);
-  const [dailyOrderLogs, setDailyOrderLogs] = useState<string[]>([]);
-  const [selectedDailyOrder, setSelectedDailyOrder] = useState<any | null>(null);
-  const [highlightedOrder, setHighlightedOrder] = useState<any | null>(null);
+  const {
+    dailyOrders,
+    isCheckingDaily,
+    dailyOrderLogs,
+    setDailyOrderLogs,
+    selectedDailyOrder,
+    setSelectedDailyOrder,
+    highlightedOrder,
+    setHighlightedOrder,
+    directNumPedido,
+    setDirectNumPedido,
+    directOrderReturn,
+    isCheckingDirectReturn,
+    directReturnCheckLogs,
+    directAutoPollReturn,
+    setDirectAutoPollReturn,
+    handleCheckDailyOrders,
+    handleCheckDirectOrderReturn,
+  } = useDailyOrders(config, mainView);
 
-  const [fileContent, setFileContent] = useState<string>("");
-  const [fileName, setFileName] = useState<string>("");
-
-  const [externalSuppliers, setExternalSuppliers] = useState<ExternalSupplier[]>(() => {
-    try {
-      const saved = localStorage.getItem("external_suppliers");
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
+  // Distributor minimums (used by UI, wizard, and hooks)
+  const [distributorMinimums, setDistributorMinimums] = useState<Record<string, number>>({
+    "GAM": 150,
+    "PanPharma": 250,
+    "Servimed": 200,
+    "Profarma": 250,
+    "SantaCruz": 300,
+    "DrogaCenter": 150,
+    "NeoSul": 150,
+    "ANB": 150,
+    "Distribuidor": 150,
+    "Não Encontrados": 0
   });
 
-  const handleUpdateExternalSuppliers = (newSuppliers: ExternalSupplier[]) => {
-    setExternalSuppliers(newSuppliers);
-    localStorage.setItem("external_suppliers", JSON.stringify(newSuppliers));
-  };
-  
-  // Distributors state
-  const [distributors, setDistributors] = useState<DistributorOption[]>([]);
-  const [disabledDistributors, setDisabledDistributors] = useState<Set<number>>(new Set());
-  const [isLoadingDistributors, setIsLoadingDistributors] = useState<boolean>(false);
-  const [config, setConfig] = useState<OptimizerConfig>(() => {
-    try {
-      const saved = localStorage.getItem("optimizer_config");
-      if (saved) return JSON.parse(saved);
-    } catch (err) {
-      console.error(err);
-    }
-    return {
-      token: "fddfd9871b77f44f243e145207c8e93a",
-      cnpj: "13408443000168",
-      margemMinima: 0.01,
-      tipos: ["G", "O"],
-      permitirSemEstoque: false,
-      useTestUrl: false,
-      simulationMode: false,
-      customProductionUrl: "https://api.smartped.com.br",
-      customTestUrl: "https://apitest.smartped.com.br",
-      customEndpoint: "/api/Condicoes/Molecula"
-    };
+  // Optimization Result Hook
+  const {
+    isLoading, setIsLoading,
+    error, setError,
+    result, setResult,
+    fileContent, setFileContent,
+    fileName, setFileName,
+    showQuantityInterception, setShowQuantityInterception,
+    preDistributedMap, setPreDistributedMap,
+    logs, setLogs,
+    disregardedCodes, setDisregardedCodes,
+    disabledItemCodes, setDisabledItemCodes,
+    billedItemCodes, setBilledItemCodes,
+    overriddenDistributors, setOverriddenDistributors,
+    handleFileLoaded, handleClearFile, handleOptimize,
+    handleToggleDisregard, handleToggleDisabled,
+    handleUpdateQty, handleSelectCondition, handleDeleteDistributor,
+    handleConfirmQtyInInterception,
+    downloadSICF, downloadCSV,
+    activeReport, activeSummary, pendingAlertItems,
+  } = useOptimizationResult({
+    config, setConfig, disabledDistributors, externalSuppliers,
+    distributors, handleCheckDailyOrders, dailyOrders,
+    setDistributorMinimums,
   });
 
-  useEffect(() => {
-    localStorage.setItem("optimizer_config", JSON.stringify(config));
-  }, [config]);
+  // Billing Hook
+  const {
+    isBillingLoading, billingResult, setBillingResult,
+    isBillingModalOpen, setIsBillingModalOpen,
+    billedGroups, setBilledGroups,
+    billingContext, setBillingContext,
+    viewingLogs, setViewingLogs,
+    billingConfirm, setBillingConfirm,
+    billingChoice, setBillingChoice,
+    faturadosGlobais, setFaturadosGlobais,
+    isFaturadosOpen, setIsFaturadosOpen,
+    orderReturn, setOrderReturn,
+    isCheckingReturn, returnCheckLogs, setReturnCheckLogs,
+    manualCutsAlert, setManualCutsAlert,
+    autoPollReturn, setAutoPollReturn,
+    suspectItemAlert, setSuspectItemAlert,
+    handleSendBilling, handleCloseAndConsolidateBilling,
+    pollOrderReturn, handleCheckOrderReturn,
+    handleExportShortages, handleReRouteShortages,
+  } = useBilling({
+    result, setResult, config, activeReport,
+    disregardedCodes, disabledItemCodes, setDisabledItemCodes,
+    billedItemCodes, setBilledItemCodes, setLogs,
+  });
 
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<OptimizationResponse | null>(null);
-  const [showQuantityInterception, setShowQuantityInterception] = useState<boolean>(true);
-  const [preDistributedMap, setPreDistributedMap] = useState<Record<string, { codDist: number; condicao: string; prazo: number; codProdutoDist: string; quant: number }> | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [backendStatus, setBackendStatus] = useState<"checking" | "online" | "offline">("checking");
+  // Manual Search Hook
+  const {
+    manualQuery, setManualQuery,
+    manualSearchResults, setManualSearchResults,
+    manualAllAlternatives, setManualAllAlternatives,
+    manualMinimos, setManualMinimos,
+    manualDcbFound, setManualDcbFound,
+    manualDeduplicar, setManualDeduplicar,
+    manualApenasEstoque, setManualApenasEstoque,
+    manualActionSuccessKey, setManualActionSuccessKey,
+    isManualSearching, setManualSearchError, manualSearchError,
+    manualQty, setManualQty,
+    manualQuantities, setManualQuantities,
+    manualSearchLogs, setManualSearchLogs,
+    isManualAddModalOpen, setIsManualAddModalOpen,
+    manualModalWidth, setManualModalWidth,
+    manualModalHeight, setManualModalHeight,
+    manualAddOriginItem, setManualAddOriginItem,
+    handleManualSearch, handleAddManualItem, getManualDistMinimo,
+    processedManualOffers,
+  } = useManualSearch({
+    config, result, setResult,
+    distributorMinimums, setDistributorMinimums,
+    disregardedCodes,
+  });
+
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
-  
-  // Track disregarded swaps (by codInterno)
-  const [disregardedCodes, setDisregardedCodes] = useState<Set<string>>(new Set());
-  
-  // Track disabled item codes (totally excluded from the orders)
-  const [disabledItemCodes, setDisabledItemCodes] = useState<Set<string>>(new Set());
-
-  // Track billed item codes (removed from active list as soon as billed)
-  const [billedItemCodes, setBilledItemCodes] = useState<Set<string>>(new Set());
-
-  // Track manually overridden distributors (by codInterno)
-  const [overriddenDistributors, setOverriddenDistributors] = useState<Record<string, string>>({});
-
-  // Billing (Faturamento) States
-  const [isBillingLoading, setIsBillingLoading] = useState<boolean>(false);
-  const [billingResult, setBillingResult] = useState<any | null>(null);
-  const [isBillingModalOpen, setIsBillingModalOpen] = useState<boolean>(false);
-  const [billedGroups, setBilledGroups] = useState<Record<string, { status: "faturando" | "retornado", faltas: any[], logs: string[] }>>({});
-  const [billingContext, setBillingContext] = useState<{relatedGroups: string[], baseDistName: string, numPedido: number, itemsFaturados: any[]} | null>(null);
-  const [viewingLogs, setViewingLogs] = useState<{groupKeys: string[], title: string} | null>(null);
-  const [billingConfirm, setBillingConfirm] = useState<{ specificDistributorName?: string; baseDistName: string; activeItems: any[] } | null>(null);
-  const [billingChoice, setBillingChoice] = useState<{ specificDistributorName?: string; baseDistName: string; activeItems: any[] } | null>(null);
-
-  // Manual Item Search states
-  const [manualQuery, setManualQuery] = useState<string>("");
-  const [faturadosGlobais, setFaturadosGlobais] = useState<import("./types").FaturadoItem[]>([]);
-  const [isFaturadosOpen, setIsFaturadosOpen] = useState<boolean>(false);
-  const [isManualAddModalOpen, setIsManualAddModalOpen] = useState<boolean>(false);
-  const [manualModalWidth, setManualModalWidth] = useState<string>(() => sessionStorage.getItem('manual_modal_width') || "1200px");
-  const [manualModalHeight, setManualModalHeight] = useState<string>(() => sessionStorage.getItem('manual_modal_height') || "700px");
-  const [manualAddOriginItem, setManualAddOriginItem] = useState<{ean: string, descricao: string, laboratorio: string} | null>(null);
-  const [manualSearchResults, setManualSearchResults] = useState<any[]>([]);
-  const [manualAllAlternatives, setManualAllAlternatives] = useState<any[]>([]);
-  const [manualMinimos, setManualMinimos] = useState<any[]>([]);
-  const [manualDcbFound, setManualDcbFound] = useState<string | null>(null);
-  const [manualDeduplicar, setManualDeduplicar] = useState<boolean>(false);
-  const [manualApenasEstoque, setManualApenasEstoque] = useState<boolean>(true);
-  const [manualActionSuccessKey, setManualActionSuccessKey] = useState<string | null>(null);
-  const [isManualSearching, setIsManualSearching] = useState<boolean>(false);
-  const [manualSearchError, setManualSearchError] = useState<string | null>(null);
-  const [manualQty, setManualQty] = useState<number>(1);
-  const [manualQuantities, setManualQuantities] = useState<Record<string, number>>({});
-  const [manualSearchLogs, setManualSearchLogs] = useState<string[]>([]);
 
   // Column settings for offers table (persisted in sessionStorage)
   const OFFER_COL_DEFAULTS: Record<string, { vis: boolean; w: number }> = {
@@ -415,26 +265,9 @@ export default function App() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [showColSettings]);
 
-  // Order Return tracking states
-  const [orderReturn, setOrderReturn] = useState<any | null>(null);
-  const [isCheckingReturn, setIsCheckingReturn] = useState<boolean>(false);
-  const [returnCheckLogs, setReturnCheckLogs] = useState<string[]>([]);
-  const [manualCutsAlert, setManualCutsAlert] = useState<any[] | null>(null);
-  const [autoPollReturn, setAutoPollReturn] = useState<boolean>(false);
-
-  // Distributor minimums and smart routing states
-  const [distributorMinimums, setDistributorMinimums] = useState<Record<string, number>>({
-    "GAM": 150,
-    "PanPharma": 250,
-    "Servimed": 200,
-    "Profarma": 250,
-    "SantaCruz": 300,
-    "DrogaCenter": 150,
-    "NeoSul": 150,
-    "ANB": 150,
-    "Distribuidor": 150,
-    "Não Encontrados": 0
-  });
+  // Distributor ordering and grouping states
+  const [distributorOrder, setDistributorOrder] = useState<string[]>([]);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   const getGroupMinVal = (gName: string) => {
     if (distributorMinimums[gName] !== undefined) {
@@ -468,63 +301,108 @@ export default function App() {
 
   const [showStats, setShowStats] = useState<boolean>(true);
   const [isSwapsTableVisible, setIsSwapsTableVisible] = useState<boolean>(true);
-  const [suspectItemAlert, setSuspectItemAlert] = useState<{ item: any; specificDistributorName?: string } | null>(null);
 
-  useEffect(() => {
-    async function fetchDistribuidores() {
-      if (!config.token || !config.cnpj) return;
-      setIsLoadingDistributors(true);
-      try {
-        const response = await fetch("/api/distribuidores", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(config)
-        });
-        if (response.ok) {
-          const data = await response.json();
-          if (data.distribuidores && Array.isArray(data.distribuidores)) {
-            setDistributors(data.distribuidores);
+  const distributorGroupings = useMemo(() => {
+    if (!activeReport || activeReport.length === 0) return [];
+    const map = new Map<string, { name: string; totalValue: number; itemsCount: number; items: any[] }>();
+    for (const item of activeReport) {
+      const distName = item.distribuidora || "Não Encontrados";
+      if (!map.has(distName)) {
+        map.set(distName, { name: distName, totalValue: 0, itemsCount: 0, items: [] });
+      }
+      const group = map.get(distName)!;
+      group.totalValue += item.precoLiquido * item.qtd;
+      group.itemsCount++;
+      group.items.push(item);
+    }
+    return Array.from(map.values());
+  }, [activeReport]);
+
+  const handleStartDispersingWizard = async (distName: string) => {
+    setDispersingFromDist(distName);
+    setIsSearchingDispersing(true);
+    setWizardLogs([`[BUSCA] Procurando itens elegíveis para dispersão a partir de ${distName}...`]);
+    try {
+      const distItems = activeReport.filter(it => it.distribuidora === distName && !disabledItemCodes.has(it.codInterno));
+      const otherDists = distributorGroupings.filter(g => g.name !== distName && g.name !== "Não Encontrados" && g.name !== "Sem Estoque");
+      const eligible: any[] = [];
+      for (const item of distItems) {
+        for (const otherDist of otherDists) {
+          const otherItem = otherDist.items.find((i: any) => i.codInterno === item.codInterno && i.distribuidora !== distName);
+          if (otherItem) {
+            eligible.push({ ...item, targetDist: otherDist.name });
           }
         }
-      } catch (err) {
-        console.error("Erro ao buscar distribuidores:", err);
-      } finally {
-        setIsLoadingDistributors(false);
       }
+      setDispersingEligibleItems(eligible);
+      setWizardLogs(prev => [...prev, `[OK] ${eligible.length} itens elegíveis encontrados.`]);
+    } catch (err: any) {
+      setWizardLogs(prev => [...prev, `[ERRO] ${err.message}`]);
     }
-    fetchDistribuidores();
-  }, [config.token, config.cnpj, config.useTestUrl, config.customTestUrl, config.customProductionUrl, config.customEndpoint]);
-
-  const handleToggleDistributor = (codigo: number) => {
-    setDisabledDistributors(prev => {
-      const next = new Set(prev);
-      if (next.has(codigo)) {
-        next.delete(codigo);
-      } else {
-        next.add(codigo);
-      }
-      return next;
-    });
+    setIsSearchingDispersing(false);
   };
 
-  // Check Backend Status
-  useEffect(() => {
-    async function checkBackend() {
-      try {
-        const response = await fetch("/api/health");
-        const data = await response.json();
-        if (data && data.status === "ok") {
-          setBackendStatus("online");
-        } else {
-          setBackendStatus("offline");
+  const handleStartCompletingWizard = async (distName: string) => {
+    setCompletingTargetDist(distName);
+    setIsSearchingCompleting(distName);
+    setWizardLogs([`[BUSCA] Analisando itens para completar pedido de ${distName}...`]);
+    try {
+      const targetItems = activeReport.filter(it => it.distribuidora === distName && !disabledItemCodes.has(it.codInterno));
+      const otherDists = distributorGroupings.filter(g => g.name !== distName && g.name !== "Não Encontrados" && g.name !== "Sem Estoque");
+      const eligible: any[] = [];
+      for (const item of targetItems) {
+        for (const otherDist of otherDists) {
+          const otherItem = otherDist.items.find((i: any) => i.codInterno === item.codInterno && i.distribuidora !== distName);
+          if (otherItem) {
+            eligible.push({ ...otherItem, targetDist: distName });
+          }
         }
-      } catch (err) {
-        console.error("Erro ao checar integridade do backend:", err);
-        setBackendStatus("offline");
+      }
+      setCompletingEligibleItems(eligible);
+      setWizardLogs(prev => [...prev, `[OK] ${eligible.length} itens de outros distribuidores elegíveis.`]);
+    } catch (err: any) {
+      setWizardLogs(prev => [...prev, `[ERRO] ${err.message}`]);
+    }
+    setIsSearchingCompleting(null);
+  };
+
+  const handleApplyDispersingTransfers = (selectedCodes: string[]) => {
+    if (selectedCodes.length === 0 || !dispersingFromDist) return;
+    const newResult = { ...result! };
+    const newReport = [...newResult.report];
+    const updatedMap = new Map<string, any>(newReport.map(r => [r.codInterno, r]));
+    for (const code of selectedCodes) {
+      const item = dispersingEligibleItems.find((i: any) => i.codInterno === code);
+      if (item && updatedMap.has(code)) {
+        const existing = updatedMap.get(code);
+        updatedMap.set(code, { ...existing, distribuidora: item.targetDist });
       }
     }
-    checkBackend();
-  }, []);
+    newResult.report = Array.from(updatedMap.values());
+    setResult(newResult);
+    setDispersingFromDist(null);
+    setDispersingEligibleItems([]);
+    setDispersingSelectedCodes(new Set());
+  };
+
+  const handleApplyCompletingTransfers = (selectedCodes: string[]) => {
+    if (selectedCodes.length === 0 || !completingTargetDist) return;
+    const newResult = { ...result! };
+    const newReport = [...newResult.report];
+    const updatedMap = new Map<string, any>(newReport.map(r => [r.codInterno, r]));
+    for (const code of selectedCodes) {
+      const item = completingEligibleItems.find((i: any) => i.codInterno === code);
+      if (item && updatedMap.has(code)) {
+        const existing = updatedMap.get(code);
+        updatedMap.set(code, { ...existing, distribuidora: completingTargetDist });
+      }
+    }
+    newResult.report = Array.from(updatedMap.values());
+    setResult(newResult);
+    setCompletingTargetDist(null);
+    setCompletingEligibleItems([]);
+    setCompletingSelectedCodes(new Set());
+  };
 
   // Switch tabs and automatically configure state for homologation
   const handleSwitchTab = (tab: "production" | "homologation" | "daily_items") => {
@@ -568,2401 +446,6 @@ export default function App() {
         customEndpoint: "/api/Condicoes/Molecula"
       });
     }
-  };
-
-  // File loading callback
-  const handleFileLoaded = (content: string, name: string) => {
-    setFileContent(content);
-    setFileName(name);
-    setResult(null);
-    setError(null);
-    setLogs([]);
-    setDisregardedCodes(new Set());
-    setDisabledItemCodes(new Set());
-    setBilledItemCodes(new Set());
-    setOverriddenDistributors({});
-
-    let targetCnpj = config.cnpj;
-    // Tentar extrair o CNPJ da primeira linha (Cabeçalho tipo 1) do arquivo carregado
-    try {
-      let cleanedContent = content || "";
-      if (cleanedContent.startsWith("\ufeff")) {
-        cleanedContent = cleanedContent.substring(1);
-      }
-      const lines = cleanedContent.replace(/\r\n/g, "\n").split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        const parts = line.split(";");
-        const tipo = parts[0] ? parts[0].trim() : "";
-        if (tipo === "1" && parts[1]) {
-          const rawCnpj = parts[1].trim().replace(/\D/g, "");
-          if (rawCnpj && rawCnpj.length >= 11) {
-            targetCnpj = rawCnpj;
-            setConfig(prev => ({
-              ...prev,
-              cnpj: rawCnpj
-            }));
-            break;
-          }
-        }
-      }
-    } catch (e) {
-      console.error("Erro ao analisar CNPJ do arquivo:", e);
-    }
-
-    // DISPARAR BUSCA AUTOMÁTICA DOS PEDIDOS DE PROFARMA
-    handleCheckDailyOrders(config.token, targetCnpj);
-  };
-
-  const handleClearFile = () => {
-    setFileContent("");
-    setFileName("");
-    setResult(null);
-    setError(null);
-    setLogs([]);
-    setDisregardedCodes(new Set());
-    setDisabledItemCodes(new Set());
-    setBilledItemCodes(new Set());
-    setOverriddenDistributors({});
-  };
-
-  // Perform Optimization
-  const handleOptimize = async (overrideFileContent?: string, overridePreDistributedMap?: any, overrideSimulationMode?: boolean) => {
-    const isOverrideString = typeof overrideFileContent === "string";
-    const activeFileContent = isOverrideString ? overrideFileContent : fileContent;
-    if (!activeFileContent) return;
-
-    setIsLoading(true);
-    setError(null);
-    setResult(null);
-    setLogs(["[PREPARANDO] Formatando dados para envio e iniciando conexões..."]);
-    setDisregardedCodes(new Set());
-    setOverriddenDistributors({});
-
-    try {
-      // Buscar sempre os pedidos dos últimos dois dias úteis da Profarma (automático) antes de processar o arquivo SICF
-      setLogs((prev) => [...prev, "[SISTEMA] Sincronizando pedidos recentes da Profarma para checar duplicidades..."]);
-      try {
-        await handleCheckDailyOrders(config.token, config.cnpj);
-      } catch (err: any) {
-        console.error("Erro ao sincronizar pedidos recentes automaticamente:", err);
-        setLogs((prev) => [...prev, `[SISTEMA ALERTA] Não foi possível atualizar pedidos recentes para duplicidade: ${err.message}`]);
-      }
-
-      const storedCutsStr = localStorage.getItem("cortes_recentes");
-      const cortesRecentes = storedCutsStr ? JSON.parse(storedCutsStr) : {};
-
-      const response = await fetch("/api/optimize", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          fileContent: activeFileContent,
-          token: config.token,
-          cnpj: config.cnpj,
-          margemMinima: config.margemMinima,
-          tipos: config.tipos,
-          permitirSemEstoque: config.permitirSemEstoque,
-          useTestUrl: config.useTestUrl,
-          simulationMode: overrideSimulationMode !== undefined ? overrideSimulationMode : config.simulationMode,
-          customProductionUrl: config.customProductionUrl,
-          customTestUrl: config.customTestUrl,
-          customEndpoint: config.customEndpoint,
-          disabledDistributors: Array.from(disabledDistributors),
-          externalSuppliers,
-          cortesRecentes
-        })
-      });
-
-      let data: any = {};
-      const contentType = response.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        data = await response.json();
-      } else {
-        const text = await response.text();
-        const shortText = text.length > 120 ? text.substring(0, 120) + "..." : text;
-        throw new Error(`Erro de resposta do servidor (Status ${response.status}): ${shortText || "Resposta vazia"}`);
-      }
-
-      if (data.logs) {
-        setLogs(data.logs);
-      }
-
-      if (!response.ok) {
-        throw new Error(data.error || `Erro do servidor (Status ${response.status})`);
-      }
-
-      // Update minimum order values based on the API response using compound key (distribuidora + condicao + prazo)
-      if (data.minimos && Array.isArray(data.minimos)) {
-        const newMinimums: Record<string, number> = {};
-        data.minimos.forEach((m: any) => {
-          const distName = m.NomeDist;
-          if (distName) {
-            const cond = m.Condicao || m.condicao || m.NomeCondicao || "FIXA";
-            const prz = m.Prazo !== undefined ? m.Prazo : (m.prazo !== undefined ? m.prazo : 0);
-            const compoundKey = `${distName} [${cond} | ${prz}d]`;
-            const vlrMin = m.VlrMinimo !== undefined ? m.VlrMinimo : (m.vlrMinimo !== undefined ? m.vlrMinimo : 0);
-            newMinimums[compoundKey] = vlrMin;
-          }
-        });
-        setDistributorMinimums(newMinimums);
-      } else if (data.report && data.report.length > 0) {
-        // Fallback to report items if minimos array is missing
-        const newMinimums: Record<string, number> = {};
-        for (const item of data.report) {
-          if (item.distribuidora && item.distribuidora !== "Não Encontrados" && item.distribuidora !== "Sem Estoque") {
-            const cond = item.condicao || "FIXA";
-            const prz = item.prazo !== undefined ? item.prazo : 0;
-            const compoundKey = `${item.distribuidora} [${cond} | ${prz}d]`;
-            const itemMin = item.pedidoMinimo || 0;
-            newMinimums[compoundKey] = itemMin;
-          }
-        }
-        setDistributorMinimums(newMinimums);
-      }
-
-      // Restore pre-distributed items if mapping is active
-      let finalData = data;
-      const mapToUse = isOverrideString ? overridePreDistributedMap : preDistributedMap;
-
-      if (mapToUse && finalData.report && Array.isArray(finalData.report)) {
-        const fallbackDists: Record<number, string> = {
-          4: "Profarma",
-          53: "ANB",
-          59: "SMARTDISTRIBUIDORA",
-          60: "CervoSul",
-          81: "GAM",
-          624: "Gauchofarma",
-          2: "Pan/Santa",
-          68: "Dp4",
-          79: "NeoSul"
-        };
-
-        const updatedReport = finalData.report.map((item: any) => {
-          const ean = item.originalEan;
-          const mapped = mapToUse[ean];
-          if (mapped) {
-            const distObj = distributors.find((d: any) => d.Codigo === mapped.codDist);
-            const distName = distObj ? distObj.Nome : (fallbackDists[mapped.codDist] || `Fornecedor ${mapped.codDist}`);
-
-            // Procurar se existe alguma alternativa correspondente a essa distribuidora e condicao/prazo
-            let matchedAlternative = item.alternatives?.find((alt: any) => 
-              alt.codDist === mapped.codDist && 
-              String(alt.condicao).toUpperCase() === String(mapped.condicao).toUpperCase()
-            );
-
-            if (!matchedAlternative) {
-              matchedAlternative = item.alternatives?.find((alt: any) => alt.codDist === mapped.codDist);
-            }
-
-            if (matchedAlternative) {
-              const ecoUnit = Math.max(0, item.originalPreco - matchedAlternative.preco);
-              return {
-                ...item,
-                novoEan: matchedAlternative.ean,
-                novaDescricao: matchedAlternative.descricao || item.novaDescricao || item.originalDescricao,
-                novoLaboratorio: matchedAlternative.laboratorio || item.novoLaboratorio || item.originalLaboratorio,
-                novoPreco: matchedAlternative.preco,
-                qtd: mapped.quant,
-                economiaUnit: ecoUnit,
-                economiaTotal: ecoUnit * mapped.quant,
-                distribuidora: matchedAlternative.distribuidora,
-                codDist: matchedAlternative.codDist,
-                condicao: matchedAlternative.condicao,
-                prazo: matchedAlternative.prazo,
-                codProdutoDist: mapped.codProdutoDist || matchedAlternative.codProdutoDist || "",
-                estoque: matchedAlternative.estoque || 9999,
-                isShortage: false
-              };
-            } else {
-              // Criar oferta virtual correspondente ao log
-              const mockPrice = item.originalPreco || 0;
-              return {
-                ...item,
-                novoEan: item.originalEan,
-                novaDescricao: item.originalDescricao,
-                novoLaboratorio: item.originalLaboratorio,
-                novoPreco: mockPrice,
-                qtd: mapped.quant,
-                economiaUnit: 0,
-                economiaTotal: 0,
-                distribuidora: distName,
-                codDist: mapped.codDist,
-                condicao: mapped.condicao,
-                prazo: mapped.prazo,
-                codProdutoDist: mapped.codProdutoDist || "",
-                estoque: 9999,
-                isShortage: false
-              };
-            }
-          }
-          return item;
-        });
-
-        finalData = {
-          ...finalData,
-          report: updatedReport,
-          summary: {
-            totalItems: updatedReport.length,
-            itemsTreated: updatedReport.length,
-            itemsSwapped: updatedReport.filter((it: any) => it.originalEan !== it.novoEan).length,
-            totalSavings: updatedReport.reduce((sum: number, it: any) => sum + (it.economiaTotal || 0), 0)
-          }
-        };
-
-        setLogs(prev => [
-          ...prev,
-          `[SUCESSO] Distribuição e faturamento restaurados com sucesso para ${updatedReport.filter((it: any) => !it.isShortage).length} itens com base no log!`
-        ]);
-      }
-
-      setResult(finalData);
-      setShowQuantityInterception(finalData.report?.some((it: any) => it.alertaConfirmarQtd) || false);
-      setPreDistributedMap(null); // Limpar após uso
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Ocorreu um erro inesperado durante a otimização.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Toggle item disregard status
-  const handleToggleDisregard = (codInterno: string) => {
-    setDisregardedCodes((prev) => {
-      const next = new Set(prev);
-      if (next.has(codInterno)) {
-        next.delete(codInterno);
-      } else {
-        next.add(codInterno);
-      }
-      return next;
-    });
-  };
-
-  // Toggle item disabled/active status
-  const handleToggleDisabled = (codInterno: string) => {
-    setDisabledItemCodes((prev) => {
-      const next = new Set(prev);
-      if (next.has(codInterno)) {
-        next.delete(codInterno);
-      } else {
-        next.add(codInterno);
-      }
-      return next;
-    });
-  };
-
-  // Update item quantity inline
-  const handleUpdateQty = (codInterno: string, newQty: number) => {
-    setResult((prev: any) => {
-      if (!prev) return null;
-      if (newQty === 0) {
-        return {
-          ...prev,
-          report: prev.report.filter((item: any) => item.codInterno !== codInterno)
-        };
-      }
-      return {
-        ...prev,
-        report: prev.report.map((item: any) => {
-          if (item.codInterno === codInterno) {
-            const qty = Math.max(1, newQty);
-            return {
-              ...item,
-              qtd: qty,
-              economiaTotal: (item.economiaUnit || 0) * qty
-            };
-          }
-          return item;
-        })
-      };
-    });
-  };
-
-  // Update item condition selection inline
-  const handleSelectCondition = (codInterno: string, selectedAlt: any) => {
-    setResult((prev: any) => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        report: prev.report.map((item: any) => {
-          if (item.codInterno === codInterno) {
-            const qty = item.qtd;
-            const priceDiff = item.originalPreco - selectedAlt.preco;
-            const ecoUnit = priceDiff > 0 ? priceDiff : 0;
-            return {
-              ...item,
-              novoEan: selectedAlt.ean || item.originalEan,
-              novaDescricao: selectedAlt.descricao || item.originalDescricao,
-              novoLaboratorio: selectedAlt.laboratorio || item.originalLaboratorio || "GENÉRICO",
-              novoPreco: selectedAlt.preco,
-              economiaUnit: ecoUnit,
-              economiaTotal: ecoUnit * qty,
-              distribuidora: selectedAlt.distribuidora,
-              codDist: selectedAlt.codDist,
-              condicao: selectedAlt.condicao,
-              prazo: selectedAlt.prazo,
-              qtdMin: selectedAlt.qtdMin,
-              qtdMax: selectedAlt.qtdMax,
-              cx: selectedAlt.cx,
-              estoque: selectedAlt.estoque,
-              codProdutoDist: selectedAlt.codProdutoDist !== undefined ? selectedAlt.codProdutoDist : (item.codProdutoDist || ""),
-              codProduto: (() => {
-                const finalCodProdutoDist = selectedAlt.codProdutoDist !== undefined ? selectedAlt.codProdutoDist : (item.codProdutoDist || "");
-                const rawCodProduto = selectedAlt.codProduto !== undefined ? selectedAlt.codProduto : (item.codProduto || "");
-                return (rawCodProduto === "0" || !rawCodProduto) ? finalCodProdutoDist : rawCodProduto;
-              })()
-            };
-          }
-          return item;
-        })
-      };
-    });
-  };
-
-  // Delete all items for a specific distributor
-  const handleDeleteDistributor = (distName: string) => {
-    if (!result) return;
-    setResult((prev: any) => {
-      if (!prev) return null;
-      const updatedReport = prev.report.filter((item: any) => {
-        const dist = item.distribuidora || "Não Encontrados";
-        const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque";
-        const itemGroupKey = isVirtual 
-          ? dist 
-          : `${dist} [${item.condicao || "FIXA"} | ${item.prazo !== undefined ? item.prazo : 0}d]`;
-        return itemGroupKey !== distName;
-      });
-      
-      const activeSwaps = updatedReport.filter((item: any) => !disregardedCodes.has(item.codInterno));
-      const newTotalSavings = activeSwaps.reduce((acc: number, it: any) => acc + (it.economiaTotal || 0), 0);
-      
-      return {
-        ...prev,
-        summary: {
-          ...prev.summary,
-          totalItems: updatedReport.length,
-          itemsTreated: updatedReport.length,
-          totalSavings: newTotalSavings
-        },
-        report: updatedReport
-      };
-    });
-  };
-
-  // Derived active state of the report items (restored to original when disregarded)
-  const activeReport = useMemo(() => {
-    if (!result) return [];
-    return result.report
-      .filter((item) => !billedItemCodes.has(item.codInterno))
-      .map((item) => {
-        const isDisregarded = disregardedCodes.has(item.codInterno);
-        const isDisabled = disabledItemCodes.has(item.codInterno);
-        const overDist = overriddenDistributors[item.codInterno];
-        
-        const baseItem = {
-          ...item,
-          distribuidora: overDist || item.distribuidora || "Não Encontrados",
-          disabled: isDisabled
-        };
-
-        if (isDisregarded) {
-          let resolvedDist = item.originalDist;
-          let resolvedCodDist = item.originalCodDist;
-          let resolvedEstoque = item.originalEstoque;
-          let resolvedPreco = item.originalPrecoCotado !== undefined ? item.originalPrecoCotado : item.originalPreco;
-          let resolvedCondicao = item.originalCondicao;
-          let resolvedCodProdutoDist = item.originalCodProdutoDist;
-          let resolvedPrazo = item.originalPrazo;
-          let resolvedCodProduto = item.originalCodProduto;
-
-          const origEanClean = cleanEan(item.originalEan);
-          const origEstNum = item.originalEstoque !== undefined ? Number(item.originalEstoque) : 0;
-
-          if (origEstNum <= 0 && item.alternatives && item.alternatives.length > 0) {
-            const origAltsWithStock = item.alternatives.filter((alt: any) => {
-              const altEanClean = cleanEan(alt.ean || alt.Ean || "");
-              const altEstNum = alt.estoque !== undefined ? Number(alt.estoque) : 0;
-              return altEanClean === origEanClean && altEstNum > 0;
-            });
-
-            if (origAltsWithStock.length > 0) {
-              origAltsWithStock.sort((a: any, b: any) => {
-                const priceA = a.preco !== undefined ? Number(a.preco) : 999999;
-                const priceB = b.preco !== undefined ? Number(b.preco) : 999999;
-                return priceA - priceB;
-              });
-
-              const bestAlt = origAltsWithStock[0];
-              resolvedDist = bestAlt.distribuidora;
-              resolvedCodDist = bestAlt.codDist;
-              resolvedEstoque = bestAlt.estoque;
-              resolvedPreco = bestAlt.preco;
-              resolvedCondicao = bestAlt.condicao;
-              resolvedCodProdutoDist = bestAlt.codProdutoDist;
-              resolvedPrazo = bestAlt.prazo;
-              resolvedCodProduto = bestAlt.codProduto;
-            }
-          }
-
-          return {
-            ...baseItem,
-            novoEan: item.originalEan,
-            novaDescricao: item.originalDescricao,
-            novoLaboratorio: item.originalLaboratorio,
-            novoPreco: resolvedPreco,
-            economiaUnit: 0,
-            economiaTotal: 0,
-            distribuidora: overDist || resolvedDist || "Não Encontrados",
-            codDist: resolvedCodDist !== undefined ? resolvedCodDist : baseItem.codDist,
-            estoque: resolvedEstoque !== undefined ? resolvedEstoque : baseItem.estoque,
-            condicao: resolvedCondicao !== undefined ? resolvedCondicao : baseItem.condicao,
-            codProdutoDist: resolvedCodProdutoDist !== undefined ? resolvedCodProdutoDist : baseItem.codProdutoDist,
-            prazo: resolvedPrazo !== undefined ? resolvedPrazo : baseItem.prazo,
-            codProduto: resolvedCodProduto !== undefined ? resolvedCodProduto : baseItem.codProduto,
-          };
-        }
-        return baseItem;
-      });
-  }, [result, disregardedCodes, disabledItemCodes, overriddenDistributors, billedItemCodes]);
-
-  // Detect recent successful orders at Profarma (last 2 business days)
-  const profarmaRecentOrdersEans = useMemo(() => {
-    if (!dailyOrders || !Array.isArray(dailyOrders)) return new Set<string>();
-
-    const eans = new Set<string>();
-    
-    const getRecentBusinessDays = (count: number) => {
-      const dates = new Set<string>();
-      const d = new Date();
-      
-      const formatDateStr = (date: Date) => {
-        const dd = String(date.getDate()).padStart(2, '0');
-        const mm = String(date.getMonth() + 1).padStart(2, '0');
-        const yyyy = date.getFullYear();
-        return `${dd}/${mm}/${yyyy}`;
-      };
-
-      dates.add(formatDateStr(d));
-
-      let businessDaysFound = (d.getDay() === 0 || d.getDay() === 6) ? 0 : 1;
-      const tempDate = new Date(d.getTime());
-      
-      for (let i = 1; i <= 10; i++) {
-        tempDate.setDate(tempDate.getDate() - 1);
-        const dayOfWeek = tempDate.getDay();
-        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        dates.add(formatDateStr(tempDate));
-        if (!isWeekend) {
-          businessDaysFound++;
-          if (businessDaysFound >= count) {
-            break;
-          }
-        }
-      }
-      return dates;
-    };
-
-    const allowedDates = getRecentBusinessDays(2);
-
-    dailyOrders.forEach(order => {
-      const orderDate = String(order.dataPedido || order.DataPedido || "").trim();
-      const isWithinAllowedDates = allowedDates.has(orderDate);
-
-      if (isWithinAllowedDates && order.detalhes?.Itens) {
-        order.detalhes.Itens.forEach((item: any) => {
-          const codDist = item.CodDist !== undefined ? item.CodDist : (item.codDist !== undefined ? item.codDist : 0);
-          const ean = String(item.Ean || item.ean || "").replace(/\D/g, "");
-          if (ean && (codDist === 4 || String(item.NomeDist || "").toUpperCase().includes("PROFARMA"))) {
-            eans.add(ean);
-          }
-        });
-      }
-    });
-
-    return eans;
-  }, [dailyOrders]);
-
-  // Pending alert items for quantity/fracionado/Profarma interception
-  const pendingAlertItems = useMemo(() => {
-    if (!result || !result.report) return [];
-    return activeReport.filter((item) => {
-      if (item.disabled) return false;
-      
-      const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) &&
-        (profarmaRecentOrdersEans.has(String(item.novoEan || "").replace(/\D/g, "")) || profarmaRecentOrdersEans.has(String(item.originalEan || "").replace(/\D/g, "")));
-
-      if (isProfarmaAlert && !item.isProfarmaAlertAck) {
-        return true;
-      }
-
-      return item.alertaConfirmarQtd;
-    }).map((item) => {
-      const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) &&
-        (profarmaRecentOrdersEans.has(String(item.novoEan || "").replace(/\D/g, "")) || profarmaRecentOrdersEans.has(String(item.originalEan || "").replace(/\D/g, "")));
-
-      if (isProfarmaAlert) {
-        return {
-          ...item,
-          isProfarmaAlert: true,
-          motivoAlertaProfarma: "⚠️ Alerta de Duplicidade Profarma: Este item foi enviado para a Profarma nas últimas 48h. Verifique a quantidade desejada ou digite 0 para remover do lote."
-        };
-      }
-      return item;
-    });
-  }, [result, activeReport, profarmaRecentOrdersEans]);
-
-  const handleConfirmQtyInInterception = (codInterno: string, newQty: number) => {
-    if (newQty === 0) {
-      setResult((prev: any) => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          report: prev.report.filter((item: any) => item.codInterno !== codInterno)
-        };
-      });
-    } else {
-      setResult((prev: any) => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          report: prev.report.map((item: any) => {
-            if (item.codInterno === codInterno) {
-              const qty = Math.max(1, newQty);
-              return {
-                ...item,
-                qtd: qty,
-                economiaTotal: (item.economiaUnit || 0) * qty,
-                alertaConfirmarQtd: false,
-                isProfarmaAlertAck: true
-              };
-            }
-            return item;
-          })
-        };
-      });
-    }
-  };
-
-  // Derived active metrics summary
-  const activeSummary = useMemo(() => {
-    if (!result) return null;
-    const activeItems = result.report.filter(item => !billedItemCodes.has(item.codInterno));
-    const totalItems = activeItems.filter(item => !disabledItemCodes.has(item.codInterno)).length;
-    const itemsTreated = activeItems.filter(item => !disabledItemCodes.has(item.codInterno)).length;
-    const itemsSwapped = activeItems.filter(item => !disregardedCodes.has(item.codInterno) && item.originalEan !== item.novoEan && !disabledItemCodes.has(item.codInterno)).length;
-    const totalSavings = activeItems
-      .filter(item => !disregardedCodes.has(item.codInterno) && !disabledItemCodes.has(item.codInterno))
-      .reduce((sum, item) => sum + item.economiaTotal, 0);
-
-    return {
-      totalItems,
-      itemsTreated,
-      itemsSwapped,
-      totalSavings
-    };
-  }, [result, disregardedCodes, disabledItemCodes, billedItemCodes]);
-
-  // Generate dynamic SICF content reflecting only currently active swaps
-  const getOptimizedFileContent = () => {
-    if (!result || !fileContent) return "";
-    
-    const lines = fileContent.replace(/\r\n/g, "\n").split("\n");
-    const finalLines: string[] = [];
-    
-    const reportMap = new Map<string, SwapReportItem>(result.report.map(r => [r.codInterno, r]));
-    const activeReportMap = new Map<string, SwapReportItem>(activeReport.map(r => [r.codInterno, r]));
-    
-    // Track codes present in original uploaded file
-    const originalCodInternos = new Set<string>();
-    for (const line of lines) {
-      const parts = line.split(";");
-      if (parts[0] === "2" && parts.length >= 4) {
-        originalCodInternos.add(parts[3].trim());
-      }
-    }
-
-    // Filter manual items to append
-    const manualItemsToAppend = result.report.filter(r => !originalCodInternos.has(r.codInterno) && !disregardedCodes.has(r.codInterno) && !disabledItemCodes.has(r.codInterno));
-    let manualItemsAppended = false;
-
-    const appendManualLines = () => {
-      if (manualItemsAppended) return;
-      for (const item of manualItemsToAppend) {
-        const newLine = [
-          "2",
-          item.novoEan,
-          String(item.qtd),
-          item.codInterno,
-          item.novaDescricao,
-          item.novoLaboratorio,
-          item.novoPreco.toFixed(2)
-        ].join(";");
-        finalLines.push(newLine);
-      }
-      manualItemsAppended = true;
-    };
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      
-      const parts = trimmed.split(";");
-      const tipo = parts[0];
-      
-      if (tipo === "2" && parts.length >= 7) {
-        const codInterno = parts[3].trim();
-        const reportItem = reportMap.get(codInterno);
-        
-        if (disabledItemCodes.has(codInterno)) {
-          // If the item is completely disabled, skip writing it to the optimized file
-          continue;
-        }
-        
-        if (reportItem && !disregardedCodes.has(codInterno)) {
-          // Swap is active, rewrite with optimized values
-          const newLine = [
-            "2",
-            reportItem.novoEan,
-            parts[2], // keep quantity string
-            reportItem.codInterno,
-            reportItem.novaDescricao,
-            reportItem.novoLaboratorio,
-            reportItem.novoPreco.toFixed(2)
-          ].join(";");
-          finalLines.push(newLine);
-        } else {
-          const activeItem = activeReportMap.get(codInterno);
-          if (activeItem) {
-            const newLine = [
-              "2",
-              activeItem.novoEan || parts[1],
-              String(activeItem.qtd || parts[2]),
-              activeItem.codInterno,
-              activeItem.novaDescricao || parts[4],
-              activeItem.novoLaboratorio || parts[5],
-              (activeItem.novoPreco || Number(parts[6]) || 0).toFixed(2)
-            ].join(";");
-            finalLines.push(newLine);
-          } else {
-            finalLines.push(line);
-          }
-        }
-      } else if (tipo === "9") {
-        // Append manual items right before footer 9
-        appendManualLines();
-        finalLines.push(line);
-      } else {
-        // Keeps header (1) or other lines unchanged
-        finalLines.push(line);
-      }
-    }
-    
-    // In case there is no line starting with 9, append manual items at the end
-    appendManualLines();
-    
-    return finalLines.join("\r\n");
-  };
-
-  // File downloads
-  const downloadSICF = () => {
-    if (!result) return;
-    const content = getOptimizedFileContent();
-    const blob = new Blob([content], { type: "text/plain;charset=latin1;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    const baseName = fileName.replace(/\.[^/.]+$/, "");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `${baseName}_otimizado.txt`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const downloadCSV = () => {
-    if (!result) return;
-    const headers = [
-      "CodInterno",
-      "EanOriginal",
-      "DescricaoOriginal",
-      "LaboratorioOriginal",
-      "PrecoOriginal",
-      "EanNovo",
-      "DescricaoNova",
-      "LaboratorioNovo",
-      "PrecoNovo",
-      "Qtd",
-      "EconomiaUnit",
-      "EconomiaTotal",
-      "Distribuidora",
-      "Estoque",
-      "Status"
-    ];
-
-    const rows = result.report.map((item) => {
-      const isDisregarded = disregardedCodes.has(item.codInterno);
-      return [
-        item.codInterno,
-        item.originalEan,
-        item.originalDescricao,
-        item.originalLaboratorio,
-        item.originalPreco.toFixed(2).replace(".", ","),
-        isDisregarded ? item.originalEan : item.novoEan,
-        isDisregarded ? item.originalDescricao : item.novaDescricao,
-        isDisregarded ? item.originalLaboratorio : item.novoLaboratorio,
-        isDisregarded ? item.originalPreco.toFixed(2).replace(".", ",") : item.novoPreco.toFixed(2).replace(".", ","),
-        item.qtd,
-        isDisregarded ? "0,00" : item.economiaUnit.toFixed(2).replace(".", ","),
-        isDisregarded ? "0,00" : item.economiaTotal.toFixed(2).replace(".", ","),
-        isDisregarded ? (item.originalDist !== undefined ? item.originalDist : item.distribuidora) : item.distribuidora,
-        isDisregarded ? (item.originalEstoque !== undefined ? item.originalEstoque : item.estoque) : item.estoque,
-        isDisregarded ? "Desconsiderado" : "Otimizado"
-      ];
-    });
-
-    const csvContent = [headers.join(";"), ...rows.map((r) => r.join(";"))].join("\r\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    const baseName = fileName.replace(/\.[^/.]+$/, "");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `${baseName}_relatorio.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // Enviar faturamento para SmartPed (geral ou por distribuidora!)
-  const handleSendBilling = async (specificDistributorNameInput?: any, bypassSuspectCheck = false, bypassConfirm = false, forceDownloadJson = false) => {
-    if (!result) return;
-    
-    const specificDistributorName = typeof specificDistributorNameInput === "string" ? specificDistributorNameInput : undefined;
-    let activeItems = activeReport.filter(item => !disabledItemCodes.has(item.codInterno));
-    let baseDistName = specificDistributorName ? specificDistributorName.split(" [")[0] : "Todas as Distribuidoras";
-    
-    let relatedGroups: string[] = [];
-    
-    const allDistGroups = new Set<string>();
-    activeItems.forEach(item => {
-        const dist = item.distribuidora || "Não Encontrados";
-        if (!specificDistributorName || dist === baseDistName) {
-            const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque";
-            const groupKey = isVirtual 
-              ? dist 
-              : `${dist} [${item.condicao || "FIXA"} | ${item.prazo !== undefined ? item.prazo : 0}d]`;
-            allDistGroups.add(groupKey);
-        }
-    });
-    
-    relatedGroups = Array.from(allDistGroups);
-
-    if (specificDistributorName) {
-      // Now filter activeItems so we send ALL items for this baseDistName
-      activeItems = activeItems.filter(item => {
-        const dist = item.distribuidora || "Não Encontrados";
-        return dist === baseDistName;
-      });
-    }
-
-    if (forceDownloadJson) {
-      // Gerar JSON para análise sem checar nada ou enviar
-      const payloadItems = activeItems.map(item => {
-        const baseItem = item;
-        const codProdDist = String(baseItem.codProdutoDist || "").trim();
-        const codProdRaw = String(baseItem.codProduto || "").trim();
-        const finalCodProduto = (codProdRaw === "" || codProdRaw === "0") ? codProdDist : codProdRaw;
-
-        return {
-          ...baseItem,
-          codProduto: finalCodProduto
-        };
-      });
-
-      const payload = {
-        items: payloadItems,
-        token: config.token,
-        cnpj: config.cnpj,
-        useTestUrl: config.useTestUrl,
-        simulationMode: config.simulationMode,
-        tipos: config.tipos,
-        margemMinima: config.margemMinima,
-        permitirSemEstoque: config.permitirSemEstoque
-      };
-
-      const jsonStr = JSON.stringify(payload, null, 2);
-      const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      const sanitizedDistName = baseDistName.replace(/\s+/g, "_");
-      link.setAttribute("href", url);
-      link.setAttribute("download", `faturamento_payload_${sanitizedDistName}.json`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      return;
-    }
-
-    // Verificar se o item suspeito "7896004706559" está entre os itens ativos a serem faturados
-    if (!bypassSuspectCheck) {
-      const suspectItem = activeItems.find(item => 
-        String(item.originalEan).trim() === "7896004706559" || 
-        String(item.novoEan).trim() === "7896004706559"
-      );
-      if (suspectItem) {
-        setSuspectItemAlert({
-          item: suspectItem,
-          specificDistributorName
-        });
-        return; // Interrompe o faturamento temporariamente para mostrar o modal de alerta
-      }
-    }
-
-    if (activeItems.length === 0) {
-      alert("Nenhum item ativo para faturar. Certifique-se de que há itens habilitados.");
-      return;
-    }
-
-    if (!bypassConfirm) {
-      setBillingChoice({
-        specificDistributorName,
-        baseDistName,
-        activeItems
-      });
-      return;
-    }
-      
-    setBilledGroups(prev => {
-        const next = { ...prev };
-        relatedGroups.forEach(g => {
-            next[g] = { status: "faturando", faltas: [], logs: ["Iniciando faturamento..."] };
-        });
-        return next;
-    });
-
-    setIsBillingLoading(true);
-    setError(null);
-    setBillingResult(null);
-    setIsBillingModalOpen(true);
-    setReturnCheckLogs([]);
-    setLogs(["[SISTEMA] Iniciando comunicação com API SmartPed...", `[SISTEMA] Preparando ${activeItems.length} itens para envio.`]);
-
-    try {
-      const response = await fetch("/api/faturar", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          items: activeItems.map(item => {
-            const baseItem = item;
-            const codProdDist = String(baseItem.codProdutoDist || "").trim();
-            const codProdRaw = String(baseItem.codProduto || "").trim();
-            const finalCodProduto = (codProdRaw === "" || codProdRaw === "0") ? codProdDist : codProdRaw;
-
-            return {
-              ...baseItem,
-              codProduto: finalCodProduto
-            };
-          }),
-          token: config.token,
-          cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
-          simulationMode: config.simulationMode,
-          tipos: config.tipos,
-          margemMinima: config.margemMinima,
-          permitirSemEstoque: config.permitirSemEstoque
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Erro ao enviar faturamento.");
-      }
-
-      // Hide billed items from the UI instantly
-      setBilledItemCodes(prev => {
-         const next = new Set(prev);
-         activeItems.forEach(i => next.add(i.codInterno));
-         return next;
-      });
-
-      // Salvar itens manuais enviados no faturamento para posterior verificação de faltas
-      try {
-        const manualItems = activeItems.filter(i => i.codInterno.startsWith("MANUAL-"));
-        if (manualItems.length > 0) {
-          const stored = localStorage.getItem("itens_manuais_enviados");
-          const list = stored ? JSON.parse(stored) : [];
-          const numPedido = data.numPedido || "LOTE";
-          
-          manualItems.forEach(item => {
-            list.push({
-              ean: cleanEan(item.novoEan || item.originalEan),
-              descricao: item.novaDescricao || item.originalDescricao,
-              laboratorio: item.novoLaboratorio || item.originalLaboratorio || "",
-              distribuidora: item.distribuidora,
-              codDist: item.codDist,
-              quantSolicitada: item.qtd,
-              precoLiquido: item.novoPreco || item.originalPreco,
-              numPedido: String(numPedido),
-              dataEnvio: new Date().toISOString()
-            });
-          });
-          localStorage.setItem("itens_manuais_enviados", JSON.stringify(list));
-        }
-      } catch (e) {
-        console.error("Erro ao salvar itens manuais enviados no localStorage:", e);
-      }
-
-      setBillingResult(data);
-      if (data.logs) {
-        setLogs(prev => [...prev, ...data.logs]);
-      }
-
-      // Start polling for the order automatically
-      if (data.numPedido) {
-        setAutoPollReturn(true);
-        setBillingContext({ relatedGroups, baseDistName, numPedido: data.numPedido, itemsFaturados: data.itemsFaturados });
-      }
-    } catch (err: any) {
-      console.error(err);
-      setIsBillingModalOpen(false);
-      alert(err.message || "Erro inesperado ao processar faturamento.");
-      setBilledGroups(prev => {
-        const next = { ...prev };
-        relatedGroups.forEach(g => {
-          delete next[g];
-        });
-        return next;
-      });
-    } finally {
-      setIsBillingLoading(false);
-    }
-  };
-
-  const handleCloseAndConsolidateBilling = () => {
-    if (billingResult && result) {
-      const distsInReturn = orderReturn?.Retorno?.Dists || orderReturn?.Retorno?.dists || [];
-      const hasFinalizedReturn = distsInReturn.some((d: any) => d.Status === 3);
-      
-      if (orderReturn && orderReturn.Retorno && orderReturn.Retorno.Itens && hasFinalizedReturn) {
-        handleReRouteShortages();
-        return;
-      } else {
-        const baseDistName = billingContext?.baseDistName || "Todas as Distribuidoras";
-        
-        const sentItems = result.report.filter(item => {
-          const dist = item.distribuidora || "Não Encontrados";
-          const isThisDist = baseDistName === "Todas as Distribuidoras" || dist === baseDistName;
-          return isThisDist && !disabledItemCodes.has(item.codInterno) && !billedItemCodes.has(item.codInterno);
-        });
-
-        const newFaturadosGlobais = [...faturadosGlobais];
-        const itemsToKeep = [];
-        const numPedido = billingContext?.numPedido || "LOTE";
-        
-        for (const reportItem of result.report) {
-          const dist = reportItem.distribuidora || "Não Encontrados";
-          const isThisDist = baseDistName === "Todas as Distribuidoras" || dist === baseDistName;
-          const wasSentNow = isThisDist && !disabledItemCodes.has(reportItem.codInterno) && !billedItemCodes.has(reportItem.codInterno);
-          const wasAlreadyBilled = billedItemCodes.has(reportItem.codInterno);
-          
-          if (wasSentNow || wasAlreadyBilled) {
-            const currentEan = cleanEan(reportItem.novoEan || reportItem.originalEan);
-            if (!newFaturadosGlobais.some(existing => existing.ean === currentEan && existing.notaCupom === `SMARTPED-${numPedido}`)) {
-              newFaturadosGlobais.push({
-                fornecedor: reportItem.distribuidora,
-                ean: currentEan,
-                descricao: reportItem.novaDescricao || reportItem.originalDescricao,
-                laboratorio: reportItem.novoLaboratorio || reportItem.originalLaboratorio || "",
-                valor: reportItem.novoPreco || reportItem.originalPreco,
-                quantidade: reportItem.qtd,
-                notaCupom: `SMARTPED-${numPedido}`
-              });
-            }
-          } else {
-            itemsToKeep.push(reportItem);
-          }
-        }
-        
-        setFaturadosGlobais(newFaturadosGlobais);
-        setResult(prev => {
-          if (!prev) return null;
-          const activeSwaps = itemsToKeep.filter((it) => !disregardedCodes.has(it.codInterno));
-          const newTotalSavings = activeSwaps.reduce((sum, it) => sum + (it.economiaTotal || 0), 0);
-          return {
-            ...prev,
-            summary: {
-              ...prev.summary,
-              totalItems: itemsToKeep.length,
-              totalSavings: newTotalSavings
-            },
-            report: itemsToKeep
-          };
-        });
-        
-        setBilledItemCodes(prev => {
-          const next = new Set(prev);
-          sentItems.forEach(si => next.delete(si.codInterno));
-          return next;
-        });
-        
-        setBilledGroups(prev => {
-          const next = { ...prev };
-          if (billingContext && billingContext.relatedGroups) {
-            billingContext.relatedGroups.forEach(g => {
-              delete next[g];
-            });
-          }
-          return next;
-        });
-      }
-    }
-    
-    setIsBillingModalOpen(false);
-    setBillingResult(null);
-    setOrderReturn(null);
-    setAutoPollReturn(false);
-  };
-
-  const pollOrderReturn = async (numPedido: number, itemsFaturados: any[], relatedGroups: string[], baseDistName: string) => {
-    const checkReturn = async () => {
-      try {
-        const response = await fetch("/api/pedido-retorno", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            numPedido,
-            token: config.token,
-            cnpj: config.cnpj,
-            useTestUrl: config.useTestUrl,
-            itemsFaturados,
-            simulationMode: config.simulationMode
-          })
-        });
-
-        const data = await response.json();
-        
-        // Update logs even if not finished
-        if (response.ok && data.logs && data.logs.length > 0) {
-           setBilledGroups(prev => {
-              const next = { ...prev };
-              relatedGroups.forEach(g => {
-                 const currentLogs = prev[g]?.logs || [];
-                 // Avoid adding duplicate logs
-                 const newLogs = [...currentLogs];
-                 data.logs.forEach((l: string) => {
-                    if (!newLogs.includes(l)) newLogs.push(l);
-                 });
-                 next[g] = { ...prev[g], logs: newLogs };
-              });
-              return next;
-           });
-        }
-
-        if (response.ok && data.apiResponse && (data.apiResponse.dists || data.apiResponse.Dists || data.apiResponse.Retorno?.dists || data.apiResponse.Retorno?.Dists)) {
-          const rawRetorno = data.apiResponse?.Retorno || data.apiResponse?.retorno || data.apiResponse;
-          const dists = rawRetorno?.dists || rawRetorno?.Dists || [];
-          const itens = rawRetorno?.Itens || rawRetorno?.itens || [];
-
-          // Extraímos os códigos das distribuidoras envolvidas no lote enviado
-          const codDistsNoLote = Array.from(new Set((itemsFaturados || []).map((it: any) => String(it.codDist || it.CodDist || "").trim())));
-          
-          let isAllFinalized = false;
-          if (dists && dists.length > 0) {
-            if (codDistsNoLote.length > 0) {
-              const distsDoLote = dists.filter((d: any) => codDistsNoLote.includes(String(d.CodDist || d.codDist || "").trim()));
-              if (distsDoLote.length > 0) {
-                isAllFinalized = distsDoLote.every((d: any) => d.Status === 3);
-              } else {
-                isAllFinalized = dists.every((d: any) => d.Status === 3);
-              }
-            } else {
-              isAllFinalized = dists.every((d: any) => d.Status === 3);
-            }
-          }
-
-          if (isAllFinalized) { // Finalizado
-            // Extract faltas
-            const faltas = itens.filter((it: any) => parseFloat(it.QuantFaturada || it.quantFaturada || "0") === 0);
-            const succeededEans = itens.filter((it: any) => parseFloat(it.QuantFaturada || it.quantFaturada || "0") > 0).map((it: any) => String(it.Ean || it.ean).trim());
-            
-            // Update billedGroups state
-            setBilledGroups(prev => {
-              const next = { ...prev };
-              relatedGroups.forEach(g => {
-                 const currentLogs = prev[g]?.logs || [];
-                 // Ensure "Pedido retornado" is added
-                 if (!currentLogs.includes("Pedido retornado do distribuidor.")) {
-                    currentLogs.push("Pedido retornado do distribuidor.");
-                 }
-                 next[g] = { status: "retornado", faltas, logs: currentLogs };
-              });
-              return next;
-            });
-            
-            // Extract the faturados from the current result before updating it
-            setResult(prev => {
-              if (!prev) return prev;
-              
-              const newFaturadosGlobais: any[] = [];
-              const newReport = prev.report.filter(item => {
-                const dist = item.distribuidora || "Não Encontrados";
-                const currentEan = String(item.novoEan || item.originalEan).trim();
-                const itemDistCod = String(item.codDist).trim();
-
-                // Identifica se o item de report pertence a este lote faturado
-                const isThisDist = baseDistName === "Todas as Distribuidoras"
-                  ? itemsFaturados.some((it: any) => String(it.ean || it.Ean).trim() === currentEan && String(it.codDist || it.CodDist).trim() === itemDistCod)
-                  : dist === baseDistName;
-                
-                if (isThisDist && succeededEans.includes(currentEan)) {
-                  const apiReturnItem = itens.find((it: any) => String(it.Ean || it.ean).trim() === currentEan && String(it.CodDist || it.codDist).trim() === itemDistCod);
-                  const itemFornecedor = item.distribuidora || apiReturnItem?.NomeDist || apiReturnItem?.nomeDist || baseDistName;
-                  newFaturadosGlobais.push({
-                      ean: currentEan,
-                      descricao: item.novaDescricao || item.originalDescricao,
-                      laboratorio: item.novoLaboratorio || item.originalLaboratorio || "",
-                      fornecedor: itemFornecedor,
-                      quantidade: parseFloat(apiReturnItem?.QuantFaturada || apiReturnItem?.quantFaturada || String(item.qtd)),
-                      valor: item.novoPreco || item.originalPreco,
-                      notaCupom: `SMARTPED-${numPedido}`
-                  });
-                  return false; // Remove successfully billed item
-                }
-                
-                // If it's a falta, keep it and update observation
-                if (isThisDist) {
-                  const faltaMatch = itens.find((f: any) => String(f.Ean || f.ean).trim() === currentEan && String(f.CodDist || f.codDist).trim() === itemDistCod);
-                  if (faltaMatch) {
-                    item.observacao = faltaMatch.Motivo || faltaMatch.motivo || "Falta de estoque";
-                  }
-                }
-
-                return true;
-              });
-              
-              if (newFaturadosGlobais.length > 0) {
-                 setFaturadosGlobais(curr => {
-                    const next = [...curr];
-                    for (const fItem of newFaturadosGlobais) {
-                       if (!next.some(existing => existing.ean === fItem.ean && existing.notaCupom === fItem.notaCupom)) {
-                          next.push(fItem);
-                       }
-                    }
-                    if (next.length > curr.length) {
-                        setTimeout(() => setIsFaturadosOpen(true), 0);
-                    }
-                    return next;
-                 });
-              }
-              
-              return { ...prev, report: newReport };
-            });
-
-            return true; // Stop polling
-          }
-        }
-        return false; // Continue polling
-      } catch (e) {
-        console.error(e);
-        return false;
-      }
-    };
-
-    const interval = setInterval(async () => {
-      const isDone = await checkReturn();
-      if (isDone) {
-        clearInterval(interval);
-      }
-    }, 2000); // 2 seconds
-  };
-
-  // Consultar status de retorno do pedido faturado
-  const handleCheckOrderReturn = async () => {
-    if (!billingContext) return;
-    const { numPedido, itemsFaturados, relatedGroups, baseDistName } = billingContext;
-    
-    setIsCheckingReturn(true);
-    try {
-      const response = await fetch("/api/pedido-retorno", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          numPedido,
-          token: config.token,
-          cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
-          itemsFaturados,
-          simulationMode: config.simulationMode
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Erro ao consultar retorno.");
-      }
-
-      setOrderReturn(data.apiResponse);
-      if (data.logs) {
-        setReturnCheckLogs(data.logs);
-      }
-      
-      // Update billedGroups
-      if (data.logs && data.logs.length > 0) {
-           setBilledGroups(prev => {
-              const next = { ...prev };
-              relatedGroups.forEach(g => {
-                 const currentLogs = prev[g]?.logs || [];
-                 // Avoid adding duplicate logs
-                 const newLogs = [...currentLogs];
-                 data.logs.forEach((l: string) => {
-                    if (!newLogs.includes(l)) newLogs.push(l);
-                 });
-                 next[g] = { ...prev[g], logs: newLogs };
-              });
-              return next;
-           });
-        }
-        
-        const rawRetorno = data.apiResponse?.Retorno || data.apiResponse?.retorno || data.apiResponse;
-        const dists = rawRetorno?.dists || rawRetorno?.Dists || [];
-        const itens = rawRetorno?.Itens || rawRetorno?.itens || [];
-        
-        if (dists && dists.length > 0) {
-          // Extraímos os códigos das distribuidoras envolvidas no lote enviado
-          const codDistsNoLote = Array.from(new Set((itemsFaturados || []).map((it: any) => String(it.codDist || it.CodDist || "").trim())));
-          
-          let isAllFinalized = false;
-          if (codDistsNoLote.length > 0) {
-            const distsDoLote = dists.filter((d: any) => codDistsNoLote.includes(String(d.CodDist || d.codDist || "").trim()));
-            if (distsDoLote.length > 0) {
-              isAllFinalized = distsDoLote.every((d: any) => d.Status === 3);
-            } else {
-              isAllFinalized = dists.every((d: any) => d.Status === 3);
-            }
-          } else {
-            isAllFinalized = dists.every((d: any) => d.Status === 3);
-          }
-          
-          if (isAllFinalized) { // Finalizado
-            // Extract faltas
-            const faltas = itens.filter((it: any) => parseFloat(it.QuantFaturada || it.quantFaturada || "0") === 0);
-            
-            // Update billedGroups state
-            setBilledGroups(prev => {
-              const next = { ...prev };
-              relatedGroups.forEach(g => {
-                 const currentLogs = prev[g]?.logs || [];
-                 // Ensure "Pedido retornado" is added
-                 if (!currentLogs.includes("Pedido retornado do distribuidor.")) {
-                    currentLogs.push("Pedido retornado do distribuidor.");
-                 }
-                 next[g] = { status: "retornado", faltas, logs: currentLogs };
-              });
-              return next;
-            });
-            setAutoPollReturn(false); // Stop polling
-          }
-        }
-    } catch (err: any) {
-      console.error(err);
-      alert(err.message || "Erro ao consultar retorno.");
-    } finally {
-      setIsCheckingReturn(false);
-    }
-  };
-
-  // Efeito para polling automático de status se ativado
-  useEffect(() => {
-    let interval: any;
-    if (autoPollReturn && isBillingModalOpen && billingContext && billingContext.numPedido) {
-      handleCheckOrderReturn();
-      interval = setInterval(() => {
-        handleCheckOrderReturn();
-      }, 2000);
-    }
-    return () => clearInterval(interval);
-  }, [autoPollReturn, isBillingModalOpen, billingContext?.numPedido]);
-
-  // Consultar status de retorno do pedido diretamente pelo painel de retornos
-  const handleCheckDirectOrderReturn = async () => {
-    if (!directNumPedido.trim()) {
-      alert("Por favor, informe o número do pedido.");
-      return;
-    }
-    setIsCheckingDirectReturn(true);
-    setDirectReturnCheckLogs([`[SISTEMA] Iniciando consulta em tempo real para o pedido #${directNumPedido.trim()}...`]);
-    try {
-      const response = await fetch("/api/pedido-retorno", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          numPedido: directNumPedido.trim(),
-          token: config.token,
-          cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
-          itemsFaturados: [], // Vazio para o backend mockar itens realísticos em simulação
-          simulationMode: config.simulationMode
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Erro ao consultar retorno do pedido.");
-      }
-
-      setDirectOrderReturn(data.apiResponse);
-      if (data.apiResponse) {
-        setSelectedDailyOrder({
-          numPedido: directNumPedido.trim(),
-          dataPedido: new Date().toLocaleDateString("pt-BR"),
-          detalhes: data.apiResponse
-        });
-      }
-      if (data.logs) {
-        setDirectReturnCheckLogs(data.logs);
-      }
-    } catch (err: any) {
-      console.error(err);
-      alert(err.message || "Erro ao consultar retorno.");
-    } finally {
-      setIsCheckingDirectReturn(false);
-    }
-  };
-
-  const handleCheckDailyOrders = async (customToken?: string, customCnpj?: string) => {
-    setIsCheckingDaily(true);
-    const activeToken = customToken || config.token;
-    const activeCnpj = customCnpj || config.cnpj;
-    setDailyOrderLogs([`[SISTEMA] Iniciando busca de pedidos dos últimos dias úteis...`]);
-    try {
-      const response = await fetch("/api/pedidos-do-dia", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          token: activeToken,
-          cnpj: activeCnpj,
-          useTestUrl: config.useTestUrl,
-          simulationMode: config.simulationMode
-        })
-      });
-      const data = await response.json();
-      if (data.logs) setDailyOrderLogs((prev) => [...prev, ...data.logs]);
-      if (!response.ok) throw new Error(data.error || "Erro ao consultar pedidos do dia.");
-      const rawOrders = data.pedidos || [];
-      const seen = new Set<string>();
-      const uniqueOrders: any[] = [];
-      for (const order of rawOrders) {
-        const num = String(order.numPedido || "").trim();
-        if (num && !seen.has(num)) {
-          seen.add(num);
-          uniqueOrders.push(order);
-        }
-      }
-      uniqueOrders.sort((a, b) => {
-        const numA = Number(a.numPedido || 0);
-        const numB = Number(b.numPedido || 0);
-        return numB - numA;
-      });
-      setDailyOrders(uniqueOrders);
-      // Calcular e persistir mapa de cortes recentes nos últimos dois dias úteis
-      try {
-        const cutsMap = getRecentCutsMap(uniqueOrders);
-        localStorage.setItem("cortes_recentes", JSON.stringify(cutsMap));
-        const numCortes = Object.values(cutsMap).reduce((acc, curr) => acc + curr.length, 0);
-        setDailyOrderLogs((prev) => [...prev, `[SISTEMA] Identificados ${numCortes} registros de cortes recentes nas distribuidoras para proteção contra furos.`]);
-      } catch (e: any) {
-        console.error("Erro ao computar cortes de estoque recentes:", e);
-      }
-    } catch (err: any) {
-      setDailyOrderLogs((prev) => [...prev, `[ERRO] ${err.message}`]);
-    } finally {
-      setIsCheckingDaily(false);
-    }
-  };
-
-  // Efeito para buscar pedidos do dia automaticamente ao entrar na aba de retornos
-  useEffect(() => {
-    if (mainView === "returns" && dailyOrders.length === 0 && !isCheckingDaily) {
-      handleCheckDailyOrders();
-    }
-  }, [mainView, dailyOrders.length]);
-
-  // Efeito para polling automático de status no painel direto
-  useEffect(() => {
-    let interval: any;
-    if (directAutoPollReturn && mainView === "returns" && directNumPedido.trim()) {
-      handleCheckDirectOrderReturn();
-      interval = setInterval(() => {
-        handleCheckDirectOrderReturn();
-      }, 10000);
-    }
-    return () => clearInterval(interval);
-  }, [directAutoPollReturn, mainView, directNumPedido]);
-
-    // Pesquisar produtos comercializados para adição manual
-    const handleManualSearch = async () => {
-      if (manualQuery.trim() === "") {
-        setManualSearchResults([]);
-        setManualAllAlternatives([]);
-        setManualMinimos([]);
-        setManualDcbFound(null);
-        setManualSearchError(null);
-        setManualSearchLogs([]);
-        return;
-      }
-      if (manualQuery.trim().length < 2) {
-        setManualSearchError("Digite pelo menos 2 caracteres.");
-        return;
-      }
-      setIsManualSearching(true);
-      setManualSearchResults([]);
-      setManualAllAlternatives([]);
-      setManualMinimos([]);
-      setManualDcbFound(null);
-      setManualSearchError(null);
-
-      try {
-        const storedCutsStr = localStorage.getItem("cortes_recentes");
-        const cortesRecentes = storedCutsStr ? JSON.parse(storedCutsStr) : {};
-
-        const isNumeric = /^\d+$/.test(manualQuery.trim());
-        
-        // Tentativa 1: Endpoint de busca de substitutos SmartPed
-        const response = await fetch("/api/smartped-find-substitutes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ean: isNumeric ? manualQuery.trim() : "",
-            descricao: isNumeric ? "" : manualQuery.trim(),
-            token: config.token,
-            cnpj: config.cnpj,
-            useTestUrl: config.useTestUrl,
-            cortesRecentes
-          })
-        });
-
-        const data = await response.json();
-        
-        let allAlts: any[] = [];
-        let alts: any[] = [];
-        let minimos: any[] = [];
-        let dcb: string | null = null;
-        let logs: string[] = [];
-
-        if (response.ok && (data.alternatives?.length > 0 || data.allAlternatives?.length > 0)) {
-          allAlts = data.allAlternatives || data.alternatives || [];
-          alts = data.alternatives || [];
-          minimos = data.minimos || [];
-          dcb = data.dcbDescoberto || null;
-          logs = data.logs || [];
-        } else {
-          // Fallback: tentar endpoint geral /api/search-products
-          const eanMap: Record<string, { descricao: string; laboratorio: string; precoOriginal: number }> = {};
-          if (result && Array.isArray(result.report)) {
-            result.report.forEach((item: any) => {
-              if (item.originalEan) {
-                eanMap[item.originalEan] = {
-                  descricao: item.originalDescricao || "",
-                  laboratorio: item.originalLaboratorio || "",
-                  precoOriginal: item.originalPreco || 0
-                };
-              }
-            });
-          }
-
-          const fallbackResp = await fetch("/api/search-products", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              query: manualQuery,
-              token: config.token,
-              cnpj: config.cnpj,
-              useTestUrl: config.useTestUrl,
-              simulationMode: config.simulationMode,
-              permitirSemEstoque: !manualApenasEstoque || config.permitirSemEstoque,
-              tipos: config.tipos,
-              margemMinima: config.margemMinima,
-              eanMap,
-              cortesRecentes,
-              onlyExactEan: false
-            })
-          });
-          const fallbackData = await fallbackResp.json();
-          if (fallbackResp.ok && fallbackData.items) {
-            allAlts = fallbackData.items;
-            alts = fallbackData.items;
-            logs = fallbackData.logs || [];
-          }
-        }
-
-        setManualAllAlternatives(allAlts);
-        setManualSearchResults(alts);
-        setManualMinimos(minimos);
-        setManualDcbFound(dcb);
-        setManualSearchLogs(logs);
-
-        if (allAlts.length === 0 && alts.length === 0) {
-          setManualSearchError(`Nenhuma oferta comercial com estoque encontrada para "${manualQuery}".`);
-        }
-      } catch (err: any) {
-        setManualSearchError(err.message || "Erro inesperado ao buscar ofertas na SmartPed.");
-      } finally {
-        setIsManualSearching(false);
-      }
-    };
-
-    // Obter valor mínimo do pedido da distribuidora
-    const getManualDistMinimo = (
-      codDist: any,
-      condicao: string = "",
-      prazo: any = 0,
-      fallbackDistName: string = ""
-    ): number => {
-      const targetDistStr = String(codDist !== undefined ? codDist : "").trim();
-      const targetCondStr = String(condicao || "").trim().toUpperCase();
-      const targetPrazoStr = String(prazo !== undefined ? prazo : "").trim();
-
-      if (manualMinimos && manualMinimos.length > 0) {
-        let match = manualMinimos.find((m: any) => {
-          const mDist = String(m.CodDist !== undefined ? m.CodDist : (m.codDist !== undefined ? m.codDist : "")).trim();
-          const mCond = String(m.Condicao || m.condicao || "").trim().toUpperCase();
-          const mNomeCond = String(m.NomeCondicao || m.nomeCondicao || "").trim().toUpperCase();
-          const mPrazo = String(m.Prazo !== undefined ? m.Prazo : (m.prazo !== undefined ? m.prazo : "")).trim();
-
-          return mDist === targetDistStr && (!targetPrazoStr || mPrazo === targetPrazoStr) && (!targetCondStr || mCond === targetCondStr || mNomeCond === targetCondStr);
-        });
-
-        if (!match) {
-          match = manualMinimos.find((m: any) => {
-            const mDist = String(m.CodDist !== undefined ? m.CodDist : (m.codDist !== undefined ? m.codDist : "")).trim();
-            const mPrazo = String(m.Prazo !== undefined ? m.Prazo : (m.prazo !== undefined ? m.prazo : "")).trim();
-            return mDist === targetDistStr && mPrazo === targetPrazoStr;
-          });
-        }
-
-        if (!match) {
-          match = manualMinimos.find((m: any) => {
-            const mDist = String(m.CodDist !== undefined ? m.CodDist : (m.codDist !== undefined ? m.codDist : "")).trim();
-            return mDist === targetDistStr;
-          });
-        }
-
-        if (match) {
-          const vlr = Number(match.VlrMinimo !== undefined ? match.VlrMinimo : (match.vlrMinimo !== undefined ? match.vlrMinimo : 0));
-          if (vlr > 0) return vlr;
-        }
-      }
-
-      const nameLower = (fallbackDistName || "").toLowerCase();
-      if (nameLower.includes("panpharma") || nameLower.includes("panfarma")) return 250;
-      if (nameLower.includes("profarma")) return 250;
-      if (nameLower.includes("santacruz") || nameLower.includes("santa cruz")) return 300;
-      if (nameLower.includes("servimed")) return 200;
-      if (nameLower.includes("gam")) return 150;
-      if (nameLower.includes("anb")) return 250;
-      if (nameLower.includes("orizon") || nameLower.includes("dimeval")) return 200;
-      
-      return 150;
-    };
-
-    // Processamento e Deduplicação Inteligente das ofertas manuais
-    const processedManualOffers = useMemo(() => {
-      const sourceList = manualAllAlternatives.length > 0 ? manualAllAlternatives : manualSearchResults;
-      if (!sourceList || sourceList.length === 0) return [];
-
-      let filtered = sourceList;
-      if (manualApenasEstoque) {
-        filtered = filtered.filter(item => {
-          const distName = (item.distribuidora || item.NomeDist || "").toLowerCase();
-          if (distName.includes("não encontrados")) return false;
-
-          const est = resolveEstoque(item);
-          const qtdMin = resolveQtdMinima(item);
-
-          // Se tiver estoque ativo OU se for uma promoção válida com compra mínima exigida (QtdMin > 1), exibe em tela!
-          return est > 0 || qtdMin > 1;
-        });
-      }
-
-      if (!manualDeduplicar) {
-        return [...filtered].sort((a, b) => {
-          const pA = resolvePrecoLiquido(a);
-          const pB = resolvePrecoLiquido(b);
-          return pA - pB;
-        });
-      }
-
-      // Agrupamento por EAN + CodDist
-      const groupMap = new Map<string, any>();
-
-      for (const rawOffer of filtered) {
-        const offerEan = String(rawOffer.ean || rawOffer.Ean || "").trim();
-        const codDist = String(rawOffer.codDist !== undefined ? rawOffer.codDist : (rawOffer.CodDist !== undefined ? rawOffer.CodDist : rawOffer.distribuidora || rawOffer.NomeDist || "")).trim();
-        
-        if (!offerEan || !codDist) continue;
-
-        const groupKey = `${offerEan}___${codDist}`;
-
-        const pLiquido = resolvePrecoLiquido(rawOffer);
-
-        const prazoNum = Number(
-          rawOffer.prazo !== undefined ? rawOffer.prazo :
-          rawOffer.Prazo !== undefined ? rawOffer.Prazo : 0
-        );
-
-        const normalizedOffer = {
-          ...rawOffer,
-          _calcPLiquido: pLiquido,
-          _calcPrazo: prazoNum
-        };
-
-        if (!groupMap.has(groupKey)) {
-          groupMap.set(groupKey, normalizedOffer);
-        } else {
-          const existing = groupMap.get(groupKey);
-          const existingPLiquido = existing._calcPLiquido;
-          const existingPrazo = existing._calcPrazo;
-
-          // Critério 1: Menor Preço Líquido
-          if (pLiquido < existingPLiquido - 0.0001) {
-            groupMap.set(groupKey, normalizedOffer);
-          } else if (Math.abs(pLiquido - existingPLiquido) <= 0.0001) {
-            // Desempate: Maior Prazo
-            if (prazoNum > existingPrazo) {
-              groupMap.set(groupKey, normalizedOffer);
-            } else if (prazoNum === existingPrazo && resolveEstoque(rawOffer) > resolveEstoque(existing)) {
-              groupMap.set(groupKey, normalizedOffer);
-            }
-          }
-        }
-      }
-
-      return Array.from(groupMap.values()).sort((a, b) => a._calcPLiquido - b._calcPLiquido);
-    }, [manualAllAlternatives, manualSearchResults, manualDeduplicar, manualApenasEstoque]);
-
-    // Adicionar o produto pesquisado ao lote otimizado
-    const handleAddManualItem = (offer: any, quantity: number, itemKey: string) => {
-      const qtyToAdd = parseFloat(String(quantity));
-      if (isNaN(qtyToAdd) || qtyToAdd <= 0) {
-        alert("Defina uma quantidade válida maior que zero.");
-        return;
-      }
-
-      const offerEan = cleanEan(String(offer.ean || offer.Ean || ""));
-      const offerDesc = offer.descricao || offer.Descricao || offer.nom_produto || "";
-      const offerLab = offer.laboratorio || offer.Laboratorio || offer.nom_laborat || "";
-      const offerDist = offer.distribuidora || offer.NomeDist || (offer.codDist ? `Distribuidora ${offer.codDist}` : "Distribuidora");
-      const offerPrecoLiq = Number(offer._calcPLiquido || offer.pliquidoUni || offer.pliquido || offer.precoLiquido || offer.preco || offer.Preco || 0);
-      const offerPrecoFab = Number(offer.pfabrica || offer.Pfabrica || offer.precoOriginal || offer.precoFabrica || 0);
-      const offerEstoque = Number(offer.estoque !== undefined ? offer.estoque : (offer.Estoque !== undefined ? offer.Estoque : 9999));
-      const offerCodDist = Number(offer.codDist !== undefined ? offer.codDist : (offer.CodDist !== undefined ? offer.CodDist : 0));
-      const offerCondicao = offer.condicao || offer.Condicao || offer.NomeCondicao || "FIXA";
-      const offerPrazo = Number(offer.prazo !== undefined ? offer.prazo : (offer.Prazo !== undefined ? offer.Prazo : 0));
-      const offerCodProdDist = offer.codProdutoDist || offer.CodProdutoDist || offer.cod_produtodist || "";
-      const offerCodProd = offer.codProduto || offer.CodProduto || "";
-      const offerPedMin = getManualDistMinimo(offerCodDist, offerCondicao, offerPrazo, offerDist);
-
-      const randomCod = "MANUAL-" + Date.now() + "-" + Math.floor(1000 + Math.random() * 9000);
-      const economiaUnit = Math.max(0, offerPrecoFab - offerPrecoLiq);
-      const economiaTotal = economiaUnit * qtyToAdd;
-
-      const calcOriginalPmc = offer.pmc !== undefined && offer.pmc > 0 ? offer.pmc : (offerPrecoFab > 0 ? Number((offerPrecoFab * 1.4).toFixed(2)) : 0);
-      const calcNovoPmc = offer.pmc !== undefined && offer.pmc > 0 ? offer.pmc : (offerPrecoLiq > 0 ? Number((offerPrecoLiq * 1.4).toFixed(2)) : 0);
-
-      const newItem: SwapReportItem = {
-        codInterno: randomCod,
-        originalEan: offerEan,
-        originalDescricao: offerDesc,
-        originalLaboratorio: offerLab,
-        originalPreco: offerPrecoFab > 0 ? offerPrecoFab : offerPrecoLiq,
-        originalPmc: calcOriginalPmc,
-        novoEan: offerEan,
-        novaDescricao: offerDesc,
-        novoLaboratorio: offerLab,
-        novoPreco: offerPrecoLiq,
-        novoPmc: calcNovoPmc,
-        qtd: qtyToAdd,
-        economiaUnit,
-        economiaTotal,
-        distribuidora: offerDist,
-        estoque: offerEstoque,
-        codDist: offerCodDist,
-        condicao: offerCondicao,
-        codProdutoDist: offerCodProdDist,
-        prazo: offerPrazo,
-        codProduto: offerCodProd,
-        pedidoMinimo: offerPedMin
-      };
-      
-      if (offerDist && offerDist !== "Não Encontrados" && offerDist !== "Sem Estoque") {
-        setDistributorMinimums((prev: Record<string, number>) => {
-          const cond = offerCondicao;
-          const prz = offerPrazo;
-          const compoundKey = `${offerDist} [${cond} | ${prz}d]`;
-          return { ...prev, [compoundKey]: offerPedMin };
-        });
-      }
-
-      setResult((prev: any) => {
-        const prevReport = prev ? prev.report : [];
-        const updatedReport = [newItem, ...prevReport];
-        const activeSwaps = updatedReport.filter((item: any) => !disregardedCodes.has(item.codInterno));
-        const newTotalSavings = activeSwaps.reduce((acc: number, it: any) => acc + (it.economiaTotal || 0), 0);
-        
-        return {
-          ...(prev || {}),
-          summary: {
-            ...(prev ? prev.summary : { totalItems: 0, itemsTreated: 0, itemsSwapped: 0, totalSavings: 0 }),
-            totalItems: (prev?.summary?.totalItems || 0) + 1,
-            itemsTreated: (prev?.summary?.itemsTreated || 0) + 1,
-            itemsSwapped: (prev?.summary?.itemsSwapped || 0) + 1,
-            totalSavings: newTotalSavings
-          },
-          report: updatedReport,
-          unmatched: prev ? prev.unmatched : [],
-          shortages: prev ? prev.shortages : []
-        };
-      });
-
-      setManualActionSuccessKey(itemKey);
-      setTimeout(() => {
-        setManualActionSuccessKey(null);
-      }, 2500);
-    };
-
-    // Group items by distributor to track faturamento mínimo and manage splitting
-  const [distributorOrder, setDistributorOrder] = useState<string[]>([]);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-
-  const toggleGroup = (groupName: string) => {
-    setExpandedGroups(prev => ({
-      ...prev,
-      [groupName]: !prev[groupName]
-    }));
-  };
-
-  // Update distributor order when result changes using compound keys (distribuidora + condicao + prazo)
-  useEffect(() => {
-    if (result && result.report) {
-      const currentSuppliers = new Set(result.report.map(item => {
-        const dist = item.distribuidora || "Não Encontrados";
-        const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque";
-        return isVirtual 
-          ? dist 
-          : `${dist} [${item.condicao || "FIXA"} | ${item.prazo !== undefined ? item.prazo : 0}d]`;
-      }));
-      
-      setDistributorOrder(prevOrder => {
-        // If this is the first time we're setting the order, prioritize non-met groups
-        if (prevOrder.length === 0) {
-          const supplierList = Array.from(currentSuppliers);
-          
-          // Helper to calculate total for a compound key from original report
-          const getSupplierTotal = (key: string) => {
-            return result.report
-              .filter(item => {
-                const dist = item.distribuidora || "Não Encontrados";
-                const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque";
-                const itemKey = isVirtual 
-                  ? dist 
-                  : `${dist} [${item.condicao || "FIXA"} | ${item.prazo !== undefined ? item.prazo : 0}d]`;
-                return itemKey === key;
-              })
-              .reduce((acc, item) => acc + (item.novoPreco * item.qtd), 0);
-          };
-
-          return (supplierList as string[]).sort((a: string, b: string) => {
-            const minA = getGroupMinVal(a);
-            const minB = getGroupMinVal(b);
-            const totalA = getSupplierTotal(a);
-            const totalB = getSupplierTotal(b);
-            const metA = totalA >= minA;
-            const metB = totalB >= minB;
-
-            if (metA !== metB) return metA ? 1 : -1;
-            return a.localeCompare(b);
-          });
-        }
-
-        // Subsequent updates: Keep existing order but sync with current suppliers
-        const newOrder = [...prevOrder];
-        
-        // Add new suppliers that aren't in the order yet
-        currentSuppliers.forEach(dist => {
-          if (!newOrder.includes(dist)) {
-            newOrder.push(dist);
-          }
-        });
-
-        // Filter out suppliers that no longer exist in the report
-        return newOrder.filter(dist => currentSuppliers.has(dist));
-      });
-    }
-  }, [result, distributorMinimums]);
-
-  const distributorGroupings = useMemo(() => {
-    if (!result || !activeReport) return [];
-    const groups: Record<string, { name: string; itemsCount: number; totalValue: number; items: SwapReportItem[] }> = {};
-    
-    for (const item of activeReport) {
-      const dist = item.distribuidora || "Não Encontrados";
-      const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque";
-      const groupKey = isVirtual 
-        ? dist 
-        : `${dist} [${item.condicao || "FIXA"} | ${item.prazo !== undefined ? item.prazo : 0}d]`;
-      
-      const isDisabled = disabledItemCodes.has(item.codInterno);
-      
-      if (!groups[groupKey]) {
-        groups[groupKey] = { name: groupKey, itemsCount: 0, totalValue: 0, items: [] };
-      }
-      
-      if (!isDisabled) {
-        groups[groupKey].itemsCount++;
-        groups[groupKey].totalValue += item.novoPreco * item.qtd;
-        groups[groupKey].items.push({
-          ...item,
-          disabled: isDisabled
-        } as any);
-      }
-    }
-    
-    // Sort based on the stable distributorOrder state
-    return distributorOrder
-      .map(name => groups[name] || { name, itemsCount: 0, totalValue: 0, items: [] });
-  }, [result, activeReport, disabledItemCodes, distributorMinimums, distributorOrder]);
-
-  // Dispersar todos os itens de uma distribuidora que não atingiu o mínimo para outras distribuidoras ativas
-  const handleApplyCompletingTransfers = (selectedCodes: string[]) => {
-    if (!result) return;
-    
-    const updatedReport = [...result.report];
-    const selectedSet = new Set(selectedCodes);
-    let transferredCount = 0;
-    const logMessages: string[] = [];
-
-    completingEligibleItems.forEach((eleg) => {
-      if (selectedSet.has(eleg.item.codInterno)) {
-        const idx = updatedReport.findIndex(r => r.codInterno === eleg.item.codInterno);
-        if (idx !== -1) {
-          const off = eleg.offer;
-          updatedReport[idx] = {
-            ...updatedReport[idx],
-            novoEan: off.ean || updatedReport[idx].novoEan || updatedReport[idx].originalEan,
-            novaDescricao: off.descricao || updatedReport[idx].novaDescricao || updatedReport[idx].originalDescricao,
-            novoLaboratorio: off.laboratorio || updatedReport[idx].novoLaboratorio || updatedReport[idx].originalLaboratorio || "GENÉRICO",
-            novoPreco: off.precoLiquido,
-            distribuidora: off.distribuidora,
-            estoque: off.estoque,
-            codDist: off.codDist,
-            condicao: off.condicao,
-            codProdutoDist: off.codProdutoDist,
-            codProduto: off.codProduto,
-            prazo: off.prazo,
-            motivoAcao: `Puxado p/ ${off.distribuidora}`,
-            economiaUnit: Math.max(0, updatedReport[idx].originalPreco - off.precoLiquido),
-            economiaTotal: Math.max(0, updatedReport[idx].originalPreco - off.precoLiquido) * updatedReport[idx].qtd,
-            isShortage: false
-          };
-          transferredCount++;
-          logMessages.push(`[SUCESSO] Item "${eleg.item.novaDescricao}" puxado para ${off.distribuidora}`);
-        }
-      }
-    });
-    
-    if (transferredCount > 0) {
-      setResult((prev: any) => {
-        if (!prev) return null;
-        const activeSwaps = updatedReport.filter((it: any) => !disregardedCodes.has(it.codInterno));
-        const newTotalSavings = activeSwaps.reduce((sum, it) => sum + (it.economiaTotal || 0), 0);
-        return {
-          ...prev,
-          summary: {
-            ...prev.summary,
-            totalSavings: newTotalSavings
-          },
-          report: updatedReport 
-        };
-      });
-      setLogs(prev => [...prev, ...logMessages]);
-    }
-    setCompletingTargetDist(null);
-  };
-
-  const handleStartDispersingWizard = async (fromDist: string) => {
-    setDispersingEligibleItems([]);
-    setDispersingSelectedCodes(new Set());
-    const grouping = distributorGroupings.find(g => g.name === fromDist);
-    if (!grouping || grouping.items.length === 0) return;
-    setIsSearchingDispersing(true);
-    setDispersingFromDist(fromDist);
-    const fromDistNormalized = normalizeDistName(fromDist);
-    const targetDistsUpper = distributorGroupings
-      .filter(g => normalizeDistName(g.name) !== fromDistNormalized && g.name !== "Não Encontrados" && g.name !== "Sem Estoque" && g.itemsCount > 0)
-      .map(g => normalizeDistName(g.name));
-
-    console.log("\n[DISPERSAR PEDIDO] Iniciando assistente para dispersar de: " + fromDist);
-    console.log("[DISPERSAR PEDIDO] Distribuidores de destino considerados: " + (targetDistsUpper.join(", ") || "NENHUM"));
-
-    try {
-      const eligibleList: any[] = [];
-      const allCodes = new Set<string>();
-      
-      for (const item of grouping.items) {
-        try {
-          console.log("[DISPERSAR PEDIDO] Testando item: " + item.novaDescricao + " (EAN: " + item.novoEan + ")...");
-          const storedCutsStr = localStorage.getItem("cortes_recentes");
-          const cortesRecentes = storedCutsStr ? JSON.parse(storedCutsStr) : {};
-
-          const response = await fetch("/api/search-products", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              query: item.novoEan,
-              token: config.token,
-              cnpj: config.cnpj,
-              useTestUrl: config.useTestUrl,
-              simulationMode: config.simulationMode,
-              tipos: config.tipos,
-              margemMinima: config.margemMinima,
-              permitirSemEstoque: config.permitirSemEstoque,
-              cortesRecentes
-            })
-          });
-          if (response.ok) {
-            const data = await response.json();
-            if (data && data.items && data.items.length > 0) {
-              const allOffers = data.items.filter((it: any) => 
-                it.estoque > 0 && 
-                normalizeDistName(it.distribuidora || "") !== fromDistNormalized &&
-                targetDistsUpper.includes(normalizeDistName(it.distribuidora || ""))
-              );
-              
-              if (allOffers.length > 0) {
-                console.log("[DISPERSAR PEDIDO] Ofertas disponíveis:", allOffers.map(o => `${o.distribuidora} (R$${o.precoLiquido})`).join(", "));
-                
-                allOffers.sort((a: any, b: any) => a.precoLiquido - b.precoLiquido);
-                
-                const bestOffer = allOffers[0];
-                
-                const pctIncrease = ((bestOffer.precoLiquido / item.novoPreco) - 1) * 100;
-                console.log("[DISPERSAR PEDIDO] -> Oferta selecionada: " + bestOffer.distribuidora + " (Preço: " + bestOffer.precoLiquido + ")");
-                
-                eligibleList.push({
-                  item,
-                  targetDist: bestOffer.distribuidora,
-                  currentPrice: item.novoPreco,
-                  targetPrice: bestOffer.precoLiquido,
-                  pctIncrease: pctIncrease,
-                  offer: bestOffer,
-                  allOffers: allOffers
-                });
-                allCodes.add(item.codInterno);
-              } else {
-                console.log("[DISPERSAR PEDIDO] -> Nenhuma oferta com estoque.");
-                eligibleList.push({ item, targetDist: "Sem Opção", currentPrice: item.novoPreco, targetPrice: 0, pctIncrease: 0, offer: null });
-              }
-            } else {
-              console.log("[DISPERSAR PEDIDO] -> API não retornou itens.");
-              eligibleList.push({ item, targetDist: "Sem Opção", currentPrice: item.novoPreco, targetPrice: 0, pctIncrease: 0, offer: null });
-            }
-          } else {
-            console.log("[DISPERSAR PEDIDO] -> Erro na API HTTP " + response.status);
-            eligibleList.push({ item, targetDist: "Erro API", currentPrice: item.novoPreco, targetPrice: 0, pctIncrease: 0, offer: null });
-          }
-        } catch (itemErr) {
-          console.error("[DISPERSAR PEDIDO] -> Erro ao testar:", itemErr);
-          eligibleList.push({ item, targetDist: "Erro", currentPrice: item.novoPreco, targetPrice: 0, pctIncrease: 0, offer: null });
-        }
-      }
-      
-      console.log("\n[DISPERSAR PEDIDO] Análise concluída.");
-      setDispersingEligibleItems(eligibleList);
-      setDispersingSelectedCodes(allCodes);
-    } catch (err: any) {
-      console.error(err);
-      alert("Erro ao pesquisar alternativas de dispersão: " + err.message);
-    } finally {
-      setIsSearchingDispersing(false);
-    }
-  };
-
-  const handleApplyDispersingTransfers = (selectedCodes: string[]) => {
-    if (!result) return;
-    
-    const updatedReport = [...result.report];
-    const selectedSet = new Set(selectedCodes);
-    let transferredCount = 0;
-    const logMessages: string[] = [];
-
-    dispersingEligibleItems.forEach((eleg) => {
-      if (selectedSet.has(eleg.item.codInterno) && eleg.offer) {
-        const idx = updatedReport.findIndex(r => r.codInterno === eleg.item.codInterno);
-        if (idx !== -1) {
-          const off = eleg.offer;
-          const mappedAlternatives = (eleg.allOffers || []).map((o: any) => ({
-            ean: o.ean,
-            descricao: o.descricao,
-            laboratorio: o.laboratorio,
-            preco: o.precoLiquido !== undefined ? o.precoLiquido : (o.preco !== undefined ? o.preco : 0),
-            distribuidora: o.distribuidora,
-            codDist: o.codDist,
-            condicao: o.condicao,
-            prazo: o.prazo,
-            qtdMin: o.qtdMin,
-            qtdMax: o.qtdMax,
-            cx: o.cx,
-            estoque: o.estoque
-          }));
-
-          updatedReport[idx] = {
-            ...updatedReport[idx],
-            novoEan: off.ean || updatedReport[idx].novoEan || updatedReport[idx].originalEan,
-            novaDescricao: off.descricao || updatedReport[idx].novaDescricao || updatedReport[idx].originalDescricao,
-            novoLaboratorio: off.laboratorio || updatedReport[idx].novoLaboratorio || updatedReport[idx].originalLaboratorio || "GENÉRICO",
-            novoPreco: off.precoLiquido,
-            distribuidora: off.distribuidora,
-            estoque: off.estoque,
-            codDist: off.codDist,
-            condicao: off.condicao,
-            codProdutoDist: off.codProdutoDist,
-            codProduto: off.codProduto,
-            prazo: off.prazo,
-            motivoAcao: `Dispersado p/ ${off.distribuidora}`,
-            economiaUnit: Math.max(0, updatedReport[idx].originalPreco - off.precoLiquido),
-            economiaTotal: Math.max(0, updatedReport[idx].originalPreco - off.precoLiquido) * updatedReport[idx].qtd,
-            isShortage: false,
-            alternatives: mappedAlternatives
-          };
-          transferredCount++;
-          logMessages.push(`[SUCESSO] Item "${eleg.item.novaDescricao}" dispersado para ${off.distribuidora}`);
-        }
-      }
-    });
-    
-    if (transferredCount > 0) {
-      setResult((prev: any) => {
-        if (!prev) return null;
-        const activeSwaps = updatedReport.filter((it: any) => !disregardedCodes.has(it.codInterno));
-        const newTotalSavings = activeSwaps.reduce((sum, it) => sum + (it.economiaTotal || 0), 0);
-        return {
-          ...prev,
-          summary: {
-            ...prev.summary,
-            totalSavings: newTotalSavings
-          },
-          report: updatedReport 
-        };
-      });
-      setLogs(prev => [...prev, ...logMessages]);
-    }
-    setDispersingFromDist(null);
-  };
-
-  const handleStartCompletingWizard = async (toDist: string) => {
-    setIsSearchingCompleting(toDist);
-    setCompletingEligibleItems([]);
-    setCompletingSelectedCodes(new Set());
-    
-    const targetDistClean = normalizeDistName(toDist);
-    console.log("\n[COMPLETAR PEDIDO] Iniciando assistente para completar a distribuidora: " + targetDistClean + " (" + toDist + ")");
-    
-    const otherItems = activeReport.filter(r => {
-      const rDistClean = normalizeDistName(r.distribuidora || "");
-      return rDistClean !== targetDistClean && 
-             r.distribuidora !== "Não Encontrados" && 
-             r.distribuidora !== "Sem Estoque" && 
-             !disabledItemCodes.has(r.codInterno) && 
-             !r.disabled;
-    });
-    
-    console.log("[COMPLETAR PEDIDO] Total de itens em outras distribuidoras: " + otherItems.length);
-
-    if (otherItems.length === 0) {
-      alert("Não há itens direcionados para outras distribuidoras para analisar.");
-      setIsSearchingCompleting(null);
-      return;
-    }
-
-    try {
-      const eligibleList: any[] = [];
-      for (const item of otherItems) {
-        try {
-          console.log("[COMPLETAR PEDIDO] Peguei o item " + item.novaDescricao + " (codigo ean " + item.novoEan + "), e pesquisei na " + targetDistClean + "...");
-          
-          const storedCutsStr = localStorage.getItem("cortes_recentes");
-          const cortesRecentes = storedCutsStr ? JSON.parse(storedCutsStr) : {};
-
-          const response = await fetch("/api/search-products", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              query: item.novoEan,
-              token: config.token,
-              cnpj: config.cnpj,
-              useTestUrl: config.useTestUrl,
-              simulationMode: config.simulationMode,
-              tipos: config.tipos,
-              margemMinima: config.margemMinima,
-              permitirSemEstoque: config.permitirSemEstoque,
-              cortesRecentes
-            })
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            if (data && data.items) {
-              const descLower = item.novaDescricao.toLowerCase();
-              const labLower = item.novoLaboratorio.toLowerCase();
-              const itemIsGeneric = descLower.includes(" gn ") || descLower.includes("generico") || descLower.includes("genérico") || labLower.includes("generico") || labLower.includes("genérico") || labLower.includes("medley") || labLower.includes("ems") || labLower.includes("althaia") || labLower.includes("prati");
-              
-              const targetOffer = data.items.find((it: any) => {
-                 const offerDistNorm = normalizeDistName(it.distribuidora || "");
-                 return offerDistNorm === targetDistClean && it.estoque > 0;
-              });
-              
-              if (targetOffer) {
-                const currentPrice = item.novoPreco;
-                const targetPrice = targetOffer.precoLiquido;
-                const ratio = targetPrice / currentPrice;
-                const increase = ((ratio - 1) * 100);
-                
-                console.log("[COMPLETAR PEDIDO] ...a situação é essa para o ean " + item.novoEan + ": Oferta ENCONTRADA! Preço lá: R$ " + targetPrice.toFixed(2) + " (Atual: R$ " + currentPrice.toFixed(2) + " na " + item.distribuidora + ")");
-                
-                // Regra de acréscimo de no máximo 10% do preço atual
-                if (ratio <= 1.10) {
-                  console.log("[COMPLETAR PEDIDO] -> APROVADO! (" + increase.toFixed(1) + "% <= 10%) O item será sugerido para transferência.");
-                  eligibleList.push({ 
-                    item, 
-                    offer: targetOffer,
-                    currentPrice: currentPrice,
-                    currentDist: item.distribuidora,
-                    targetPrice: targetPrice,
-                    pctIncrease: increase
-                  });
-                } else {
-                  console.log("[COMPLETAR PEDIDO] -> REJEITADO! Fica inviável puxar pois está " + increase.toFixed(1) + "% mais caro (Acima do limite de 10%).");
-                }
-              } else {
-                 const availableDists = data.items.map((it:any) => it.distribuidora).join(', ');
-                 console.log("[COMPLETAR PEDIDO] ...a situação é essa para o ean " + item.novoEan + ": NÃO TEM NESTA DISTRIBUIDORA OU ESTÁ SEM ESTOQUE. Só foi encontrado em: " + (availableDists || "nenhuma"));
-              }
-            } else {
-               console.log("[COMPLETAR PEDIDO] ...a situação é essa para o ean " + item.novoEan + ": API não retornou nenhum item.");
-            }
-          } else {
-            console.log("[COMPLETAR PEDIDO] ...a situação é essa para o ean " + item.novoEan + ": Erro na API -> HTTP " + response.status);
-          }
-        } catch (itemErr) {
-          console.error("[COMPLETAR PEDIDO] ...a situação é essa para o ean " + item.novoEan + ": Falha na consulta ->", itemErr);
-        }
-      }
-
-      console.log("\n[COMPLETAR PEDIDO] Análise concluída. Total de itens que podem ser puxados para " + toDist + ": " + eligibleList.length);
-
-      if (eligibleList.length > 0) {
-        setCompletingEligibleItems(eligibleList);
-        setCompletingSelectedCodes(new Set(eligibleList.map(i => i.item.codInterno)));
-        setCompletingTargetDist(toDist);
-      } else {
-        alert("Nenhum item de outras distribuidoras pode ser puxado para " + toDist + " (limite de 10% de acréscimo e verificação de estoque). Verifique o log do console (F12) para detalhes.");
-      }
-    } catch (err: any) {
-      console.error("[COMPLETAR PEDIDO] Erro fatal:", err);
-      alert("Erro ao pesquisar alternativas para completar: " + err.message);
-    } finally {
-      setIsSearchingCompleting(null);
-    }
-  };
-
-
-  const handleReRouteShortages = async () => {
-    if (!orderReturn || !orderReturn.Retorno || !orderReturn.Retorno.Itens || !result) return;
-
-    const items = orderReturn.Retorno.Itens;
-    if (items.length === 0) {
-      alert("Nenhum item detectado no retorno.");
-      return;
-    }
-
-    const distsInReturn = orderReturn.Retorno.Dists || orderReturn.Retorno.dists || [];
-    // Apenas consideramos distribuidoras que já finalizaram o processamento (Status === 3)
-    const finalizedCodDists = new Set(
-      distsInReturn
-        .filter((d: any) => d.Status === 3)
-        .map((d: any) => String(d.CodDist || d.codDist || "").trim())
-    );
-
-    const newFaturadosGlobais = [...faturadosGlobais];
-    const itemsToKeep = [];
-    const manualCuts: any[] = [];
-    
-    for (const reportItem of result.report) {
-        const itemDistCod = String(reportItem.codDist).trim();
-        
-        // Se a distribuidora deste item ainda não finalizou o faturamento, mantemos o item intocado no lote para continuarmos aguardando
-        if (!finalizedCodDists.has(itemDistCod)) {
-            itemsToKeep.push(reportItem);
-            continue;
-        }
-
-        const ean = String(reportItem.novoEan || reportItem.originalEan).trim();
-        const returnItem = items.find((it) => String(it.Ean).trim() === ean && String(it.CodDist).trim() === itemDistCod);
-        const isManual = reportItem.codInterno.startsWith("MANUAL-");
-
-        if (returnItem) {
-            if (returnItem.QuantFaturada > 0) {
-                newFaturadosGlobais.push({
-                    fornecedor: reportItem.distribuidora,
-                    ean: ean,
-                    descricao: reportItem.novaDescricao || reportItem.originalDescricao,
-                    laboratorio: reportItem.novoLaboratorio || reportItem.originalLaboratorio,
-                    valor: reportItem.novoPreco || reportItem.originalPreco,
-                    quantidade: returnItem.QuantFaturada
-                });
-            }
-
-            const missingQty = returnItem.Quant - returnItem.QuantFaturada;
-            if (missingQty > 0) {
-                itemsToKeep.push({
-                    ...reportItem,
-                    qtd: missingQty,
-                    economiaTotal: (reportItem.economiaUnit || 0) * missingQty,
-                    isShortage: true
-                });
-
-                if (isManual) {
-                  manualCuts.push({
-                    descricao: reportItem.novaDescricao || reportItem.originalDescricao,
-                    ean,
-                    distribuidora: reportItem.distribuidora,
-                    solicitado: reportItem.qtd,
-                    faturado: returnItem.QuantFaturada,
-                    motivo: returnItem.Motivo || "Cortado / Sem Estoque"
-                  });
-                }
-            }
-        } else {
-             itemsToKeep.push({
-                 ...reportItem,
-                 isShortage: true
-             });
-
-             if (isManual) {
-               manualCuts.push({
-                 descricao: reportItem.novaDescricao || reportItem.originalDescricao,
-                 ean,
-                 distribuidora: reportItem.distribuidora,
-                 solicitado: reportItem.qtd,
-                 faturado: 0,
-                 motivo: "Não retornado no faturamento final do distribuidor"
-               });
-             }
-        }
-    }
-
-    if (manualCuts.length > 0) {
-      setManualCutsAlert(manualCuts);
-    }
-
-    setFaturadosGlobais(newFaturadosGlobais);
-    
-    // Un-hide shortages from billedItemCodes so they reappear in the main list
-    setBilledItemCodes(prev => {
-       const next = new Set(prev);
-       itemsToKeep.forEach(it => {
-           if (it.isShortage) {
-               next.delete(it.codInterno);
-           }
-       });
-       return next;
-    });
-
-    setResult((prev) => {
-      if (!prev) return null;
-      const activeSwaps = itemsToKeep.filter((it) => !disregardedCodes.has(it.codInterno));
-      const newTotalSavings = activeSwaps.reduce((sum, it) => sum + (it.economiaTotal || 0), 0);
-      return {
-        ...prev,
-        summary: {
-          ...prev.summary,
-          totalItems: itemsToKeep.length,
-          totalSavings: newTotalSavings
-        },
-        report: itemsToKeep
-      };
-    });
-
-    setBilledGroups(prev => {
-        const next = { ...prev };
-        if (billingContext && billingContext.relatedGroups) {
-            billingContext.relatedGroups.forEach(g => {
-                delete next[g];
-            });
-        } else {
-            // Fallback just in case
-            for (const key of Object.keys(next)) {
-                if (next[key].status === "retornado" || next[key].status === "faturando") {
-                    delete next[key];
-                }
-            }
-        }
-        return next;
-    });
-
-    setBillingResult(null);
-    setIsBillingModalOpen(false);
-  };
-
-  // Exportar relatório de faltas detectadas no retorno do distribuidor (Status 3)
-  const handleExportShortages = () => {
-    if (!orderReturn || !orderReturn.Retorno || !orderReturn.Retorno.Itens) return;
-    
-    const items = orderReturn.Retorno.Itens;
-    // Filtrar itens onde houve falta (QuantFaturada < Quant)
-    const shortages = items.filter((it: any) => it.QuantFaturada < it.Quant);
-
-    if (shortages.length === 0) {
-      alert("Excelente notícia! Nenhum corte ou falta foi detectado neste faturamento.");
-      return;
-    }
-
-    const headers = ["EAN", "Codigo_Dist", "Condicao", "Qtd_Solicitada", "Qtd_Faturada", "Qtd_Falta", "Preco_Liquido", "Motivo_Corte"];
-    const rows = shortages.map((it: any) => {
-      const missing = it.Quant - it.QuantFaturada;
-      return [
-        it.Ean,
-        it.CodDist,
-        it.Condicao,
-        it.Quant,
-        it.QuantFaturada,
-        missing,
-        it.Preco.toFixed(2),
-        `"${it.Motivo || 'Corte Comercial'}"`
-      ];
-    });
-
-    const csvContent = "\ufeff" + [headers.join(";"), ...rows.map((r: any) => r.join(";"))].join("\r\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `relatorio_faltas_pedido_${billingResult?.numPedido || 'smartped'}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
 
   const handleSaveRaw = () => {
@@ -3097,6 +580,7 @@ export default function App() {
   }
 
   return (
+    <Suspense fallback={<div className="min-h-screen bg-[#E4E3E0] flex items-center justify-center"><RefreshCw className="w-8 h-8 animate-spin text-[#141414]" /></div>}>
     <div className="min-h-screen bg-[#E4E3E0] text-[#141414] font-sans pb-16">
       {/* Header Banner */}
       <header className="bg-[#DCDAD7] border-b border-[#141414] py-5 sticky top-0 z-10">
@@ -3282,7 +766,7 @@ export default function App() {
 
         {/* Views */}
         {mainView === "daily_items" && (
-          <DailyItemsView 
+          <LazyDailyItemsView 
             config={config} 
             onInjectRedistribution={(injectedReport: any[], virtualFileContent: string) => {
               setFileContent(virtualFileContent);
@@ -3424,7 +908,7 @@ export default function App() {
             </div>
 
             <div className="bg-white border border-[#141414]/20 p-6 rounded-none shadow-sm">
-              <OrderReturnView
+              <LazyOrderReturnView
                 orderReturn={selectedDailyOrder.detalhes || selectedDailyOrder}
                 numPedido={selectedDailyOrder.numPedido}
                 cnpjLoja={selectedDailyOrder.detalhes?.Retorno?.CnpjLoja || config.cnpj}
@@ -4187,11 +1671,11 @@ export default function App() {
                   </span>
                 </div>
 
-                <PendingOrdersTable billedGroups={billedGroups} onViewLogs={(logs, name) => setViewingLogs({groupKeys: [name], title: name})} />
+                <LazyPendingOrdersTable billedGroups={billedGroups} onViewLogs={(logs, name) => setViewingLogs({groupKeys: [name], title: name})} />
                 
                 {isSwapsTableVisible && (
                   <div className="p-5 animate-fade-in">
-                    <SwapsTable
+                    <LazySwapsTable
                       report={activeReport}
                       rawReport={result ? result.report : []}
                       billedItemCodes={billedItemCodes}
@@ -5039,7 +2523,7 @@ export default function App() {
                       </div>
                     </div>
                   ) : (
-                    <OrderReturnView                      orderReturn={orderReturn}                      itemsFaturados={billingResult.itemsFaturados}                      onReRouteShortages={handleReRouteShortages}                      onExportShortages={handleExportShortages}                      isReRoutingShortages={isReRoutingShortages}                    />
+                    <LazyOrderReturnView                      orderReturn={orderReturn}                      itemsFaturados={billingResult.itemsFaturados}                      onReRouteShortages={handleReRouteShortages}                      onExportShortages={handleExportShortages}                      isReRoutingShortages={isReRoutingShortages}                    />
                   )}
                 </div>
                 </>
@@ -5405,5 +2889,6 @@ export default function App() {
       </main>
 
     </div>
+    </Suspense>
   );
 }
