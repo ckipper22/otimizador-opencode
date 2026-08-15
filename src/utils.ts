@@ -273,9 +273,11 @@ export const resolvePrecoLiquido = (item: any): number => {
   if (!item) return 0;
   const pliq = Number(item.Pliquido !== undefined ? item.Pliquido : (item.pliquido !== undefined ? item.pliquido : 0));
   const pliqUni = Number(item.PliquidoUni !== undefined ? item.PliquidoUni : (item.pliquidoUni !== undefined ? item.pliquidoUni : 0));
+  const precoLiq = Number(item.precoLiquido !== undefined ? item.precoLiquido : 0);
   
   if (pliqUni > 0 && (pliq === 0 || pliqUni < pliq)) return pliqUni;
   if (pliq > 0) return pliq;
+  if (precoLiq > 0) return precoLiq;
   return Number(item.Preco !== undefined ? item.Preco : (item.preco !== undefined ? item.preco : (item.precoOriginal !== undefined ? item.precoOriginal : 0)));
 };
 

@@ -3095,13 +3095,17 @@ app.post("/api/search-products", async (req, res) => {
           // Remover duplicatas de foundItems para garantir ofertas Ãºnicas e limpas
           const uniqueFoundMap = new Map<string, any>();
           for (const item of foundItems) {
-            const key = `${cleanEan(item.Ean || item.ean)}_${item.CodDist}_${item.Condicao}_${parseFloat(item.Pliquido || item.pliquido || 0).toFixed(4)}_${item.Prazo}`;
+            const key = `${cleanEan(item.Ean || item.ean)}_${item.CodDist}_${item.Condicao}_${item.Prazo}`;
             if (!uniqueFoundMap.has(key)) {
               uniqueFoundMap.set(key, item);
             } else {
-              // Se houver duplicatas, prefere a com maior estoque
+              // Se houver duplicatas, prefere a com menor preÃ§o lÃ­quido
               const existing = uniqueFoundMap.get(key);
-              if (item.Estoque > existing.Estoque) {
+              const newPrice = parseFloat(item.Pliquido || item.pliquido || 0);
+              const existPrice = parseFloat(existing.Pliquido || existing.pliquido || 0);
+              if (newPrice < existPrice - 0.0001) {
+                uniqueFoundMap.set(key, item);
+              } else if (Math.abs(newPrice - existPrice) <= 0.0001 && item.Estoque > existing.Estoque) {
                 uniqueFoundMap.set(key, item);
               }
             }
@@ -3447,6 +3451,31 @@ app.post("/api/search-products", async (req, res) => {
         } catch (e: any) {
           log(`[API CONEXÃƒO ERRO] Erro na busca por descriÃ§Ã£o: ${e.message}.`);
         }
+      }
+    }
+
+    // DEDUPLICAÃ‡ÃƒO FINAL (ambos os caminhos: EAN e texto)
+    if (foundItems.length > 0) {
+      const uniqueMap = new Map<string, any>();
+      for (const item of foundItems) {
+        const key = `${cleanEan(item.Ean || item.ean)}_${item.CodDist}_${item.Condicao}_${item.Prazo}`;
+        if (!uniqueMap.has(key)) {
+          uniqueMap.set(key, item);
+        } else {
+          const existing = uniqueMap.get(key);
+          const newPrice = Number(item.Pliquido || item.PliquidoUni || item.pliquido || item.Preco || 9999);
+          const existPrice = Number(existing.Pliquido || existing.PliquidoUni || existing.pliquido || existing.Preco || 9999);
+          if (newPrice < existPrice - 0.0001) {
+            uniqueMap.set(key, item);
+          } else if (Math.abs(newPrice - existPrice) <= 0.0001 && Number(item.Estoque || 0) > Number(existing.Estoque || 0)) {
+            uniqueMap.set(key, item);
+          }
+        }
+      }
+      const before = foundItems.length;
+      foundItems = Array.from(uniqueMap.values());
+      if (before !== foundItems.length) {
+        log(`[DEDUPLICAÃ‡ÃƒO] ${before} -> ${foundItems.length} ofertas (removidas ${before - foundItems.length} duplicatas).`);
       }
     }
 

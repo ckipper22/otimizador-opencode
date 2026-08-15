@@ -1,24 +1,35 @@
-import Database from "better-sqlite3";
 import path from "path";
 
 const DB_PATH = process.env.NODE_ENV === "production"
   ? path.join("/tmp", "smartped.db")
   : path.join(process.cwd(), "data", "smartped.db");
 
-let db: Database.Database | null = null;
+const DISABLE_SQLITE = process.env.DISABLE_SQLITE === "true";
 
-function getDb(): Database.Database {
+let db: any = null;
+let dbFailed = false;
+
+function getDb(): any {
+  if (DISABLE_SQLITE || dbFailed) return null;
   if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma("journal_mode = WAL");
-    db.pragma("synchronous = NORMAL");
-    initSchema();
+    try {
+      const Database = require("better-sqlite3");
+      db = new Database(DB_PATH);
+      db.pragma("journal_mode = WAL");
+      db.pragma("synchronous = NORMAL");
+      initSchema();
+    } catch (err: any) {
+      console.error(`[DB] SQLite indisponível: ${err.message}. Usando apenas cache em memória.`);
+      dbFailed = true;
+      return null;
+    }
   }
   return db;
 }
 
 function initSchema() {
   const d = getDb();
+  if (!d) return;
   d.exec(`
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,27 +91,39 @@ function initSchema() {
 // Orders
 export function saveOrder(numPedido: string, cnpj: string, dataPedido: string, payload: any, response?: any) {
   const d = getDb();
-  const stmt = d.prepare(`
-    INSERT OR REPLACE INTO orders (num_pedido, cnpj, data_pedido, payload_json, response_json, updated_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now'))
-  `);
-  stmt.run(numPedido, cnpj, dataPedido, JSON.stringify(payload), response ? JSON.stringify(response) : null);
+  if (!d) return;
+  try {
+    const stmt = d.prepare(`
+      INSERT OR REPLACE INTO orders (num_pedido, cnpj, data_pedido, payload_json, response_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+    `);
+    stmt.run(numPedido, cnpj, dataPedido, JSON.stringify(payload), response ? JSON.stringify(response) : null);
+  } catch {}
 }
 
 export function updateOrderResponse(numPedido: string, response: any) {
   const d = getDb();
-  d.prepare(`UPDATE orders SET response_json = ?, status = 'completed', updated_at = datetime('now') WHERE num_pedido = ?`)
-    .run(JSON.stringify(response), numPedido);
+  if (!d) return;
+  try {
+    d.prepare(`UPDATE orders SET response_json = ?, status = 'completed', updated_at = datetime('now') WHERE num_pedido = ?`)
+      .run(JSON.stringify(response), numPedido);
+  } catch {}
 }
 
 export function getOrder(numPedido: string) {
   const d = getDb();
-  return d.prepare(`SELECT * FROM orders WHERE num_pedido = ?`).get(numPedido);
+  if (!d) return undefined;
+  try {
+    return d.prepare(`SELECT * FROM orders WHERE num_pedido = ?`).get(numPedido);
+  } catch { return undefined; }
 }
 
 export function getOrdersByCnpj(cnpj: string, limit = 50) {
   const d = getDb();
-  return d.prepare(`SELECT * FROM orders WHERE cnpj = ? ORDER BY created_at DESC LIMIT ?`).all(cnpj, limit);
+  if (!d) return [];
+  try {
+    return d.prepare(`SELECT * FROM orders WHERE cnpj = ? ORDER BY created_at DESC LIMIT ?`).all(cnpj, limit);
+  } catch { return []; }
 }
 
 // Order Items
@@ -110,40 +133,55 @@ export function saveOrderItem(item: {
   precoOriginal?: number; economia?: number; isSwap?: boolean;
 }) {
   const d = getDb();
-  d.prepare(`
-    INSERT INTO order_items (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd, preco_liquido, preco_original, economia, is_swap)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtd, item.precoLiquido, item.precoOriginal || 0, item.economia || 0, item.isSwap ? 1 : 0);
+  if (!d) return;
+  try {
+    d.prepare(`
+      INSERT INTO order_items (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd, preco_liquido, preco_original, economia, is_swap)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtd, item.precoLiquido, item.precoOriginal || 0, item.economia || 0, item.isSwap ? 1 : 0);
+  } catch {}
 }
 
 export function getOrderItems(numPedido: string) {
   const d = getDb();
-  return d.prepare(`SELECT * FROM order_items WHERE num_pedido = ?`).all(numPedido);
+  if (!d) return [];
+  try {
+    return d.prepare(`SELECT * FROM order_items WHERE num_pedido = ?`).all(numPedido);
+  } catch { return []; }
 }
 
 // API Cache with TTL
 export function setCache(key: string, data: any, ttlMinutes = 5) {
   const d = getDb();
-  const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
-  d.prepare(`INSERT OR REPLACE INTO api_cache (cache_key, data_json, expires_at) VALUES (?, ?, ?)`)
-    .run(key, JSON.stringify(data), expiresAt);
+  if (!d) return;
+  try {
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+    d.prepare(`INSERT OR REPLACE INTO api_cache (cache_key, data_json, expires_at) VALUES (?, ?, ?)`)
+      .run(key, JSON.stringify(data), expiresAt);
+  } catch {}
 }
 
 export function getCache(key: string): any | null {
   const d = getDb();
-  const row = d.prepare(`SELECT data_json, expires_at FROM api_cache WHERE cache_key = ?`).get(key) as any;
-  if (!row) return null;
-  if (new Date(row.expires_at) < new Date()) {
-    d.prepare(`DELETE FROM api_cache WHERE cache_key = ?`).run(key);
-    return null;
-  }
-  return JSON.parse(row.data_json);
+  if (!d) return null;
+  try {
+    const row = d.prepare(`SELECT data_json, expires_at FROM api_cache WHERE cache_key = ?`).get(key) as any;
+    if (!row) return null;
+    if (new Date(row.expires_at) < new Date()) {
+      d.prepare(`DELETE FROM api_cache WHERE cache_key = ?`).run(key);
+      return null;
+    }
+    return JSON.parse(row.data_json);
+  } catch { return null; }
 }
 
 export function purgeExpiredCache() {
   const d = getDb();
-  const result = d.prepare(`DELETE FROM api_cache WHERE expires_at < datetime('now')`).run();
-  return result.changes;
+  if (!d) return 0;
+  try {
+    const result = d.prepare(`DELETE FROM api_cache WHERE expires_at < datetime('now')`).run();
+    return result.changes;
+  } catch { return 0; }
 }
 
 // Faturados (billed items history)
@@ -152,20 +190,26 @@ export function saveFaturado(item: {
   codDist: number; nomeDist: string; qtd: number; precoLiquido: number;
 }) {
   const d = getDb();
-  d.prepare(`
-    INSERT INTO faturados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd, preco_liquido)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtd, item.precoLiquido);
+  if (!d) return;
+  try {
+    d.prepare(`
+      INSERT INTO faturados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd, preco_liquido)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtd, item.precoLiquido);
+  } catch {}
 }
 
 export function getFaturados(cnpj: string, limit = 200) {
   const d = getDb();
-  return d.prepare(`
-    SELECT f.* FROM faturados f
-    JOIN orders o ON f.num_pedido = o.num_pedido
-    WHERE o.cnpj = ?
-    ORDER BY f.created_at DESC LIMIT ?
-  `).all(cnpj, limit);
+  if (!d) return [];
+  try {
+    return d.prepare(`
+      SELECT f.* FROM faturados f
+      JOIN orders o ON f.num_pedido = o.num_pedido
+      WHERE o.cnpj = ?
+      ORDER BY f.created_at DESC LIMIT ?
+    `).all(cnpj, limit);
+  } catch { return []; }
 }
 
 // Startup cache purge
@@ -180,7 +224,7 @@ export function startDbCachePurge() {
 
 export function closeDb() {
   if (db) {
-    db.close();
+    try { db.close(); } catch {}
     db = null;
   }
 }
