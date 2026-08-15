@@ -1687,6 +1687,28 @@ app.post("/api/optimize", async (req, res) => {
       minimos: allMinimos,
       logs
     });
+
+    try {
+      const pedidoNum = `OPT_${Date.now()}`;
+      saveOrder(pedidoNum, finalCnpj, new Date().toISOString(), { parsedItems: parsedItems.length, totalSavings });
+      for (const item of filteredReport) {
+        if (item.novoEan && item.novoEan !== item.originalEan) {
+          saveOrderItem({
+            numPedido: pedidoNum,
+            ean: item.novoEan,
+            descricao: item.novaDescricao || item.originalDescricao || "",
+            laboratorio: item.novoLaboratorio || item.originalLaboratorio || "",
+            codDist: Number(item.codDist || 0),
+            nomeDist: item.distribuidora || "",
+            qtd: Number(item.qtd || 0),
+            precoLiquido: Number(item.novoPreco || 0),
+            precoOriginal: Number(item.originalPreco || 0),
+            economia: Number(item.economiaTotal || 0),
+            isSwap: true
+          });
+        }
+      }
+    } catch {}
   } catch (err: any) {
     console.error("Erro interno do servidor durante otimizaÃ§Ã£o:", err);
     logs.push(`[ERRO CRÃTICO] Falha inesperada interna: ${err.message}`);
@@ -1996,6 +2018,25 @@ app.post("/api/faturar", async (req, res) => {
       })),
       logs
     });
+
+    try {
+      saveOrder(String(numPedidoSmartPed), apiCnpj, new Date().toISOString(), { totalValor, totalEconomia }, { protocoloLote, distribuidorasBloqueadas });
+      for (const it of validatedItems) {
+        saveOrderItem({
+          numPedido: String(numPedidoSmartPed),
+          ean: it.novoEan || it.originalEan || "",
+          descricao: it.novaDescricao || it.originalDescricao || "",
+          laboratorio: it.novoLaboratorio || it.originalLaboratorio || "",
+          codDist: Number(it.codDist || 2),
+          nomeDist: it.distribuidora || "",
+          qtd: Number(it.qtd || 1),
+          precoLiquido: Number(it.novoPreco || 0),
+          precoOriginal: Number(it.originalPreco || 0),
+          economia: Number(it.economiaTotal || 0),
+          isSwap: it.novoEan !== it.originalEan
+        });
+      }
+    } catch {}
   } catch (err: any) {
     console.error("Erro no faturamento do servidor:", err);
     logs.push(`[ERRO FATURAMENTO] Erro interno: ${err.message}`);

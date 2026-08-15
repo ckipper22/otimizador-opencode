@@ -1,3 +1,5 @@
+import { getCache, setCache } from "./database";
+
 const SMARTPED_CACHE_TTL_MS = 5 * 60 * 1000;
 const smartpedCache = new Map<string, { data: any; ts: number }>();
 
@@ -7,12 +9,21 @@ export function cacheKey(endpoint: string, ean: string, token: string, cnpj: str
 
 export function getFromCache(key: string): any | null {
   const entry = smartpedCache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.ts > SMARTPED_CACHE_TTL_MS) {
-    smartpedCache.delete(key);
-    return null;
+  if (entry) {
+    if (Date.now() - entry.ts > SMARTPED_CACHE_TTL_MS) {
+      smartpedCache.delete(key);
+    } else {
+      return entry.data;
+    }
   }
-  return entry.data;
+
+  const dbData = getCache(key);
+  if (dbData) {
+    smartpedCache.set(key, { data: dbData, ts: Date.now() });
+    return dbData;
+  }
+
+  return null;
 }
 
 export function setInCache(key: string, data: any): void {
@@ -21,6 +32,9 @@ export function setInCache(key: string, data: any): void {
     if (oldest) smartpedCache.delete(oldest);
   }
   smartpedCache.set(key, { data, ts: Date.now() });
+  try {
+    setCache(key, data, 5);
+  } catch {}
 }
 
 export let MINIMOS_GLOBAL_CACHE: Array<{
