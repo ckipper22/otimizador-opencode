@@ -34,9 +34,10 @@ Destina-se a uso B2B interno, onde o foco é na tabela de dados (SwapsTable), lo
 *   **APIs Externas Críticas:** 
     *   SmartPed API. Utiliza dois ambientes mapeáveis: Sandbox (`https://apitest.smartped.com.br`) e Produção (`https://api.smartped.com.br`).
 *   **Persistência de Dados:**
-    *   Não há banco de dados relacional ou NoSQL ativo.
-    *   O estado é mantido em memória via React (`useState`).
-    *   No Backend, há um mock de banco em memória (`MOCK_API_DATABASE`) usado como *fallback* ou no "Modo de Simulação".
+    *   **SQLite** via `better-sqlite3` (arquivo: `/tmp/smartped.db` em Cloud Run, `data/smartped.db` local).
+    *   Tabelas: `orders`, `order_items`, `api_cache`, `faturados`.
+    *   Purga automática de cache expirado no startup (`startDbCachePurge`).
+    *   **Cache de API SmartPed em duas camadas:** L1 (Map em memória, 2000 entradas, 5min TTL) + L2 (SQLite persistente, sobrevive a reinícios do servidor).
 
 ---
 
@@ -51,7 +52,7 @@ O projeto utiliza um repositório modular (Express + React) com separação clar
 
 ### Módulos Backend (`server/`)
 *   `server/config.ts`: Configuração centralizada via `.env` (tokens, URLs, CNPJs).
-*   `server/cache.ts`: Cache em memória com TTL (SmartPed 5min, minimos, EAN database 2h). Inclui purga automática e LRU.
+*   `server/cache.ts`: Cache L1 (Map em memória, 2000 entradas) + L2 (SQLite persistente). TTL 5min para SmartPed. Hit L1 = rápido. Miss L1 = busca SQLite. Escrita = ambos. Purga automática no startup.
 *   `server/rate-limiter.ts`: Middleware de rate limiting por IP (120 req/min).
 *   `server/ean-utils.ts`: Limpeza de EANs, banco de dados local de EANs (`EAN_DATABASE`), carregamento a partir de arquivos SICF.
 *   `server/smartped-api.ts`: Clientes de API externa (`fetchEanDescriptions`, `fetchSimilarGenerics`).
@@ -99,7 +100,7 @@ O padrão da indústria possui estrutura posicional/delimitada:
 ### 4.2. O Fluxo de Otimização (O Core Engine)
 Quando `/api/optimize` é acionada, os seguintes passos ocorrem:
 1.  **Parse & Chunking:** O SICF é lido. EANs únicos são separados. Como a API SmartPed restringe EANs simultâneos, o servidor faz chamadas agrupadas (em blocos de 40).
-2.  **Consulta de Molécula:** Bate nas rotas `/api/Condicoes/Molecula` (descobre genéricos) e `/api/Condicoes/Ean` (descobre o preço original).
+2.  **Consulta de Molécula:** Bate nas rotas `/api/Condicoes/Molecula` (descobre genéricos) e `/api/Condicoes/Ean` (descobre o preço original). **Cache L1+L2**: Hits consultam memória primeiro, depois SQLite; misses escritos em ambos.
 3.  **Filtro de Distribuidoras (`disabledDistributors`):** Qualquer distribuidor desmarcado pelo usuário no painel de UI tem suas ofertas de substitutos sumariamente apagadas do array antes do algoritmo processar.
 4.  **Seleção e Match (Função `findBestSubstitute` no `server.ts`):** 
     *   **Prioridade Absoluta para Distribuidoras Reais (Fim de Ofertas Fantasmas):** Na ordenação e na escolha da oferta vencedora ou alternativas, qualquer opção com `CodDist > 0` (distribuidoras reais) possui **prioridade absoluta** sobre opções cujo `CodDist === 0` ou nome do distribuidor seja `"Não Encontrados"` ou `"Sem Estoque"`. Se houver pelo menos uma oferta comercial real de distribuidora para o EAN, as ofertas fantasmas ("Não Encontrados") são completamente excluídas ou rebaixadas para o final da fila de seleção, garantindo que o Otimizador escolha sempre produtos reais que estão disponíveis nas distribuidoras e nunca oculte ofertas reais por causa de preços de fallbacks virtuais.
@@ -188,9 +189,10 @@ Quando `/api/optimize` é acionada, os seguintes passos ocorrem:
 7.  **Inteligência de Roteamento ao "Manter Original":** Ao desfazer um swap e manter o EAN original, o sistema nunca envia o item para a distribuidora original importada do ERP Trier se esta estiver sem estoque real ou indisponível. O backend (`server.ts`) analisa as condições comerciais compatíveis ativas para o exato EAN original e as ordena de modo a priorizar aquelas que possuem estoque real (`estoque > 0`). Se houver oferta ativa em outra distribuidora, o item é redirecionado automaticamente para a distribuidora de menor custo com estoque disponível. O preço de custo (`novoPreco`) no relatório ativo (`App.tsx`) é atualizado para o preço cotado real correspondente (`originalPrecoCotado`) no distribuidor ativo selecionado.
 8.  **Higienização de HTML (Anti-Vazamento):** Para impedir que tags HTML cruas (ex: `<b>`, `<strong>`, `<span>`) e caracteres de escape da API SmartPed sejam exibidos literalmente para o usuário, o backend (`server.ts`) e o frontend (`SwapsTable.tsx`) utilizam funções utilitárias de limpeza (`stripHtmlTags` / `stripHtml`). Essas funções limpam descrições, laboratórios e mensagens de restrições comerciais antes de qualquer renderização visual ou transmissão.
 9.  **Formatos de Sinais de Economia:** No componente `SwapsTable.tsx`, as economias reais de custos (redução de preço unitário nas ações rápidas) são formatadas e apresentadas como valores positivos para melhor compreensão visual, eliminando o sinal negativo (`-R$`) em cenários de desconto real.
+10. **Persistência SQLite (pós-resposta):** Ao finalizar a resposta ao frontend, o servidor salva o pedido no SQLite (`saveOrder` + `saveOrderItem`) de forma assíncrona. Isso garante rastreabilidade de todas as otimizações realizadas sem impactar a latência da resposta HTTP.
 
 ### 4.3. Faturamento (`/api/faturar`)
-Agrupa os itens pela distribuidora vencedora (`codDist`) e verifica se a soma alcança o `pedidoMinimo` (Valor Mínimo de Faturamento da distribuidora). Se não atingir, emite um *warning*. Em caso afirmativo, formata um payload massivo e dispara a ordem para a SmartPed.
+Agrupa os itens pela distribuidora vencedora (`codDist`) e verifica se a soma alcança o `pedidoMinimo` (Valor Mínimo de Faturamento da distribuidora). Se não atingir, emite um *warning*. Em caso afirmativo, formata um payload massivo e dispara a ordem para a SmartPed. **Persistência SQLite:** Ao finalizar a resposta, o servidor salva o pedido + itens no SQLite (`saveOrder` + `saveOrderItem`) de forma assíncrona.
 
 *   **Seletor / Opções de Faturamento (Exportar JSON ou Enviar):** Ao clicar em faturar um lote ("Enviar Todos" ou individualmente por distribuidora), o frontend intercepta o processo abrindo o modal interativo `billingChoice`. O comprador escolhe entre:
     1.  **Apenas Gerar JSON para Análise:** Monta o payload exato que seria enviado via POST para a API, e realiza o download de um arquivo `.json` local (ex: `faturamento_payload_Todas_as_Distribuidoras.json`), sem disparar nenhuma chamada de rede para a integradora. Isso possibilita auditar e debugar os dados de forma Offline.
