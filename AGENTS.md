@@ -22,24 +22,7 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 15. **CLOUD RUN - SQLite OPCIONAL (DISABLE_SQLITE):** O `better-sqlite3` causa SIGSEGV (signal 11) no Cloud Run. Por isso, o Dockerfile define `DISABLE_SQLITE=true`. Quando desabilitado, o sistema funciona apenas com cache L1 (Map em memória). Todas as funções de banco em `server/database.ts` tratam `null` graciosamente. **NUNCA** remova o `DISABLE_SQLITE=true` do Dockerfile sem antes resolver o SIGSEGV.
 16. **DEDUPLICAÇÃO POR CHAVE COMERCIAL:** Ao deduplicar ofertas da SmartPed, use a chave `${Ean}_${CodDist}_${Condicao}_${Prazo}` (sem preço). Manter a oferta de menor preço líquido em caso de duplicata. Isso se aplica a `/api/search-products` e `/api/smartped-find-substitutes`.
 17. **ORDENAÇÃO POR PREÇO LÍQUIDO:** Os resultados de busca devem ser ordenados por `precoLiquido` ascendente. A função `resolvePrecoLiquido` em `src/utils.ts` deve reconhecer os campos `Pliquido`, `pliquido`, `PliquidoUni`, `pliquidoUni`, `precoLiquido`, `Preco`, `preco`, `precoOriginal`.
-18. **LGPD - DADOS PESSOAIS:** O projeto manipula CNPJ (dado pessoal/jurídico sensível).
-    * **Mascaramento obrigatório em logs:** CNPJ, CPF, e-mail, telefone — NUNCA em texto claro. Função utilitária: `maskCnpj(cnpj)` que mantém só os 8 primeiros dígitos + `***` (ex: `13.408.443/0001-***`).
-    * **Dados sensíveis identificados no projeto:**
-        - `cnpj` / `apiCnpj` / `finalCnpj` (em server.ts e App.tsx)
-        - `token` da API SmartPed (config.ts via .env)
-        - CNPJ do arquivo SICF (cabeçalho tipo 1)
-    * **Onde o CNPJ circula (caminhos críticos):**
-        - `/api/optimize` → body `cnpj`
-        - `/api/faturar` → body `cnpj` (via token + CNPJ default)
-        - `/api/pedidos-do-dia` → body `cnpj`
-        - `/api/smartped-find-substitutes` → body `cnpj`
-        - Cache L1+L2 → chave inclui `cnpj`
-        - SQLite `orders.cnpj` / `api_cache.key`
-    * **Retenção de dados no SQLite:**
-        - `api_cache`: purga automática de registros expirados (TTL > X dias) — implementado em `startDbCachePurge()` em `server/database.ts`.
-        - `orders` / `order_items` / `faturados`: **SEM PURGA automática hoje** — registrar como débito técnico para implementar retenção configurável via env var (ex: `DATA_RETENTION_DAYS=90`).
-    * **Minimização:** Coletar apenas CNPJ + dados estritamente necessários para cotar e faturar. Nunca armazenar dados de saúde, CPF de funcionários ou dados bancários.
-    * **Direito de exclusão:** Se o titular solicitar remoção, o caminho técnico é deletar registros do SQLite por CNPJ (query direta no banco). Endpoint de exclusão não implementado hoje — registrar como débito técnico.
+18. **DADOS PESSOAIS - MASCARAMENTO BÁSICO:** Projeto de uso pessoal/interno (não sujeito a LGPD completa). Apenas mascarar CNPJ e token em logs por boa prática (ex: `13.408.443/0001-***`). Nunca logar credenciais em texto claro.
 19. **TESTE DE BUSCA ANTES DE COMMIT:** Antes de commitar qualquer alteração em `server.ts` (especialmente na rota `/api/search-products` ou `/api/smartped-find-substitutes`), execute o teste de busca local:
     - Busque por "HIDROCLOROTIAZIDA" e verifique: (1) sem ofertas duplicadas, (2) ordenado por preço líquido crescente, (3) QtdMin aparece nas promoções.
     - Busque por um EAN numérico e verifique o mesmo.
