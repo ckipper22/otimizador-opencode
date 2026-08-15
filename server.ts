@@ -2419,7 +2419,13 @@ app.post("/api/optimize", async (req, res) => {
 
         const uniqueAltsMap = new Map<string, any>();
         itemAlternatives.forEach(alt => {
-          const key = `${alt.ean}_${alt.distribuidora}_${alt.condicao}_${alt.preco.toFixed(2)}_${alt.prazo}`;
+          // qtdMin faz parte da chave: a MESMA distribuidora/condicao/prazo/preco pode existir
+          // em duas variantes - uma sem minimo (vinda de Condicoes/Ean, que retorna QtdMin=0) e
+          // outra com minimo promocional (vinda de Condicoes/Molecula). Sem o qtdMin na chave a
+          // variante do Ean (que vem primeiro no array) sobrescrevia a do Molecula, anulando o
+          // ganho de chamar ambos os endpoints em paralelo e escondendo as condicoes com
+          // pedido minimo do seletor de alternativas.
+          const key = `${alt.ean}_${alt.distribuidora}_${alt.condicao}_${alt.preco.toFixed(2)}_${alt.prazo}_${alt.qtdMin}`;
           if (!uniqueAltsMap.has(key)) {
             uniqueAltsMap.set(key, alt);
           }

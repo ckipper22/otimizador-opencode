@@ -31,6 +31,7 @@ import { formatCurrency } from "../utils";
 import { motion, AnimatePresence } from "motion/react";
 import { InterchangeabilityModal } from "./InterchangeabilityModal";
 import { WhatsAppOrderModal } from "./WhatsAppOrderModal";
+import { ConditionSelector } from "./ConditionSelector";
 
 function stripHtml(str: string | undefined | null): string {
   if (!str) return "";
@@ -115,7 +116,6 @@ export default function SwapsTable({
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [selectedWhatsAppRule, setSelectedWhatsAppRule] = useState<WhatsAppRule | null>(null);
   const [filterType, setFilterType] = useState<"all" | "swapped" | "original">("all");
-  const [allOffersModalItem, setAllOffersModalItem] = useState<any>(null);
 
   // Regras ativas de pedido WhatsApp (do config ou fallback para Eurofarma)
   const activeWhatsAppRules = useMemo<WhatsAppRule[]>(() => {
@@ -515,7 +515,7 @@ export default function SwapsTable({
                   <th className="py-2.5 px-3 border-r border-white/10 text-center w-14">Qtd</th>
                   <th className="py-2.5 px-3 border-r border-white/10 text-right w-24">Economia Unit.</th>
                   <th className="py-2.5 px-3 border-r border-white/10 text-right w-24">Economia Total</th>
-                  <th className="py-2.5 px-3 text-center w-48">Decisão / Escolha</th>
+                  <th className="py-2.5 px-3 text-center w-80 min-w-[300px]">Decisão / Escolha</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#141414]/10">
@@ -678,6 +678,9 @@ export default function SwapsTable({
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
+
+                        {/* Seletor de Condição de Compra / Substituição de Laboratório */}
+                        <ConditionSelector item={item} onSelectCondition={onSelectCondition} compact />
                       </td>
                     </tr>
                   );
@@ -1447,66 +1450,6 @@ export default function SwapsTable({
                           const qtdMinAlerta = !!(item.qtdMin && item.qtdMin > 0 && (itemQtd < item.qtdMin));
                           const qtdMaxAlerta = !!(item.qtdMax && item.qtdMax > 0 && (itemQtd > item.qtdMax));
 
-                          const isValidAltForTable = (alt: any, currentItem: any) => {
-                            const dist = String(alt.distribuidora || "").trim().toUpperCase();
-                            if (!alt.distribuidora || dist.includes("NÃO ENCONTRADOS") || dist.includes("NAO ENCONTRADOS") || dist.includes("NÃO ENCONTRADO") || dist.includes("NAO ENCONTRADO") || dist.includes("SEM ESTOQUE")) {
-                              return false;
-                            }
-                            const est = Number(alt.estoque !== undefined ? alt.estoque : (alt.Estoque || 0));
-                            return est > 0;
-                          };
-
-                          const cheapestSameProductNoMinAlt = (() => {
-                             if (!item.alternatives || item.alternatives.length <= 1) return null;
-                             
-                             const validAlts = item.alternatives.filter((alt: any) => isValidAltForTable(alt, item));
-                             const sameNoMinAlts = validAlts.filter((alt: any) => alt.ean === item.originalEan && (!alt.qtdMin || alt.qtdMin <= 0));
-                             if (sameNoMinAlts.length === 0) return null;
-                             
-                             const sorted = [...sameNoMinAlts].sort((a: any, b: any) => a.preco - b.preco);
-                             const cheapest = sorted[0];
-                             
-                             const isCurrentCheapest = cheapest.ean === item.novoEan && 
-                                                       cheapest.distribuidora === item.distribuidora && 
-                                                       cheapest.condicao === item.condicao && 
-                                                       Math.abs(cheapest.preco - item.novoPreco) < 0.001 && 
-                                                       cheapest.prazo === item.prazo;
-                             
-                             if (isCurrentCheapest) return null;
-
-                             const currentHasMin = item.qtdMin && item.qtdMin > 0;
-                             
-                             if (currentHasMin || cheapest.preco < item.novoPreco - 0.01) {
-                               return cheapest;
-                             }
-                             
-                             return null;
-                           })();
-
-                           const cheapestOtherItemAlt = (() => {
-                             if (!item.alternatives || item.alternatives.length <= 1) return null;
-                             
-                             const validAlts = item.alternatives.filter((alt: any) => isValidAltForTable(alt, item));
-                             const otherItemAlts = validAlts.filter((alt: any) => alt.ean !== item.originalEan);
-                             if (otherItemAlts.length === 0) return null;
-                             
-                             const sorted = [...otherItemAlts].sort((a: any, b: any) => a.preco - b.preco);
-                             const cheapest = sorted[0];
-                             
-                             const isCurrentCheapestOther = cheapest.ean === item.novoEan && 
-                                                           cheapest.distribuidora === item.distribuidora && 
-                                                           cheapest.condicao === item.condicao && 
-                                                           Math.abs(cheapest.preco - item.novoPreco) < 0.001 && 
-                                                           cheapest.prazo === item.prazo;
-                             
-                             if (isCurrentCheapestOther) return null;
-                             
-                             if (cheapest.preco < item.novoPreco - 0.01) {
-                               return cheapest;
-                             }
-                             
-                             return null;
-                           })();
                                                     
                           return (
                             <tr 
@@ -1594,24 +1537,8 @@ export default function SwapsTable({
                                     )}
                                   </div>
 
-<ObservationBell ean={item.originalEan} />
-                          <button
-                            onClick={() => setAllOffersModalItem(item)}
-                            className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-blue-50 border border-blue-300 text-blue-700 rounded-sm hover:bg-blue-100 transition-colors cursor-pointer"
-                            title="Ver todas as ofertas disponíveis com estoque para este EAN"
-                          >
-                            <Search className="w-3 h-3" />
-                            Ver ofertas
-                          </button>
+                                  <ObservationBell ean={item.originalEan} />
 
-                                  <button
-                                    onClick={() => setAllOffersModalItem(item)}
-                                    className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-blue-50 border border-blue-300 text-blue-700 rounded-sm hover:bg-blue-100 transition-colors cursor-pointer"
-                                    title="Ver todas as ofertas disponíveis com estoque para este EAN"
-                                  >
-                                    <Search className="w-3 h-3" />
-                                    Ver ofertas
-                                  </button>
 
                                   {item.observacao && (
                                     <div className="mt-1.5 flex items-start gap-1 text-[10px] text-amber-700 bg-amber-50 p-1 rounded-sm border border-amber-200">
@@ -1704,170 +1631,7 @@ export default function SwapsTable({
                                    })()}
 
                                    {/* Comercial condition selection */}
-                                    {item.alternatives && item.alternatives.length > 0 && (() => {
-                                      const isCurrentAlt = (alt: any) => 
-                                        alt.ean === item.novoEan && 
-                                        alt.distribuidora === item.distribuidora && 
-                                        alt.condicao === item.condicao && 
-                                        Math.abs(alt.preco - item.novoPreco) < 0.001 && 
-                                        alt.prazo === item.prazo;
-
-                                      const validAlts = item.alternatives.filter((alt) => isValidAltForTable(alt, item));
-                                      const otherValidAlts = validAlts.filter((alt) => !isCurrentAlt(alt));
-                                      if (otherValidAlts.length === 0) return null;
-
-                                      const sameProductAlts = validAlts.filter((alt) => alt.ean === item.originalEan);
-                                      const otherProductAlts = validAlts.filter((alt) => alt.ean !== item.originalEan);
-
-                                      // Determinar se devemos mostrar recomendação
-                                      const showSameProductNoMinQuickAction = cheapestSameProductNoMinAlt && (qtdMinAlerta || cheapestSameProductNoMinAlt.preco < item.novoPreco - 0.01);
-                                      const showOtherProductQuickAction = cheapestOtherItemAlt && cheapestOtherItemAlt.preco < item.novoPreco - 0.01;
-
-                                      return (
-                                        <div className="mt-3.5 p-3 bg-gray-50 border border-gray-200 rounded-sm flex flex-col gap-3">
-                                          {/* Section Title */}
-                                          <div className="flex items-center gap-1.5 text-[10px] text-gray-700 font-extrabold uppercase tracking-wider">
-                                            <Tag className="w-3.5 h-3.5 text-gray-500" />
-                                            <span>Opções de Compra & Substituição de Laboratório</span>
-                                          </div>
-
-                                          {/* Dropdown Selector */}
-                                          <div className="flex flex-col gap-1">
-                                            <label className="text-[9px] text-gray-500 font-bold uppercase">
-                                              Selecione a condição ou laboratório desejado:
-                                            </label>
-                                            <select
-                                              value={item.alternatives.findIndex((alt) => 
-                                                alt.ean === item.novoEan && 
-                                                alt.distribuidora === item.distribuidora && 
-                                                alt.condicao === item.condicao && 
-                                                Math.abs(alt.preco - item.novoPreco) < 0.001 && 
-                                                alt.prazo === item.prazo
-                                              )}
-                                              onChange={(e) => {
-                                                const idx = parseInt(e.target.value, 10);
-                                                const selected = item.alternatives?.[idx];
-                                                if (selected && onSelectCondition) {
-                                                  onSelectCondition(item.codInterno, selected);
-                                                }
-                                              }}
-                                              className="w-full bg-white border border-gray-300 text-[10px] font-bold text-gray-800 rounded-sm px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none cursor-pointer"
-                                            >
-                                              {sameProductAlts.length > 0 && (
-                                                <optgroup label="📋 CONDIÇÃO DE COMPRA (Mesmo Medicamento / Mesma Marca)">
-                                                  {sameProductAlts.map((alt) => {
-                                                    const altIdx = item.alternatives.findIndex(a => a === alt);
-                                                    const isCurrent = alt.ean === item.novoEan && 
-                                                                      alt.distribuidora === item.distribuidora && 
-                                                                      alt.condicao === item.condicao && 
-                                                                      Math.abs(alt.preco - item.novoPreco) < 0.001 && 
-                                                                      alt.prazo === item.prazo;
-                                                    return (
-                                                      <option key={altIdx} value={altIdx}>
-                                                        {alt.qtdMin > 0 ? `⚠️ [MÍN: ${alt.qtdMin}un]` : "✅ [SEM MÍNIMO]"} {alt.distribuidora} - {alt.condicao} (R$ {alt.preco.toFixed(2).replace(".", ",")}) {alt.prazo > 0 ? `| ${alt.prazo}d` : "| Vista"} {isCurrent ? " (Atual) ★" : ""}
-                                                      </option>
-                                                    );
-                                                  })}
-                                                </optgroup>
-                                              )}
-
-                                              {otherProductAlts.length > 0 && (
-                                                <optgroup label="🔬 SUBSTITUIÇÃO (Outro Laboratório / Outro Fabricante)">
-                                                  {otherProductAlts.map((alt) => {
-                                                    const altIdx = item.alternatives.findIndex(a => a === alt);
-                                                    const isCurrent = alt.ean === item.novoEan && 
-                                                                      alt.distribuidora === item.distribuidora && 
-                                                                      alt.condicao === item.condicao && 
-                                                                      Math.abs(alt.preco - item.novoPreco) < 0.001 && 
-                                                                      alt.prazo === item.prazo;
-                                                    const altDesc = alt.descricao || "";
-                                                    const altPrice = Number(alt.preco !== undefined ? alt.preco : 0);
-                                                    return (
-                                                      <option key={altIdx} value={altIdx}>
-                                                        [{alt.laboratorio || "GENÉRICO"}] {altDesc.substring(0, 30)}... | {alt.qtdMin > 0 ? `⚠️ [MÍN: ${alt.qtdMin}un]` : "✅ [SEM MÍNIMO]"} {alt.distribuidora} (R$ {altPrice.toFixed(2).replace(".", ",")}) {isCurrent ? " (Atual) ★" : ""}
-                                                      </option>
-                                                    );
-                                                  })}
-                                                </optgroup>
-                                              )}
-                                            </select>
-                                          </div>
-
-                                          {/* Quick Recommendations/Actions */}
-                                          {(showSameProductNoMinQuickAction || showOtherProductQuickAction) && (
-                                            <div className="flex flex-col gap-1.5 pt-2 border-t border-dashed border-gray-200">
-                                              <span className="text-[9px] text-gray-500 font-bold uppercase">Ações Rápidas Recomendadas:</span>
-                                              
-                                              {/* Action 1: Avoid minimum limit by switching to the cheapest condition of the same product */}
-                                              {showSameProductNoMinQuickAction && cheapestSameProductNoMinAlt && (
-                                                <button
-                                                  onClick={() => {
-                                                    if (onSelectCondition) {
-                                                      onSelectCondition(item.codInterno, cheapestSameProductNoMinAlt);
-                                                    }
-                                                  }}
-                                                  className={`flex flex-col text-left w-full p-2 rounded-sm border transition-all cursor-pointer ${
-                                                    qtdMinAlerta 
-                                                      ? "bg-red-50 hover:bg-red-100 border-red-300 text-red-950" 
-                                                      : "bg-emerald-50 hover:bg-emerald-100 border-emerald-300 text-emerald-950"
-                                                  }`}
-                                                  title={`Clique para escolher a condição sem quantidade mínima: R$ ${Number(cheapestSameProductNoMinAlt.preco || 0).toFixed(2)}`}
-                                                >
-                                                  <div className="flex items-center gap-1 font-black text-[9px] uppercase tracking-wide">
-                                                    {qtdMinAlerta ? (
-                                                      <>
-                                                        <AlertTriangle className="w-3.5 h-3.5 text-red-600 animate-bounce" />
-                                                        <span className="text-red-700 font-extrabold">⚡ RESOLVER ALERTA DE MÍNIMO COMERCIAL:</span>
-                                                      </>
-                                                    ) : (
-                                                      <>
-                                                        <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                                                        <span className="text-emerald-700 font-extrabold">⚡ MELHOR PREÇO SEM MÍNIMO (MESMO PRODUTO):</span>
-                                                      </>
-                                                    )}
-                                                  </div>
-                                                  <div className="text-[10px] mt-0.5 leading-tight font-medium">
-                                                    Trocar para o <strong>mesmo produto</strong> fornecido por <strong className="underline">{cheapestSameProductNoMinAlt.distribuidora || "Distribuidor"}</strong> sem exigência de quantidade mínima comercial.
-                                                  </div>
-                                                  <div className="text-[9.5px] mt-1 text-gray-600 font-mono flex justify-between w-full">
-                                                    <span>Preço Unitário: <strong>R$ {Number(cheapestSameProductNoMinAlt.preco || 0).toFixed(2).replace(".", ",")}</strong></span>
-                                                    {Number(cheapestSameProductNoMinAlt.preco || 0) < item.novoPreco && (
-                                                      <span className="text-emerald-700 font-bold"> Economia: R$ {(item.novoPreco - Number(cheapestSameProductNoMinAlt.preco || 0)).toFixed(2).replace(".", ",")} / un</span>
-                                                    )}
-                                                  </div>
-                                                </button>
-                                              )}
-
-                                              {/* Action 2: Substitute product for a cheaper manufacturer/laboratory */}
-                                              {showOtherProductQuickAction && cheapestOtherItemAlt && (
-                                                <button
-                                                  onClick={() => {
-                                                    if (onSelectCondition) {
-                                                      onSelectCondition(item.codInterno, cheapestOtherItemAlt);
-                                                    }
-                                                  }}
-                                                  className="flex flex-col text-left w-full p-2 bg-blue-50 hover:bg-blue-100 border border-blue-300 text-blue-950 rounded-sm transition-all cursor-pointer"
-                                                  title={`Clique para trocar para o substituto mais barato: ${cheapestOtherItemAlt.descricao || ""} - R$ ${Number(cheapestOtherItemAlt.preco || 0).toFixed(2)}`}
-                                                >
-                                                  <div className="flex items-center gap-1 font-black text-[9px] uppercase tracking-wide text-blue-800">
-                                                    <RefreshCw className="w-3.5 h-3.5 text-blue-600" />
-                                                    <span>🔬 SUBSTITUIR POR OUTRO LABORATÓRIO MAIS BARATO:</span>
-                                                  </div>
-                                                  <div className="text-[10px] mt-0.5 leading-tight font-medium">
-                                                    Mudar para o fabricante <strong>{cheapestOtherItemAlt.laboratorio || "GENÉRICO"}</strong> ({(cheapestOtherItemAlt.descricao || "").substring(0, 32)}...) fornecido por <strong className="underline">{cheapestOtherItemAlt.distribuidora || "Distribuidor"}</strong>.
-                                                  </div>
-                                                  <div className="text-[9.5px] mt-1 text-gray-600 font-mono flex justify-between w-full">
-                                                    <span>Preço Unitário: <strong>R$ {Number(cheapestOtherItemAlt.preco || 0).toFixed(2).replace(".", ",")}</strong></span>
-                                                    <span className="text-emerald-700 font-bold">Economia: R$ {(item.novoPreco - Number(cheapestOtherItemAlt.preco || 0)).toFixed(2).replace(".", ",")} / un</span>
-                                                  </div>
-                                                </button>
-                                              )}
-                                            </div>
-                                          )}
-                                        </div>
-                                      );
-                                    })()}
-
+                                   <ConditionSelector item={item} onSelectCondition={onSelectCondition} />
 
                                    {/* Alerta de Duplicidade Profarma */}
                                    {isProfarmaAlert && !isDisabled && profarmaDecisions[item.codInterno] !== 'keep' && (
@@ -2155,100 +1919,6 @@ export default function SwapsTable({
             />
           )}
         </AnimatePresence>
-
-        {/* Modal de Todas as Ofertas */}
-        {allOffersModalItem && onSelectCondition && (() => {
-          const modalItem = allOffersModalItem;
-          const allAlts = (modalItem.alternatives || []).filter((alt: any) => {
-            const dist = String(alt.distribuidora || "").toUpperCase();
-            if (!alt.distribuidora || dist.includes("NÃO ENCONTRADOS") || dist.includes("SEM ESTOQUE")) return false;
-            return Number(alt.estoque !== undefined ? alt.estoque : (alt.Estoque || 0)) > 0;
-          });
-          const sameProductAlts = allAlts.filter((a: any) => a.ean === modalItem.originalEan);
-          const otherProductAlts = allAlts.filter((a: any) => a.ean !== modalItem.originalEan);
-
-          return (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-              onClick={() => setAllOffersModalItem(null)}
-            >
-              <motion.div
-                initial={{ scale: 0.95, y: 20 }}
-                animate={{ scale: 1, y: 0 }}
-                exit={{ scale: 0.95, y: 20 }}
-                className="bg-white rounded-lg shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col"
-                onClick={e => e.stopPropagation()}
-              >
-                <div className="flex items-center justify-between p-4 border-b">
-                  <div>
-                    <h3 className="text-sm font-black uppercase tracking-wider">Todas as Ofertas Disponíveis</h3>
-                    <p className="text-[11px] text-gray-500 mt-0.5">{modalItem.originalDescricao} — EAN: {modalItem.originalEan}</p>
-                  </div>
-                  <button onClick={() => setAllOffersModalItem(null)} className="p-1 hover:bg-gray-100 rounded"><X className="w-4 h-4" /></button>
-                </div>
-                <div className="overflow-y-auto flex-1 p-4 space-y-4">
-                  {allAlts.length === 0 ? (
-                    <p className="text-center text-gray-400 text-xs py-8">Nenhuma oferta com estoque encontrada.</p>
-                  ) : (
-                    <>
-                      {sameProductAlts.length > 0 && (
-                        <div>
-                          <h4 className="text-[10px] font-extrabold uppercase tracking-wider text-gray-600 mb-2">📋 Mesmo Medicamento</h4>
-                          <div className="space-y-1">
-                            {sameProductAlts.sort((a: any, b: any) => a.preco - b.preco).map((alt: any, idx: number) => (
-                              <button
-                                key={idx}
-                                onClick={() => { onSelectCondition(modalItem.codInterno, alt); setAllOffersModalItem(null); }}
-                                className="w-full flex items-center justify-between px-3 py-2 text-[11px] border rounded-sm hover:bg-blue-50 hover:border-blue-300 transition-colors cursor-pointer"
-                              >
-                                <div className="flex items-center gap-2">
-                                  <span className="font-bold text-gray-800">{alt.distribuidora}</span>
-                                  <span className="text-gray-500">{alt.condicao}</span>
-                                  <span className="text-gray-400">{alt.prazo > 0 ? `${alt.prazo}d` : "À vista"}</span>
-                                  {alt.qtdMin > 0 && <span className="text-amber-600 font-bold">⚠️ Mín {alt.qtdMin}un</span>}
-                                  {alt.qtdMin <= 0 && <span className="text-emerald-600 font-bold">✅ Sem mínimo</span>}
-                                </div>
-                                <span className="font-black text-emerald-700">R$ {Number(alt.preco).toFixed(2).replace(".", ",")}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {otherProductAlts.length > 0 && (
-                        <div>
-                          <h4 className="text-[10px] font-extrabold uppercase tracking-wider text-gray-600 mb-2">🔬 Substitutos ({otherProductAlts.length})</h4>
-                          <div className="space-y-1">
-                            {otherProductAlts.sort((a: any, b: any) => a.preco - b.preco).map((alt: any, idx: number) => (
-                              <button
-                                key={idx}
-                                onClick={() => { onSelectCondition(modalItem.codInterno, alt); setAllOffersModalItem(null); }}
-                                className="w-full flex items-center justify-between px-3 py-2 text-[11px] border rounded-sm hover:bg-blue-50 hover:border-blue-300 transition-colors cursor-pointer"
-                              >
-                                <div className="flex items-center gap-2">
-                                  <span className="font-bold text-blue-800 truncate max-w-[150px]">{(alt.laboratorio || "GENÉRICO").substring(0, 20)}</span>
-                                  <span className="text-gray-500 truncate max-w-[180px]">{(alt.descricao || "").substring(0, 30)}</span>
-                                  {alt.qtdMin > 0 && <span className="text-amber-600 font-bold">⚠️ Mín {alt.qtdMin}un</span>}
-                                  {alt.qtdMin <= 0 && <span className="text-emerald-600 font-bold">✅ Sem mínimo</span>}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-gray-500">{alt.distribuidora}</span>
-                                  <span className="font-black text-emerald-700">R$ {Number(alt.preco).toFixed(2).replace(".", ",")}</span>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              </motion.div>
-            </motion.div>
-          );
-        })()}
 
         {/* Botão Flutuante de Busca nos Pedidos e Card Interativo */}
         <div className="fixed bottom-28 right-8 z-40 flex flex-col items-end pointer-events-none">

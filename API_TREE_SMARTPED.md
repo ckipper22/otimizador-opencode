@@ -152,6 +152,50 @@ PMC > pmc > Pmc > VlrPmc > vlr_pmc
 > **Cache de 5 minutos:** Implementado em ambos endpoints para estabilizar a experiência.
 > Chave: `endpoint|EAN|token|CNPJ`. TTL: 5 minutos. Max: 2000 entradas.
 
+> **⚠️ ARMADILHA: chamar ambos os endpoints NÃO basta — cuidado com a deduplicação (Bug 2026-08-14 / parte 2)**
+>
+> **Sintoma:** condições com pedido mínimo promocional não apareciam como opção no seletor de
+> alternativas ("Opções de Compra & Substituição de Laboratório"), mesmo com o `Promise.all`
+> dos dois endpoints implementado corretamente.
+>
+> **Causa raiz:** em `/api/optimize`, o array de alternativas é montado como
+> `[...condicoes, ...substitutos]` — ou seja, os itens de `Condicoes/Ean` entram **primeiro**.
+> A deduplicação subsequente usava a chave
+> `ean_distribuidora_condicao_preco_prazo`, **sem incluir o `QtdMin`**. Como a lógica é
+> `if (!map.has(key)) map.set(key, alt)` (primeiro a chegar vence), a variante **sem** mínimo
+> vinda do `Condicoes/Ean` (que retorna `QtdMin: 0`) sobrescrevia a variante **com** mínimo
+> promocional vinda do `Condicoes/Molecula`. Resultado: o ganho de chamar os dois endpoints
+> em paralelo era **anulado no dedup**.
+>
+> **Correção (`server.ts:~2422`):** incluir `qtdMin` na chave de deduplicação.
+> ```javascript
+> // CORRETO - as duas variantes (com e sem minimo) sobrevivem
+> const key = `${alt.ean}_${alt.distribuidora}_${alt.condicao}_${alt.preco.toFixed(2)}_${alt.prazo}_${alt.qtdMin}`;
+>
+> // ERRADO - a variante sem QtdMin do Ean apaga a variante com QtdMin do Molecula
+> const key = `${alt.ean}_${alt.distribuidora}_${alt.condicao}_${alt.preco.toFixed(2)}_${alt.prazo}`;
+> ```
+>
+> **Regra geral:** ao deduplicar ofertas provenientes de MAIS DE UM endpoint da SmartPed, a
+> chave deve conter todos os campos que podem divergir entre os endpoints para a mesma
+> distribuidora/condição/prazo. Hoje isso inclui obrigatoriamente `QtdMin`.
+
+> **⚠️ NÃO CONFUNDIR: `QtdMin` (item) vs `QtdMinima` (pedido)**
+>
+> São conceitos **diferentes** e não devem ser mesclados no mesmo campo:
+> - **`QtdMin`** — fica dentro de cada **condição** (junto de `Pliquido`, `Prazo`, `Estoque`).
+>   É a quantidade mínima **do item** para ativar a promoção/desconto. É o que alimenta
+>   `alternatives[].qtdMin` e o alerta "MÍNIMO COMERCIAL" na linha do produto.
+> - **`QtdMinima`** — fica dentro do array `minimos[]`, ao lado de `VlrMinimo`, chaveado por
+>   `CodDist + Condicao + Prazo`. É o mínimo do **pedido inteiro** naquela distribuidora.
+>   Alimenta o campo `qtdMinima` do report e o badge "Lote Mínimo" no cabeçalho do grupo.
+>
+> Por isso o helper `resolveQtdMinima` (`src/utils.ts:242`) **NÃO deve ser usado** para
+> preencher `alternatives[].qtdMin` no `/api/optimize`: ele agrega `QtdMinima`/`Combo.QtdMin`
+> na mesma leitura e tem **default `1`**, o que inventaria um mínimo inexistente e destruiria
+> a distinção "✅ SEM MÍNIMO" vs "⚠️ MÍN: X un" no seletor. A leitura crua de
+> `QtdMin`/`qtdMin` com default `0` em `server.ts:~2411` está **correta**.
+
 ---
 
 ## 2. Condicoes por Molecula (`/api/Condicoes/Molecula`)
@@ -1128,19 +1172,67 @@ POST /api/optimize
     │               ├── POST /api/Condicoes/Molecula (texto + dosagem)
     │               └── POST /api/Produtos/Buscar (curingas wildcards)
     │
-    ├── Deduplicar ofertas (EAN + CodDist + Condicao + Prazo)
+    ├── DOIS CAMINHOS INDEPENDENTES a partir daqui (nao confundir!):
     │
-    ├── findBestSubstitute() para cada item:
+    ├── [A] Monta item.alternatives[]  (o que o usuario VE no dropdown)
+    │       │   server.ts:~2353-2433
     │       │
-    │       ├── Filtro por tipos aceitos (G, S, O, R)
-    │       ├── Filtro por estoque > 0
-    │       ├── Filtro por categoria estrita (Generico ↔ Generico)
-    │       ├── Validacao de swap (validateSwapEquivalence): dosagem, sabor, quantidade
-    │       ├── Calculo de economia (precoNovo vs precoBenchmark)
-    │       └── Fornecedor externo (WhatsApp): comparacao com tabela manual
+    │       ├── Fonte: [...condicoes, ...substitutos]
+    │       │       ├── condicoes   ← entry.Condicoes   (de Condicoes/Ean)     ENTRA PRIMEIRO
+    │       │       └── substitutos ← entry.Substitutos (de Condicoes/Molecula)
+    │       │
+    │       ├── Filtros aplicados:
+    │       │       ├── disabledDistSet (distribuidoras desmarcadas na UI)
+    │       │       ├── getUnitCost(s) <= 0  → descarta
+    │       │       ├── estoque <= 0         → descarta (0=falta; 1=pouco e 2=bastante passam)
+    │       │       └── validateSwapEquivalence (dosagem, sabor, apresentacao)
+    │       │
+    │       ├── SEM limite de quantidade (nao ha slice/take/limit)
+    │       │
+    │       ├── Dedup por chave:
+    │       │       ean _ distribuidora _ condicao _ preco _ prazo _ qtdMin
+    │       │                                                        ^^^^^^
+    │       │       OBRIGATORIO. Ver secao "ARMADILHA: dedup" no topo deste arquivo.
+    │       │       Sem qtdMin na chave, a variante SEM minimo do Condicoes/Ean
+    │       │       (QtdMin=0, entra primeiro) apaga a variante COM minimo
+    │       │       promocional do Condicoes/Molecula.
+    │       │
+    │       └── Ordena: isRealOffer primeiro, depois menor preco
     │
+    └── [B] findBestSubstitute() escolhe a VENCEDORA (novoEan/novoPreco/distribuidora)
+            │   server.ts:~1100-1350, chamada em ~2469
+            │   NAO le item.alternatives - percorre [...condicoes, ...substitutos] de novo
+            │
+            ├── Filtro por cortesRecentes (cortes da dist. nos ultimos 2 dias uteis)
+            ├── Filtro por tipos aceitos (G, S, O, R)
+            ├── Filtro por estoque (respeita flag exigirEstoque)
+            ├── Filtro por categoria estrita (Generico ↔ Generico, relaxado em ruptura)
+            ├── Validacao de swap (validateSwapEquivalence)
+            ├── Filtro de margem minima (so para substitutos de EAN diferente)
+            ├── Calculo de economia (precoNovo vs precoBenchmark)
+            ├── Fornecedor externo (WhatsApp): sobrescreve com CodDist 9999 / Condicao MANUAL
+            │
+            └── Criterio final de ordenacao:
+                    1o) isRealOffer(oferta) === true
+                    2o) menor getUnitCost(oferta)
+                    >> QtdMin e IGNORADO aqui por decisao de produto: o motor sempre
+                       aponta o menor preco absoluto, e a UI alerta se qtd < qtdMin.
+                       O usuario resolve manualmente pelo ConditionSelector.
+
+    └── Filtro final do report (server.ts:~3066): remove itens cuja VENCEDORA
+        ficou como "Nao Encontrados"/"Sem Estoque" ou com estoque <= 0
+
     └── Retorna SwapReportItem[] + logs
 ```
+
+> **⚠️ Por que [A] e [B] sao caminhos separados?**
+> `findBestSubstitute` **nao consome** `item.alternatives`. Os dois percorrem a mesma fonte
+> bruta (`[...condicoes, ...substitutos]`) mas com filtros diferentes: [B] aplica margem
+> minima e cortes recentes, [A] nao. Consequencia pratica: **o dropdown pode legitimamente
+> conter ofertas que o motor descartou** (ex.: uma oferta com economia abaixo da margem
+> minima, ou de uma distribuidora que cortou recentemente). Isso e **intencional** — permite
+> ao comprador escolher manualmente uma opcao que o automatismo rejeitou.
+> Ao mexer em um dos caminhos, verificar sempre o impacto no outro.
 
 ---
 

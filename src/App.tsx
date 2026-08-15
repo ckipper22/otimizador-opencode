@@ -1,16 +1,14 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
-import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, ArrowDown, ChevronRight, XCircle, Copy, Lock, Mail, Eye, EyeOff, Settings, ArrowUp, GripVertical } from "lucide-react";
+import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, XCircle, Copy, Lock, Mail, Eye, EyeOff, Settings, ArrowUp, GripVertical } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import UploadBox from "./components/UploadBox";
 import ConfigurationPanel from "./components/ConfigurationPanel";
-import OptimizationSummaryStats from "./components/OptimizationSummary";
 import SwapsTable from "./components/SwapsTable";
 import { OrderReturnView } from "./components/OrderReturnView";
 import { PendingOrdersTable } from "./components/PendingOrdersTable";
 import { FaturadosModal } from "./components/FaturadosModal";
 import { ConfirmQuantitiesModal } from "./components/ConfirmQuantitiesModal";
 import { BillingLogsModal } from "./components/BillingLogsModal";
-import VisualChart from "./components/VisualChart";
 import { DailyItemsView } from "./components/DailyItemsView";
 import { OptimizerConfig, OptimizationResponse, SwapReportItem, DistributorOption, ExternalSupplier, AuthorizedCompany } from "./types";
 import { EanEyeButton } from "./components/EanEyeButton";
@@ -466,8 +464,7 @@ export default function App() {
   const [itemWizardOffers, setItemWizardOffers] = useState<any[]>([]);
   const [isSearchingItemWizard, setIsSearchingItemWizard] = useState<boolean>(false);
 
-  const [showStats, setShowStats] = useState<boolean>(true);
-  const [isSwapsTableVisible, setIsSwapsTableVisible] = useState<boolean>(true);
+
   const [suspectItemAlert, setSuspectItemAlert] = useState<{ item: any; specificDistributorName?: string } | null>(null);
 
   useEffect(() => {
@@ -1148,24 +1145,6 @@ export default function App() {
   };
 
   // Derived active metrics summary
-  const activeSummary = useMemo(() => {
-    if (!result) return null;
-    const activeItems = result.report.filter(item => !billedItemCodes.has(item.codInterno));
-    const totalItems = activeItems.filter(item => !disabledItemCodes.has(item.codInterno)).length;
-    const itemsTreated = activeItems.filter(item => !disabledItemCodes.has(item.codInterno)).length;
-    const itemsSwapped = activeItems.filter(item => !disregardedCodes.has(item.codInterno) && item.originalEan !== item.novoEan && !disabledItemCodes.has(item.codInterno)).length;
-    const totalSavings = activeItems
-      .filter(item => !disregardedCodes.has(item.codInterno) && !disabledItemCodes.has(item.codInterno))
-      .reduce((sum, item) => sum + item.economiaTotal, 0);
-
-    return {
-      totalItems,
-      itemsTreated,
-      itemsSwapped,
-      totalSavings
-    };
-  }, [result, disregardedCodes, disabledItemCodes, billedItemCodes]);
-
   // Generate dynamic SICF content reflecting only currently active swaps
   const getOptimizedFileContent = () => {
     if (!result || !fileContent) return "";
@@ -3767,14 +3746,6 @@ export default function App() {
               {/* Action Buttons */}
               <div className="flex flex-wrap items-center gap-2">
                 <button
-                  onClick={() => setShowStats(!showStats)}
-                  className="flex items-center space-x-2 bg-[#E4E3E0] hover:bg-white text-[#141414] border border-[#141414] font-bold text-[10px] uppercase tracking-widest py-2.5 px-4 rounded-none transition-all cursor-pointer"
-                  title={showStats ? "Esconder Estatísticas" : "Ver Estatísticas"}
-                >
-                  <ArrowDown className={`w-4 h-4 transition-transform ${showStats ? "rotate-180" : ""}`} />
-                  <span>{showStats ? "Esconder Resumo" : "Ver Resumo Economia"}</span>
-                </button>
-                <button
                   onClick={handleSendBilling}
                   disabled={isBillingLoading}
                   className="flex items-center space-x-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-bold text-[10px] uppercase tracking-widest py-2.5 px-4 rounded-none transition-all border border-emerald-700 cursor-pointer shadow-sm animate-pulse-subtle"
@@ -3806,14 +3777,6 @@ export default function App() {
                 </button>
               </div>
             </div>
-
-            {/* Metrics & Charts (Retractable) */}
-            {showStats && activeSummary && (
-              <div className="animate-fade-in space-y-6">
-                <OptimizationSummaryStats summary={activeSummary} report={activeReport} />
-                <VisualChart report={activeReport} />
-              </div>
-            )}
 
             {/* DISTRIBUTOR MINIMUMS PANEL */}
             <div className="hidden bg-[#DCDAD7] border border-[#141414] p-6 rounded-none shadow-sm text-[#141414]">
@@ -4172,26 +4135,14 @@ export default function App() {
               />
             ) : (
               <div className="bg-white border border-[#141414] overflow-hidden shadow-sm">
-                <div 
-                  className="bg-[#141414] text-[#E4E3E0] px-5 py-4 flex items-center justify-between cursor-pointer select-none"
-                  onClick={() => setIsSwapsTableVisible(!isSwapsTableVisible)}
-                >
-                  <div className="flex items-center space-x-3">
-                    <div className={`transition-transform ${isSwapsTableVisible ? "rotate-90" : ""}`}>
-                      <ChevronRight className="w-5 h-5" />
-                    </div>
-                    <h3 className="font-serif italic text-lg tracking-wide">Painel de Escolhas & Revisão de Substituições</h3>
-                  </div>
-                  <span className="text-[10px] font-mono uppercase bg-white/10 px-2 py-1 tracking-widest">
-                    {isSwapsTableVisible ? "Recolher Painel" : "Expandir Painel"}
-                  </span>
+                <div className="bg-[#141414] text-[#E4E3E0] px-5 py-4 flex items-center select-none">
+                  <h3 className="font-serif italic text-lg tracking-wide">Painel de Escolhas &amp; Revisão de Substituições</h3>
                 </div>
 
                 <PendingOrdersTable billedGroups={billedGroups} onViewLogs={(logs, name) => setViewingLogs({groupKeys: [name], title: name})} />
-                
-                {isSwapsTableVisible && (
-                  <div className="p-5 animate-fade-in">
-                    <SwapsTable
+
+                <div className="p-5">
+                  <SwapsTable
                       report={activeReport}
                       rawReport={result ? result.report : []}
                       billedItemCodes={billedItemCodes}
@@ -4220,9 +4171,8 @@ export default function App() {
                       onSelectCondition={handleSelectCondition}
                       dailyOrders={dailyOrders}
                       config={config}
-                    />
-                  </div>
-                )}
+                  />
+                </div>
               </div>
             )}
 

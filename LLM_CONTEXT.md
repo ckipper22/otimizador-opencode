@@ -61,6 +61,7 @@ O projeto utiliza um repositório monolítico (Express + React).
 *   `UploadBox.tsx`: Zona de *drag-and-drop*. Nele também são listadas as **Distribuidoras Disponíveis** onde o usuário pode desmarcar (fazer *opt-out*) distribuidores indesejados antes da otimização.
 *   `ConfigurationPanel.tsx`: Painel de ajustes finos (Token da API, CNPJ, Valor de Economia Mínima, URLs Customizadas).
 *   `SwapsTable.tsx`: A tabela densa de resultados. Exibe o que foi trocado (`De -> Para`), lucros e alertas de ruptura.
+*   `ConditionSelector.tsx`: **Componente compartilhado** do seletor de "Opções de Compra & Substituição de Laboratório". Renderiza o `<select>` com dois `optgroup` (`📋 CONDIÇÃO DE COMPRA (Mesmo Medicamento / Mesma Marca)` para `alt.ean === item.originalEan`, e `🔬 SUBSTITUIÇÃO (Outro Laboratório / Outro Fabricante)` para os demais EANs) mais o bloco de **Ações Rápidas Recomendadas** (resolver alerta de mínimo comercial / substituir por laboratório mais barato). É usado nos **dois** locais da tela de resultados: no `Painel de Escolhas & Revisão de Substituições` (coluna "Decisão / Escolha", com `compact`) e na tabela agrupada por distribuidora. **Nunca duplicar essa lógica** — alterações de regra devem ser feitas somente neste arquivo. Filtro obrigatório: só lista alternativas com distribuidora real (exclui `Não Encontrados` / `Sem Estoque`) e `estoque > 0`; retorna `null` se não sobrar nenhuma alternativa diferente da atual.
 *   `OrderReturnView.tsx`, `PendingOrdersTable.tsx`: Interfaces para monitorar o status do pedido (Faturado, Falta, Erro) após o envio final para a SmartPed.
 
 ---
@@ -96,6 +97,9 @@ Quando `/api/optimize` é acionada, os seguintes passos ocorrem:
     *   **Otimização de Menor Preço Absoluto com Seletor de Alternativas Comerciais Categorizado:** Para garantir que a farmácia sempre veja a melhor oferta do mercado, o algoritmo de otimização ignora o filtro rígido de quantidade mínima (`QtdMin`) na triagem de ofertas de menor custo. Em vez disso, se a quantidade solicitada for inferior ao limite da promoção, a interface renderiza um alerta de quantidade mínima ("Mínimo Promo: X un"). O usuário ganha um painel estruturado de "Opções de Compra & Substituição de Laboratório" em cada linha da tabela. O seletor manual de condições separa as opções em dois grupos visuais nítidos via `<optgroup>`:
             1. `📋 CONDIÇÃO DE COMPRA`: Para manter o mesmo medicamento/marca, alterando apenas o distribuidor, preço ou prazo.
             2. `🔬 SUBSTITUIÇÃO`: Para trocar o medicamento por um fabricante ou laboratório equivalente mais barato (EAN diferente).
+    *   **Onde o seletor aparece:** o componente compartilhado `ConditionSelector.tsx` é renderizado nos **dois** blocos da tela de resultados: (a) no `Painel de Escolhas & Revisão de Substituições` (topo, itens com sugestão de troca — coluna "Decisão / Escolha", modo `compact`) e (b) na tabela agrupada por distribuidora (pedido montado). A intenção de negócio é permitir que o comprador **recuse a sugestão automática mais barata** e escolha manualmente outra oferta — por exemplo, pagar um pouco mais caro para **não ter pedido mínimo**, ou para concentrar o volume em um **fornecedor preferido**. Por isso o leque de alternativas precisa estar completo e fiel.
+    *   **🚨 REGRA CRÍTICA: `qtdMin` faz parte da chave de deduplicação das alternativas (Bug 2026-08-14 / parte 2):** Em `/api/optimize` (`server.ts:~2422`), o array `alternatives` é montado como `[...condicoes, ...substitutos]` — itens de `Condicoes/Ean` entram **primeiro**. A dedup usa `if (!map.has(key))` (primeiro a chegar vence). Se a chave **não** incluir `qtdMin`, a variante **sem** mínimo do `Condicoes/Ean` (que retorna `QtdMin: 0`) **apaga** a variante **com** mínimo promocional do `Condicoes/Molecula`, anulando na prática o ganho de chamar ambos os endpoints em paralelo e escondendo do usuário as condições com pedido mínimo. A chave correta é `ean_distribuidora_condicao_preco_prazo_qtdMin`. **Nunca remover o `qtdMin` dessa chave.**
+    *   **⚠️ Não confundir `QtdMin` com `QtdMinima`:** `QtdMin` vive dentro de cada **condição** e é o mínimo **do item** para ativar a promoção (alimenta `alternatives[].qtdMin`). `QtdMinima` vive no array `minimos[]` ao lado de `VlrMinimo` e é o mínimo do **pedido inteiro** por distribuidora (alimenta `qtdMinima` e o badge "Lote Mínimo" do cabeçalho do grupo). Por isso o helper `resolveQtdMinima` (`src/utils.ts:242`) **não deve** ser usado para preencher `alternatives[].qtdMin`: ele mistura as duas fontes e tem **default `1`**, o que criaria um mínimo inexistente e destruiria a distinção "✅ SEM MÍNIMO" vs "⚠️ MÍN: X un".
     *   **Alerta de Mínimo Comercial Altamente Visível:** Para evitar problemas de faturamento onde a farmácia envia pedidos sem atingir a quantidade promocional mínima exigida, o sistema destaca os itens que não cumprem o `qtdMin` com um banner vermelho piscando de alta visibilidade ("⚠️ MÍNIMO COMERCIAL: X un (ATENÇÃO: FALTA Y UN!)") diretamente na linha do item.
     - **Botões de Recomendações Rápidas Descritivas:** Em vez de botões genéricos de menor custo, a interface renderiza cartões de ação rápida baseados no contexto do item:
             - **⚡ RESOLVER ALERTA DE MÍNIMO COMERCIAL ou MELHOR PREÇO SEM MÍNIMO (MESMO PRODUTO)**: Se houver uma oferta do mesmo produto sem limite mínimo de quantidade, um botão específico com cor contextualizada (vermelho se houver alerta ativo para resolver, ou esmeralda para economia convencional) explica exatamente qual distribuidora será selecionada, o preço final e a economia unitária obtida para evitar o bloqueio comercial.
@@ -313,6 +317,7 @@ Quando o usuário clica no ícone de lixeira (excluir), o código interno do ite
 *   **Consolidação de Lote Único:** O backend unifica todos os itens faturáveis de todas as distribuidoras em uma única chamada POST para `/api/Pedido/Envio` da SmartPed, impedindo disparos em paralelo por distribuidora de forma separada que causariam o erro `"Já existe um envio pendente"`.
 
 ### 4.14. Painel de Revisão Otimizada de Alertas e Usabilidade UX (SwapsTable)
+*   **Tela de resultados enxuta (decisão de produto — 2026-08-14):** A tela pós-otimização foi deliberadamente limpa. Foram **removidos** por não terem uso real no fluxo do comprador: (a) o bloco de métricas `OptimizationSummaryStats` e os gráficos `VisualChart`, (b) o botão de alternância "Esconder Resumo / Ver Resumo Economia" (state `showStats`), e (c) o botão "Recolher Painel / Expandir Painel" (state `isSwapsTableVisible`) — o `SwapsTable` agora é **sempre visível**, com o cabeçalho servindo apenas de título estático. O `useMemo` `activeSummary`, que só alimentava esses painéis, também foi removido. Os arquivos `OptimizationSummary.tsx` e `VisualChart.tsx` permanecem no repositório (sem import ativo) caso haja necessidade futura de reativação. **Não reintroduzir esses painéis sem pedido explícito do usuário.**
 *   **Filtro Dinâmico de Alertas/Pendências com Expansão Automática:** Adição do filtro interativo `Apenas Alertas/Pendências` que oculta todos os itens normais do lote de cotação e destaca na tela de revisão apenas as anomalias que exigem validação do comprador. Quando ativado, o sistema **expande automaticamente todos os grupos/distribuidores que contêm itens com alerta**, poupando dezenas de cliques manuais. Ao desativá-lo, o layout volta ao modelo normal compacto. As regras de engajamento do filtro de alertas são:
     1.  Produtos com observações ou anotações personalizadas do sistema ou do usuário (`observacao`).
     2.  Medicamentos que não atingiram a quantidade mínima comercial exigida pelo fornecedor (`qtdMin`).
@@ -489,5 +494,91 @@ Para garantir que buscas textuais (como "hidroclorotiazida") encontrem todas as 
    * O checkbox "Deduplicação Inteligente" inicia **desmarcado por padrão** (`manualDeduplicar = false`), permitindo ao operador ver todas as condições e promoções existentes de imediato.
    * O checkbox "Apenas com Estoque" inicia **marcado por padrão** (`manualApenasEstoque = true`), com tolerância para promoções: se `Estoque > 0` OU se `QtdMin > 1` (ofertas promocionais sob consulta com lote mínimo exigido), o item é exibido em tela.
    * A grade comercial de 12 colunas conta com largura mínima garantida (`min-w-[1320px]`), cabeçalho fixo (`sticky top-0`), containers com `min-w-0 w-full max-w-full` e barra de rolagem horizontal personalizada (`custom-table-scrollbar`) para navegação em qualquer resolução.
+
+---
+
+## 8. Seletor de Alternativas Comerciais (`ConditionSelector`) — Arquitetura e Armadilhas
+
+> **Leia esta seção inteira antes de mexer em `ConditionSelector.tsx`, em `SwapsTable.tsx` ou na montagem de `alternatives` em `server.ts`.**
+
+### 8.1. Intenção de negócio (por que isso existe)
+
+O motor de otimização (`findBestSubstitute`) sempre aponta **o menor preço absoluto**. Isso está correto e **não deve ser alterado**. Porém, na vida real o comprador frequentemente precisa **recusar** essa sugestão automática:
+
+*   Prefere pagar um pouco mais caro para **não ter pedido mínimo** (`QtdMin`) e evitar comprar 12 caixas quando precisa de 1.
+*   Prefere **concentrar volume em um fornecedor específico** para atingir o mínimo de faturamento daquela distribuidora.
+*   Prefere um **prazo de pagamento** melhor mesmo com preço ligeiramente maior.
+
+O `ConditionSelector` existe exatamente para isso: dar ao usuário o **leque completo e fiel** de opções, para que ele sobreponha manualmente a decisão do automatismo. Por isso, **qualquer bug que ampute a lista de alternativas é crítico** — ele remove silenciosamente a capacidade de escolha.
+
+### 8.2. Onde o componente é renderizado (DOIS locais)
+
+`src/components/ConditionSelector.tsx` é **componente único e compartilhado**, usado em dois pontos de `SwapsTable.tsx`:
+
+1.  **Painel de Escolhas & Revisão de Substituições** (topo da tela; bloco `INTERACTIVE SWAP EVALUATION DASHBOARD`, dentro de `swapSuggestions.map()`) — coluna "Decisão / Escolha", com a prop `compact`. Esta é a tela dos **itens que receberam indicação de substituição**. A coluna usa `w-80 min-w-[300px]` para o dropdown caber.
+2.  **Tabela agrupada por distribuidora** (o "pedido montado", mais abaixo) — sem `compact`.
+
+**Nunca duplicar essa lógica.** Antes da refatoração de 2026-08-14 o bloco existia inline apenas no local (2), com ~220 linhas; foi extraído para o componente e ambos passaram a consumi-lo. Alterações de regra devem ser feitas **somente** em `ConditionSelector.tsx`.
+
+### 8.3. Regras internas do componente
+
+*   Filtra alternativas com distribuidora real: exclui `Não Encontrados` / `Nao Encontrados` / `Sem Estoque` (todas as variações de acento/caixa) e exige `estoque > 0`.
+*   Retorna `null` (não renderiza nada) se, após o filtro, não sobrar **nenhuma** alternativa diferente da atualmente selecionada.
+*   Agrupa em dois `<optgroup>`: `📋 CONDIÇÃO DE COMPRA` (mesmo `ean` do original) e `🔬 SUBSTITUIÇÃO` (EAN diferente).
+*   Rotula cada opção com `⚠️ [MÍN: X un]` ou `✅ [SEM MÍNIMO]`, e marca a atual com ` (Atual) ★`.
+*   Renderiza até duas "Ações Rápidas Recomendadas": resolver alerta de mínimo comercial (mesmo produto, sem mínimo) e substituir por laboratório mais barato (EAN diferente).
+*   O `value` do `<select>` é o **índice** em `item.alternatives`; `onSelectCondition(codInterno, alternativaSelecionada)` recebe o objeto completo.
+
+### 8.4. 🚨 Armadilhas conhecidas (causa raiz documentada — Bug 2026-08-14)
+
+**(a) `qtdMin` DEVE fazer parte da chave de deduplicação em `server.ts:~2422`.**
+
+O array é montado como `[...condicoes, ...substitutos]` — itens de `Condicoes/Ean` entram **primeiro** — e a dedup usa `if (!map.has(key)) map.set(key, alt)` (primeiro a chegar vence). Como `Condicoes/Ean` retorna `QtdMin: 0`, se a chave não incluir `qtdMin` a variante **sem** mínimo apaga a variante **com** mínimo promocional vinda do `Condicoes/Molecula`.
+
+```js
+// CORRETO
+const key = `${alt.ean}_${alt.distribuidora}_${alt.condicao}_${alt.preco.toFixed(2)}_${alt.prazo}_${alt.qtdMin}`;
+// ERRADO — anula o ganho de chamar ambos os endpoints em paralelo
+const key = `${alt.ean}_${alt.distribuidora}_${alt.condicao}_${alt.preco.toFixed(2)}_${alt.prazo}`;
+```
+
+Sintoma quando quebrado: condições com pedido mínimo simplesmente **não aparecem** no dropdown, e a ação rápida "RESOLVER ALERTA DE MÍNIMO COMERCIAL" seleciona a oferta errada (ela busca a mais barata com `qtdMin <= 0` em dados corrompidos). O bug só se manifesta quando preço, distribuidora, condição e prazo são **idênticos** e apenas o `qtdMin` diverge — se os preços diferem, ambas já apareciam. **Usar esse caso específico para validar em teste real.**
+
+**(b) NÃO usar `resolveQtdMinima` para preencher `alternatives[].qtdMin`.**
+
+`QtdMin` e `QtdMinima` são coisas **diferentes**:
+
+| Campo | Onde vive | Significado | Alimenta |
+| :--- | :--- | :--- | :--- |
+| `QtdMin` | dentro de cada **condição** (ao lado de `Pliquido`, `Prazo`, `Estoque`) | mínimo **do item** para ativar a promoção | `alternatives[].qtdMin`, alerta "MÍNIMO COMERCIAL" |
+| `QtdMinima` | dentro de `minimos[]` (ao lado de `VlrMinimo`), chaveado por `CodDist + Condicao + Prazo` | mínimo do **pedido inteiro** na distribuidora | `qtdMinima`, badge "Lote Mínimo" no cabeçalho do grupo |
+
+O helper `resolveQtdMinima` (`src/utils.ts:242`) agrega as duas fontes **e tem default `1`**. Usá-lo em `server.ts:~2411` inventaria um mínimo inexistente e destruiria a distinção `✅ SEM MÍNIMO` vs `⚠️ MÍN: X un`. A leitura crua de `QtdMin`/`qtdMin` com default `0` naquele ponto está **correta**.
+
+**(c) O filtro `estoque <= 0` em `server.ts:~2356` está correto — não "corrigir".**
+
+Na SmartPed o estoque é **parâmetro fechado**: `0` = falta, `1` = pouco, `2` = bastante. Nunca é omitido nas respostas de `Condicoes/Ean` e `Condicoes/Molecula`. Portanto `est <= 0` descarta apenas o `0` (falta) e preserva `1` e `2`, que é o comportamento desejado. **Não** aplicar `parseSmartPedEstoque` aqui: aquele helper existe para os endpoints de busca textual, onde o campo pode de fato vir ausente.
+
+### 8.5. Dois caminhos independentes (não confundir)
+
+`findBestSubstitute` (que escolhe a vencedora) **não consome** `item.alternatives`. Os dois percorrem a mesma fonte bruta, mas com filtros diferentes — [B] aplica margem mínima e cortes recentes, [A] não. Logo, **o dropdown pode legitimamente conter ofertas que o motor descartou**, e isso é intencional. Ver a árvore completa em `API_TREE_SMARTPED.md`, seção "Fluxo de Consulta Principal (Otimizacao)".
+
+---
+
+## 9. Histórico de Sessões (para retomada de contexto)
+
+### Sessão 2026-08-14 — Seletor de alternativas, dedup de `QtdMin` e limpeza da tela
+
+**Estado ao final:** tudo funcionando e validado pelo usuário em teste real. Build limpo (`tsc --noEmit` sem erros, `npm run build` OK). Branch de backup criada no GitHub.
+
+**1. Criado `src/components/ConditionSelector.tsx`** — extração do bloco "Opções de Compra & Substituição de Laboratório" que existia inline apenas na tabela agrupada por distribuidora. Agora é componente compartilhado, renderizado também no Painel de Escolhas & Revisão de Substituições (era o pedido original do usuário). Removeu ~220 linhas duplicadas de `SwapsTable.tsx` (2.404 → ~2.080 linhas), incluindo as funções locais `isValidAltForTable`, `cheapestSameProductNoMinAlt` e `cheapestOtherItemAlt`.
+
+**2. Corrigido bug de deduplicação em `server.ts:~2422`** — `qtdMin` incluído na chave. Ver seção 8.4(a). Esta era a causa de as condições com pedido mínimo não aparecerem como opção.
+
+**3. Limpeza da tela de resultados (`App.tsx`)** — a pedido explícito do usuário ("são coisas nunca usadas"), foram **removidos**: o bloco `OptimizationSummaryStats` + `VisualChart`, o botão "Esconder Resumo / Ver Resumo Economia" (state `showStats`), o botão "Recolher Painel / Expandir Painel" (state `isSwapsTableVisible`), o `useMemo` `activeSummary` e os ícones `ArrowDown`/`ChevronRight` do import. O `SwapsTable` agora é **sempre visível**. Os arquivos `OptimizationSummary.tsx` e `VisualChart.tsx` permanecem no disco sem import ativo. **Não reintroduzir sem pedido explícito.**
+
+**4. Duas "correções" investigadas e DESCARTADAS** (o usuário corrigiu premissas erradas do agente) — documentadas em 8.4(b) e 8.4(c) para não serem reintroduzidas por engano: uso de `resolveQtdMinima` na montagem de `alternatives`, e troca do filtro de estoque por `parseSmartPedEstoque`. Ambas causariam regressão.
+
+**Nota de método:** o padrão de debug que resolveu o caso foi o da diretriz 11 do `AGENTS.md` — comparar o caminho que funciona com o que não funciona. O `Promise.all` dos dois endpoints estava correto desde a sessão anterior; o defeito estava **uma linha adiante**, no dedup que descartava o resultado. Confirma a regra: não culpar instabilidade de API antes de comparar caminhos linha a linha.
 
 
