@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md", "LLM_CONTEXT.md"],
+  "permission": {
+    "external_directory": {
+      ".env": "deny",
+      ".env*": "deny",
+      "*.pem": "deny"
+    }
+  }
+}
