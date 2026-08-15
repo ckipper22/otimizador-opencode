@@ -7,6 +7,14 @@
 2.  **ConstruÃ§Ã£o de Strings SICF (`lineFinal = ["2", novoEan, ...].join(";")`):** Inserir arrays, colunas adicionais, espaÃ§os, ou falhar na conversÃ£o do preÃ§o de `.` (ponto) para o padrÃ£o esperado, irÃ¡ quebrar o parser do ERP do cliente final. Modifique isso apenas de forma cirÃºrgica.
 3.  **MonÃ³lito do `server.ts`:** O arquivo estÃ¡ massivo (quase 2 mil linhas). Ele mescla regras de roteamento HTTP, parsing de texto, algoritmia de precificaÃ§Ã£o cruzada e fallback mockado estÃ¡tico. Se for refatorar, quebre em mÃ³dulos como `parser.ts`, `apiClient.ts` e `optimizerLogic.ts`, mas tenha em mente o limite de contexto de geraÃ§Ã£o de cÃ³digo.
 
+### 5.1. Deploy Cloud Run (Estado Atual - 2026-08-15)
+*   **ServiÃ§o Ativo:** `smartped-cli` no projeto GCP `gen-lang-client-0702342051`, regiÃ£o `us-east1`.
+*   **URL:** `https://smartped-cli-887122622666.us-east1.run.app`
+*   **ConfiguraÃ§Ã£o:** `NODE_ENV=production`, `DISABLE_SQLITE=true`, memÃ³ria 1Gi, timeout 300s.
+*   **Dockerfile:** Single-stage build com `node:20` (nÃ£o `-slim`), `npm rebuild better-sqlite3` para forÃ§ar compilaÃ§Ã£o nativa.
+*   **Problema:** O `better-sqlite3` causa SIGSEGV (signal 11) no Cloud Run. Por isso, `DISABLE_SQLITE=true` estÃ¡ definido no Dockerfile. Quando desabilitado, o sistema funciona apenas com cache L1 (Map em memÃ³ria). Todas as funÃ§Ãµes de banco em `server/database.ts` tratam `null` graciosamente.
+*   **Registra como dÃ©bito tÃ©cnico:** resolver o SIGSEGV para reativar SQLite em produÃ§Ã£o.
+
 ### DÃ©bitos TÃ©cnicos Encontrados
 *   **Gerenciamento de Estado no React (Prop Drilling):** Todo o estado macro da aplicaÃ§Ã£o (`fileContent`, arrays, loaders, relatÃ³rios, modais) estÃ¡ condensado no componente `<App />`, que o passa para baixo como cascatas de *props* para `<UploadBox>`, `<SwapsTable>`, etc. Idealmente, exigiria um contexto global.
 *   **Tratamento de ExceÃ§Ãµes (`any`):** No lado do backend (TypeScript), hÃ¡ muito uso de `catch (err: any)`. O rastro de stack traces reais nÃ£o Ã© processado estruturalmente para o cliente, geralmente sendo cuspidas mensagens genÃ©ricas ou em `logs: string[]`.
