@@ -18,6 +18,62 @@
 ### Débitos Técnicos Encontrados
 *   **Gerenciamento de Estado no React (Prop Drilling):** Todo o estado macro da aplicação (`fileContent`, arrays, loaders, relatórios, modais) está condensado no componente `<App />`, que o passa para baixo como cascatas de *props* para `<UploadBox>`, `<SwapsTable>`, etc. Idealmente, exigiria um contexto global.
 *   **Tratamento de Exceções (`any`):** No lado do backend (TypeScript), há muito uso de `catch (err: any)`. O rastro de stack traces reais não é processado estruturalmente para o cliente, geralmente sendo cuspidas mensagens genéricas ou em `logs: string[]`.
+*   **SQLite desabilitado no Cloud Run:** O `better-sqlite3` causa SIGSEGV no container gVisor do Cloud Run. Solução documentada na seção 9 abaixo (Turso).
+
+---
+
+## 9. Plano: Migrar SQLite para Turso (Próxima Sessão)
+
+### O que é Turso
+- **Turso** = SQLite na nuvem (fork chamado libSQL)
+- **Gratuito** até 9 GB de armazenamento, 500 bancos, 1 bilhão de row reads/mês
+- **Compatível com SQLite** — mesma linguagem SQL, mesmos schemas
+- **Funciona no Cloud Run** sem SIGSEGV (é serviço externo, não arquivo local)
+
+### Pacotes Necessários
+```bash
+npm install @tursodatabase/serverless
+```
+
+### Variáveis de Ambiente Novas
+| Variável | Descrição |
+|----------|-----------|
+| `TURSO_DATABASE_URL` | URL do banco Turso (ex: `libsql://smartped-db.turso.io`) |
+| `TURSO_AUTH_TOKEN` | Token de autenticação Turso |
+
+### Passos da Migração
+1. **Criar conta no Turso:** `turso auth signup` (ou https://turso.tech)
+2. **Criar banco:** `turso db create smartped-db --tursodb`
+3. **Obter credenciais:** `turso db show smartped-db --url` e `turso db tokens create smartped-db`
+4. **Instalar pacote:** `npm install @tursodatabase/serverless`
+5. **Adaptar `server/database.ts`:** Trocar `better-sqlite3` por `@tursodatabase/serverless`
+6. **Remover `DISABLE_SQLITE=true`** do Dockerfile
+7. **Testar localmente** com credenciais Turso no `.env`
+8. **Deploy no Cloud Run** com variáveis de ambiente Turso
+
+### Código de Exemplo (Conexão)
+```typescript
+import { createClient } from "@tursodatabase/serverless";
+
+const client = createClient({
+  url: process.env.TURSO_DATABASE_URL,
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+
+// Exemplo de uso
+await client.execute("SELECT * FROM orders WHERE cnpj = ?", [cnpj]);
+```
+
+### Impacto no Código
+- `server/database.ts` — substituir `better-sqlite3` por `@tursodatabase/serverless`
+- `server/cache.ts` — sem alterações (usa `database.ts` como interface)
+- `server.ts` — sem alterações (usa `database.ts` como interface)
+- `Dockerfile` — remover `DISABLE_SQLITE=true`
+
+### Referências
+- Docs: https://docs.turso.tech/sdk/ts/quickstart
+- Free Tier: https://turso/pricing
+- GitHub: https://github.com/tursodatabase
 
 ---
 
