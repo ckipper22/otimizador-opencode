@@ -19,7 +19,7 @@ O projeto utiliza um repositório modular (Express + React) com separação clar
 *   `server/swap-engine.ts`: Algoritmo core de seleção de melhor substituto (`findBestSubstitute`).
 *   `server/smartped-transforms.ts`: Normalização de dados SmartPed (`enrichReturnedItem`, `parseSmartPedEstoque`).
 *   `server/mock-data.ts`: Dados de simulação para testes offline.
-*   `server/database.ts`: Persistência SQLite (orders, order_items, api_cache, faturados). Usa `/tmp` em produção (Cloud Run).
+*   `server/database.ts`: Persistência Turso (SQLite na nuvem) com fallback better-sqlite3 local. Tabelas: `orders`, `order_items`, `api_cache`, `faturados`, `itens_confirmados`, `itens_manuais`. Purge automática de 6 meses.
 
 ## Frontend (`src/`)
 *   `App.tsx`: Orquestrador visual. Controla guias de navegação (Otimização, Retornos, Itens do Dia), exibe os relatórios gerados e os modais. Reduzido de 5409 para ~2890 linhas via extração de hooks.
@@ -39,5 +39,16 @@ O projeto utiliza um repositório modular (Express + React) com separação clar
 ### Componentes Principais (`src/components/`)
 *   `UploadBox.tsx`: Zona de *drag-and-drop*. Nele também são listadas as **Distribuidoras Disponíveis** onde o usuário pode desmarcar (fazer *opt-out*) distribuidores indesejados antes da otimização.
 *   `ConfigurationPanel.tsx`: Painel de ajustes finos (Token da API, CNPJ, Valor de Economia Mínima, URLs Customizadas).
-*   `SwapsTable.tsx`: A tabela densa de resultados. Exibe o que foi trocado (`De -> Para`), lucros e alertas de ruptura.
+*   `SwapsTable.tsx`: A tabela densa de resultados. Exibe o que foi trocado (`De -> Para`), lucros e alertas de ruptura. Coluna "De (Produto Original)" mostra substituto com fundo vermelho quando `isRupturaSubstitution`; botão 🔔 abre detalhes do original em ruptura.
 *   `OrderReturnView.tsx`, `PendingOrdersTable.tsx`: Interfaces para monitorar o status do pedido (Faturado, Falta, Erro) após o envio final para a SmartPed.
+*   `ConditionSelector.tsx`: **Dropdown de alternativas de compra** (mesmo produto + substitutos). Recebe `item.alternatives` do backend (já resolvido com `distribuidora` correto). **Não faz busca em tempo real** se já tem alternativas (linha ~44). Renderiza 2 optgroups: "CONDIÇÃO DE COMPRA (Mesmo Medicamento)" e "SUBSTITUIÇÃO (Outro Laboratório)". Usa `resolveDistName` via backend; frontend só lê `alt.distribuidora`.
+*   `SimilarProductsModal.tsx` (`/api/similares/:ean`): Busca **local no Trier** (ERP), não SmartPed. Mostra estoque físico de prateleira. Independente do fluxo de cotação.
+*   `InterchangeabilityModal.tsx`: Validação de intercambialidade ANVISA (mesmo princípio ativo, dosagem, forma farmacêutica).
+*   `ObservationBell.tsx`: Botão 🔔 que expande detalhes do original em ruptura (`originalRupturaEan`, `originalRupturaDescricao`, `originalRupturaLaboratorio`, `originalRupturaPreco`).
+*   `ConfirmQuantitiesModal.tsx`: Confirmação de quantidades antes do faturamento.
+*   `OptimizationSummary.tsx`: Cards de economia total, itens otimizados, alertas.
+*   `FaturadosModal.tsx`: Histórico de itens faturados do dia.
+*   `BillingLogsModal.tsx`: Logs de envio/retorno do faturamento.
+*   `VisualChart.tsx`: Gráfico de economia por distribuidora/laboratório.
+*   `EanEyeButton.tsx`: Botão de busca manual (abre SimilarProductsModal).
+*   `WhatsAppOrderModal.tsx`: Compartilhamento de pedido via WhatsApp.

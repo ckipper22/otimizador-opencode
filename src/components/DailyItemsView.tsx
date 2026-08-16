@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Loader2, RefreshCw, Search, Calendar, CheckCircle2, XCircle, FileText, ShoppingBag, Shuffle, AlertCircle, Check, Info, ArrowRight, TrendingUp } from 'lucide-react';
+import { Loader2, RefreshCw, Search, Calendar, CheckCircle2, XCircle, FileText, ShoppingBag, Shuffle, AlertCircle, Check, Info, ArrowRight, TrendingUp, PlusCircle } from 'lucide-react';
 
 const getTodayString = () => {
   const d = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
@@ -19,12 +19,14 @@ export const DailyItemsView = ({
   const [loading, setLoading] = useState(false);
   const [orders, setOrders] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [itensManuaisTurso, setItensManuaisTurso] = useState<any[]>([]);
+  const [editingManualItem, setEditingManualItem] = useState<any | null>(null);
 
   // Filtros de datas e busca
   const [dataInicio, setDataInicio] = useState(getTodayString());
   const [dataFim, setDataFim] = useState(getTodayString());
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<"todos" | "faturado" | "nao_confirmado" | "manual_nao_faturado">("todos");
+  const [activeTab, setActiveTab] = useState<"todos" | "faturado" | "nao_confirmado" | "manuais_adicionados">("todos");
 
   // Estado de seleção de itens (Chave: ean-numPedido-distribuidora)
   const [selectedKeys, setSelectedItemKeys] = useState<Set<string>>(new Set());
@@ -67,13 +69,81 @@ export const DailyItemsView = ({
 
   useEffect(() => {
     fetchOrders();
+    fetchItensManuais();
   }, []);
 
+  const fetchItensManuais = async () => {
+    try {
+      const response = await fetch("/api/itens-manuais", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cnpj: config.cnpj,
+          dataInicio,
+          dataFim
+        })
+      });
+      const data = await response.json();
+      if (response.ok && data.itens) {
+        setItensManuaisTurso(data.itens);
+      }
+    } catch (e) {
+      console.error("Erro ao buscar itens manuais do Turso:", e);
+    }
+  };
+
   const handleClearManualsHistory = () => {
-    if (window.confirm("Deseja realmente limpar todo o histórico de itens manuais enviados do navegador? Isso apagará a lista de controle de pedidos manuais não faturados.")) {
-      localStorage.removeItem("itens_manuais_enviados");
+    if (window.confirm("Deseja realmente limpar todo o histórico de itens manuais adicionados? Isso apagará a lista de itens digitados manualmente.")) {
+      localStorage.removeItem("itens_manuais_adicionados");
+      setItensManuaisTurso([]);
       fetchOrders();
     }
+  };
+
+  const handleDeleteManualItem = (codInterno: string) => {
+    if (!window.confirm("Deseja realmente excluir este item manual?")) return;
+    // Remover do localStorage
+    try {
+      const stored = localStorage.getItem("itens_manuais_adicionados");
+      if (stored) {
+        const list = JSON.parse(stored);
+        const updated = list.filter((it: any) => it.codInterno !== codInterno);
+        localStorage.setItem("itens_manuais_adicionados", JSON.stringify(updated));
+      }
+    } catch {}
+    // Remover do estado local
+    setItensManuaisTurso(prev => prev.filter((it: any) => it.cod_interno !== codInterno && it.codInterno !== codInterno));
+  };
+
+  const handleEditManualItem = (item: any) => {
+    setEditingManualItem({ ...item });
+  };
+
+  const handleSaveEditManualItem = () => {
+    if (!editingManualItem) return;
+    const codInterno = editingManualItem.cod_interno || editingManualItem.codInterno;
+    // Atualizar localStorage
+    try {
+      const stored = localStorage.getItem("itens_manuais_adicionados");
+      if (stored) {
+        const list = JSON.parse(stored);
+        const updated = list.map((it: any) => {
+          if (it.codInterno === codInterno) {
+            return { ...it, qtd: editingManualItem.qtd, descricao: editingManualItem.descricao };
+          }
+          return it;
+        });
+        localStorage.setItem("itens_manuais_adicionados", JSON.stringify(updated));
+      }
+    } catch {}
+    // Atualizar estado local
+    setItensManuaisTurso(prev => prev.map((it: any) => {
+      if ((it.cod_interno || it.codInterno) === codInterno) {
+        return { ...it, qtd: editingManualItem.qtd, descricao: editingManualItem.descricao };
+      }
+      return it;
+    }));
+    setEditingManualItem(null);
   };
 
   // Ordenação alfabética
@@ -85,41 +155,68 @@ export const DailyItemsView = ({
     });
   }, [orders]);
 
-  // Obter itens manuais que não faturaram usando o localStorage de itens_manuais_enviados
-  const manualNaoFaturados = useMemo(() => {
-    const stored = localStorage.getItem("itens_manuais_enviados");
-    if (!stored) return [];
-    try {
-      const listEnviados = JSON.parse(stored);
-      // Criar chaves únicas de cruzamento e também conjuntos de EANs
-      const enviadosKeys = new Set(listEnviados.map((it: any) => `${String(it.ean).trim()}_${String(it.numPedido || "").trim()}`));
-      const enviadosEans = new Set(listEnviados.map((it: any) => String(it.ean).trim()));
-
-      return sortedItems.filter(item => {
-        // Apenas faltas reais são elegíveis
-        if (item.status !== "nao_confirmado") return false;
-
-        const cleanItemEan = String(item.ean || "").trim();
-        const numPed = String(item.numPedido || "").trim();
-
-        return enviadosKeys.has(`${cleanItemEan}_${numPed}`) || enviadosEans.has(cleanItemEan);
-      });
-    } catch (e) {
-      console.error("Erro ao processar itens manuais do localStorage:", e);
-      return [];
-    }
-  }, [sortedItems]);
+  // Obter todos os itens digitados manualmente (faturados ou não)
+  const manuaisAdicionados = useMemo(() => {
+    // Combinar localStorage + Turso
+    const stored = localStorage.getItem("itens_manuais_adicionados");
+    const localList = stored ? JSON.parse(stored) : [];
+    // Filtrar localStorage por data
+    const localFiltered = localList.filter((it: any) => {
+      if (!it.dataAdicao) return true;
+      const dataItem = it.dataAdicao.substring(0, 10); // YYYY-MM-DD
+      return dataItem >= dataInicio && dataItem <= dataFim;
+    });
+    // Turso tem prioridade (dados persistidos)
+    const tursoEans = new Set(itensManuaisTurso.map((it: any) => String(it.ean || "").trim()));
+    const combined = [...itensManuaisTurso];
+    // Adicionar itens do localStorage que não estão no Turso
+    localFiltered.forEach((it: any) => {
+      if (!tursoEans.has(String(it.ean || "").trim())) {
+        combined.push(it);
+      }
+    });
+    return combined;
+  }, [itensManuaisTurso, dataInicio, dataFim]);
 
   // Filtros combinados de Tab e Pesquisa Textual
   const filteredItems = useMemo(() => {
     let itemsToFilter = sortedItems;
-    if (activeTab === "manual_nao_faturado") {
-      itemsToFilter = manualNaoFaturados;
+    if (activeTab === "manuais_adicionados") {
+      // Mostrar TODOS os itens manuais com status
+      const eansApi = new Map<string, any>();
+      sortedItems.forEach((it: any) => {
+        const ean = String(it.ean || "").trim();
+        if (ean) eansApi.set(ean, it);
+      });
+      itemsToFilter = manuaisAdicionados.map((it: any) => {
+        const ean = String(it.ean || "").trim();
+        const apiItem = eansApi.get(ean);
+        let statusManual = "nao_faturado";
+        let statusLabel = "Não Faturado";
+        if (apiItem) {
+          if (apiItem.status === "faturado") {
+            statusManual = "faturado";
+            statusLabel = "Faturado";
+          } else if (apiItem.status === "nao_confirmado") {
+            statusManual = "falta";
+            statusLabel = "Falta";
+          }
+        }
+        return {
+          ...it,
+          nome: it.descricao,
+          statusManual,
+          statusLabel,
+          numPedido: apiItem?.numPedido || "—",
+          quantSolicitada: it.qtd || apiItem?.quantSolicitada || 0,
+          quantFaturada: apiItem?.quantFaturada || 0
+        };
+      });
     }
 
     return itemsToFilter.filter(item => {
-      // 1. Filtro da Tab se não for a aba especial de manuais (pois ela já filtra no useMemo manualNaoFaturados)
-      if (activeTab !== "manual_nao_faturado") {
+      // 1. Filtro da Tab se não for a aba especial de manuais
+      if (activeTab !== "manuais_adicionados") {
         if (activeTab === "faturado" && item.status !== "faturado") return false;
         if (activeTab === "nao_confirmado" && item.status !== "nao_confirmado") return false;
       }
@@ -127,7 +224,7 @@ export const DailyItemsView = ({
       // 2. Filtro de Pesquisa (Nome, EAN ou Distribuidora)
       if (searchQuery.trim() !== "") {
         const query = searchQuery.toLowerCase();
-        const matchesName = (item.nome || "").toLowerCase().includes(query);
+        const matchesName = (item.nome || item.descricao || "").toLowerCase().includes(query);
         const matchesEan = (item.ean || "").toLowerCase().includes(query);
         const matchesDist = (item.distribuidora || "").toLowerCase().includes(query);
         return matchesName || matchesEan || matchesDist;
@@ -135,18 +232,18 @@ export const DailyItemsView = ({
 
       return true;
     });
-  }, [sortedItems, activeTab, searchQuery, manualNaoFaturados]);
+  }, [sortedItems, activeTab, searchQuery]);
 
   // Contadores dinâmicos para as abas
   const tabCounts = useMemo(() => {
-    const counts = { todos: 0, faturado: 0, nao_confirmado: 0, manual_nao_faturado: manualNaoFaturados.length };
+    const counts = { todos: 0, faturado: 0, nao_confirmado: 0, manuais_adicionados: manuaisAdicionados.length };
     orders.forEach(it => {
       counts.todos++;
       if (it.status === "faturado") counts.faturado++;
       if (it.status === "nao_confirmado") counts.nao_confirmado++;
     });
     return counts;
-  }, [orders, manualNaoFaturados]);
+  }, [orders, manuaisAdicionados]);
 
   // Chave de unicidade do item para seleção
   const getItemKey = (item: any) => `${item.ean}-${item.numPedido || 'sem_num'}-${item.distribuidora || 'sem_dist'}`;
@@ -424,7 +521,7 @@ export const DailyItemsView = ({
 
         <div className="flex flex-col gap-1 sm:col-span-2 md:col-span-1 justify-end">
           <button
-            onClick={fetchOrders}
+            onClick={() => { fetchOrders(); fetchItensManuais(); }}
             disabled={loading}
             className="w-full py-2 bg-gray-200 hover:bg-gray-300 transition-colors text-xs font-bold text-gray-800 border border-gray-300"
           >
@@ -470,25 +567,25 @@ export const DailyItemsView = ({
             Não Confirmados ({tabCounts.nao_confirmado})
           </button>
           <button
-            onClick={() => setActiveTab("manual_nao_faturado")}
+            onClick={() => setActiveTab("manuais_adicionados")}
             className={`px-4 py-2.5 text-xs font-bold uppercase transition-all border-b-2 flex items-center gap-2 ${
-              activeTab === "manual_nao_faturado"
-                ? "border-amber-600 text-amber-800 bg-amber-50/40"
+              activeTab === "manuais_adicionados"
+                ? "border-violet-600 text-violet-800 bg-violet-50/40"
                 : "border-transparent text-gray-500 hover:text-gray-800"
             }`}
           >
-            <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-            Manuais Não Faturados ({tabCounts.manual_nao_faturado})
+            <PlusCircle className="w-3.5 h-3.5 text-violet-600" />
+            Itens Manuais ({tabCounts.manuais_adicionados})
           </button>
         </div>
 
         {/* Controles de pesquisa e ações adicionais */}
         <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
-          {activeTab === "manual_nao_faturado" && tabCounts.manual_nao_faturado > 0 && (
+          {activeTab === "manuais_adicionados" && tabCounts.manuais_adicionados > 0 && (
             <button
               onClick={handleClearManualsHistory}
               className="px-3 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 hover:text-gray-900 transition-colors text-xs font-bold uppercase flex items-center gap-1.5 cursor-pointer"
-              title="Limpar o registro local de itens manuais enviados"
+              title="Limpar o registro local de itens manuais adicionados"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Limpar Histórico</span>
@@ -568,7 +665,7 @@ export const DailyItemsView = ({
           {loading ? (
             <div className="flex flex-col items-center justify-center py-12 gap-2">
               <Loader2 className="w-8 h-8 animate-spin text-[#141414]" />
-              <span className="text-xs text-gray-500 font-medium">Carregando itens da API Trier...</span>
+              <span className="text-xs text-gray-500 font-medium">Carregando itens confirmados...</span>
             </div>
           ) : filteredItems.length === 0 ? (
             <div className="py-12 text-center text-xs text-gray-500">
@@ -616,7 +713,22 @@ export const DailyItemsView = ({
                   {/* Status Badge */}
                   <div className="col-span-1 md:col-span-1 text-left md:text-center">
                     <span className="md:hidden font-semibold text-[10px] uppercase text-gray-400 block mb-1">Status</span>
-                    {isFaturado ? (
+                    {activeTab === "manuais_adicionados" ? (
+                      // Status customizado para aba Itens Manuais
+                      item.statusManual === "faturado" ? (
+                        <span className="inline-flex items-center px-2 py-0.5 border border-emerald-200 text-emerald-800 bg-emerald-50 text-[10px] font-bold">
+                          Faturado
+                        </span>
+                      ) : item.statusManual === "falta" ? (
+                        <span className="inline-flex items-center px-2 py-0.5 border border-rose-200 text-rose-800 bg-rose-50 text-[10px] font-bold">
+                          Falta
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 border border-gray-200 text-gray-600 bg-gray-50 text-[10px] font-bold">
+                          Não Faturado
+                        </span>
+                      )
+                    ) : isFaturado ? (
                       <span className="inline-flex items-center px-2 py-0.5 border border-emerald-200 text-emerald-800 bg-emerald-50 text-[10px] font-bold">
                         Confirmado
                       </span>

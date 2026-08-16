@@ -7,7 +7,7 @@ export function cacheKey(endpoint: string, ean: string, token: string, cnpj: str
   return `${endpoint}|${ean}|${token}|${cnpj}`;
 }
 
-export function getFromCache(key: string): any | null {
+export async function getFromCache(key: string): Promise<any | null> {
   const entry = smartpedCache.get(key);
   if (entry) {
     if (Date.now() - entry.ts > SMARTPED_CACHE_TTL_MS) {
@@ -17,7 +17,7 @@ export function getFromCache(key: string): any | null {
     }
   }
 
-  const dbData = getCache(key);
+  const dbData = await getCache(key);
   if (dbData) {
     smartpedCache.set(key, { data: dbData, ts: Date.now() });
     return dbData;

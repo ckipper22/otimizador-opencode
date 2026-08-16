@@ -64,70 +64,48 @@ export function useManualSearch({
 
       const isNumeric = /^\d+$/.test(manualQuery.trim());
 
-      const response = await fetch("/api/smartped-find-substitutes", {
+      const eanMap: Record<string, { descricao: string; laboratorio: string; precoOriginal: number }> = {};
+      if (result && Array.isArray(result.report)) {
+        result.report.forEach((item: any) => {
+          if (item.originalEan) {
+            eanMap[item.originalEan] = {
+              descricao: item.originalDescricao || "",
+              laboratorio: item.originalLaboratorio || "",
+              precoOriginal: item.originalPreco || 0
+            };
+          }
+        });
+      }
+
+      const searchResp = await fetch("/api/search-products", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ean: isNumeric ? manualQuery.trim() : "",
-          descricao: isNumeric ? "" : manualQuery.trim(),
+          query: manualQuery,
           token: config.token,
           cnpj: config.cnpj,
           useTestUrl: config.useTestUrl,
-          cortesRecentes
+          simulationMode: config.simulationMode,
+          permitirSemEstoque: !manualApenasEstoque || config.permitirSemEstoque,
+          tipos: config.tipos,
+          margemMinima: config.margemMinima,
+          eanMap,
+          cortesRecentes,
+          onlyExactEan: isNumeric,
+          skipMolecula: true
         })
       });
-
-      const data = await response.json();
-
+      const searchData = await searchResp.json();
       let allAlts: any[] = [];
       let alts: any[] = [];
       let minimos: any[] = [];
       let dcb: string | null = null;
       let logs: string[] = [];
 
-      if (response.ok && (data.alternatives?.length > 0 || data.allAlternatives?.length > 0)) {
-        allAlts = data.allAlternatives || data.alternatives || [];
-        alts = data.alternatives || [];
-        minimos = data.minimos || [];
-        dcb = data.dcbDescoberto || null;
-        logs = data.logs || [];
-      } else {
-        const eanMap: Record<string, { descricao: string; laboratorio: string; precoOriginal: number }> = {};
-        if (result && Array.isArray(result.report)) {
-          result.report.forEach((item: any) => {
-            if (item.originalEan) {
-              eanMap[item.originalEan] = {
-                descricao: item.originalDescricao || "",
-                laboratorio: item.originalLaboratorio || "",
-                precoOriginal: item.originalPreco || 0
-              };
-            }
-          });
-        }
-
-        const fallbackResp = await fetch("/api/search-products", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query: manualQuery,
-            token: config.token,
-            cnpj: config.cnpj,
-            useTestUrl: config.useTestUrl,
-            simulationMode: config.simulationMode,
-            permitirSemEstoque: !manualApenasEstoque || config.permitirSemEstoque,
-            tipos: config.tipos,
-            margemMinima: config.margemMinima,
-            eanMap,
-            cortesRecentes,
-            onlyExactEan: false
-          })
-        });
-        const fallbackData = await fallbackResp.json();
-        if (fallbackResp.ok && fallbackData.items) {
-          allAlts = fallbackData.items;
-          alts = fallbackData.items;
-          logs = fallbackData.logs || [];
-        }
+      if (searchResp.ok && searchData.items) {
+        allAlts = searchData.items;
+        alts = searchData.items;
+        logs = searchData.logs || [];
       }
 
       setManualAllAlternatives(allAlts);
@@ -351,6 +329,56 @@ export function useManualSearch({
         shortages: prev ? prev.shortages : []
       };
     });
+
+    // Salvar item manual no localStorage para aba "Itens Digitados Manualmente"
+    try {
+      const stored = localStorage.getItem("itens_manuais_adicionados");
+      const list = stored ? JSON.parse(stored) : [];
+      list.push({
+        codInterno: randomCod,
+        ean: offerEan,
+        descricao: offerDesc,
+        laboratorio: offerLab,
+        distribuidora: offerDist,
+        codDist: offerCodDist,
+        qtd: qtyToAdd,
+        precoLiquido: offerPrecoLiq,
+        precoFabrica: offerPrecoFab,
+        condicao: offerCondicao,
+        prazo: offerPrazo,
+        dataAdicao: new Date().toISOString()
+      });
+      localStorage.setItem("itens_manuais_adicionados", JSON.stringify(list));
+    } catch (e) {
+      console.error("Erro ao salvar item manual no localStorage:", e);
+    }
+
+    // Salvar item manual no Turso via endpoint
+    try {
+      fetch("/api/salvar-item-manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item: {
+            codInterno: randomCod,
+            ean: offerEan,
+            descricao: offerDesc,
+            laboratorio: offerLab,
+            distribuidora: offerDist,
+            codDist: offerCodDist,
+            qtd: qtyToAdd,
+            precoLiquido: offerPrecoLiq,
+            precoFabrica: offerPrecoFab,
+            condicao: offerCondicao,
+            prazo: offerPrazo,
+            dataAdicao: new Date().toISOString()
+          },
+          cnpj: config.cnpj || ""
+        })
+      }).catch(e => console.error("Erro ao salvar item manual no Turso:", e));
+    } catch (e) {
+      console.error("Erro ao salvar item manual no Turso:", e);
+    }
 
     setManualActionSuccessKey(itemKey);
     setTimeout(() => {

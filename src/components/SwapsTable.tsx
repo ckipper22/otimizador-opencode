@@ -8,6 +8,7 @@ import {
   Tag, 
   EyeOff, 
   Check, 
+  CheckCircle,
   AlertTriangle, 
   ShieldCheck, 
   CheckSquare, 
@@ -454,10 +455,10 @@ export default function SwapsTable({
         }
       });
       setExpandedGroups(newExpanded);
-    } else {
-      setExpandedGroups({});
     }
-  }, [showOnlyAlerts, groups, isItemAlert]);
+    // NÃO resetar expandedGroups quando showOnlyAlerts é false
+    // Isso preserva o estado de expansão quando o usuário altera quantidades
+  }, [showOnlyAlerts]);
 
   // Items that have an active swap suggestion (for the review panel at the top)
   const swapSuggestions = useMemo(() => {
@@ -525,6 +526,8 @@ export default function SwapsTable({
                   const unitSavings = item.originalPreco - item.novoPreco;
                   const lineSavings = item.economiaTotal;
 
+                  console.log(`[SWAPS-TABLE] EAN=${item.originalEan} | isRupturaSubstitution=${item.isRupturaSubstitution} | originalSemEstoque=${item.originalSemEstoque} | originalRupturaEan=${item.originalRupturaEan}`);
+
                   return (
                     <tr 
                       key={item.codInterno} 
@@ -551,11 +554,11 @@ export default function SwapsTable({
                       </td>
 
                       {/* Original Product */}
-                      <td className="py-2.5 px-3 border-r border-[#141414]/10 font-bold text-gray-700">
+                      <td className={`py-2.5 px-3 border-r border-[#141414]/10 font-bold ${item.isRupturaSubstitution ? 'bg-red-50' : 'text-gray-700'}`}>
                         <div>
-                          <p className="line-clamp-1">{item.originalDescricao}</p>
+                          <p className={`line-clamp-1 ${item.isRupturaSubstitution ? 'text-red-900 font-black' : ''}`}>{item.isRupturaSubstitution ? item.novaDescricao : item.originalDescricao}</p>
                           <div className="text-[10px] text-gray-400 mt-0.5 font-normal flex flex-wrap items-center">
-                            EAN: {item.originalEan} <EanEyeButton ean={item.originalEan} descricao={item.originalDescricao} laboratorio={item.originalLaboratorio} qtd={item.qtd || 1} />
+                            EAN: {item.isRupturaSubstitution ? item.novoEan : item.originalEan} <EanEyeButton ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} descricao={item.isRupturaSubstitution ? item.novaDescricao : item.originalDescricao} laboratorio={item.isRupturaSubstitution ? item.novoLaboratorio : item.originalLaboratorio} qtd={item.qtd || 1} />
                             {item.alternatives && item.alternatives.length > 0 && (
                               <button
                                 onClick={(e) => {
@@ -569,18 +572,36 @@ export default function SwapsTable({
                                 <Layers className="w-3.5 h-3.5" />
                               </button>
                             )}
-                            <span className="mx-1">|</span> Lab: <span className="truncate max-w-[120px] ml-1 px-1.5 py-0.5 bg-gray-200 text-gray-800 font-bold rounded-sm uppercase tracking-wider">{item.originalLaboratorio || "GENÉRICO"}</span> <span className="mx-1">|</span> Unit: {formatCurrency(item.originalPreco)}
+                            {item.isRupturaSubstitution && item.originalRupturaEan && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  alert(`Produto Original (Ruptura):\nEAN: ${item.originalRupturaEan}\nDescrição: ${item.originalRupturaDescricao}\nLaboratório: ${item.originalRupturaLaboratorio}\nPreço Original: R$ ${item.originalRupturaPreco?.toFixed(2)}`);
+                                }}
+                                className="inline-flex items-center justify-center p-1 bg-red-50 hover:bg-red-600 border border-red-300 hover:border-red-700 text-red-700 hover:text-white rounded-none ml-1 transition-colors cursor-pointer shrink-0"
+                                title="Ver produto original (ruptura)"
+                              >
+                                <AlertTriangle className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <span className="mx-1">|</span> Lab: <span className="truncate max-w-[120px] ml-1 px-1.5 py-0.5 bg-gray-200 text-gray-800 font-bold rounded-sm uppercase tracking-wider">{item.isRupturaSubstitution ? (item.novoLaboratorio || "GENÉRICO") : (item.originalLaboratorio || "GENÉRICO")}</span> <span className="mx-1">|</span> Unit: {formatCurrency(item.isRupturaSubstitution ? item.novoPreco : item.originalPreco)}
                           </div>
-                          <ObservationBell ean={item.originalEan} />
+                          <ObservationBell ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} />
                         </div>
                       </td>
 
                       {/* Replacement Product */}
-                      <td className="py-2.5 px-3 border-r border-[#141414]/10 font-bold">
+                      <td className={`py-2.5 px-3 border-r border-[#141414]/10 font-bold ${item.isRupturaSubstitution ? 'bg-red-50' : ''}`}>
                         <div>
-                          <p className={`line-clamp-1 ${isAccepted ? "text-emerald-950" : "text-gray-500 line-through font-normal"}`}>
+                          <p className={`line-clamp-1 ${item.isRupturaSubstitution ? 'text-red-900 font-black' : isAccepted ? "text-emerald-950" : "text-gray-500 line-through font-normal"}`}>
                             {item.novaDescricao}
                           </p>
+                          {item.qtdMin && item.qtdMin > 0 && (
+                            <span className="inline-block text-[9px] font-black text-yellow-800 bg-yellow-200 border border-yellow-400 px-1.5 py-0.5 rounded-sm mt-0.5">
+                              MÍN: {item.qtdMin} un
+                            </span>
+                          )}
                           <div className="text-[10px] text-gray-400 mt-0.5 font-normal flex flex-wrap items-center">
                             EAN: {item.novoEan} <EanEyeButton ean={item.novoEan} descricao={item.novaDescricao} laboratorio={item.novoLaboratorio || item.originalLaboratorio} qtd={item.qtd || 1} />
                             {item.alternatives && item.alternatives.length > 0 && (
@@ -596,9 +617,14 @@ export default function SwapsTable({
                                 <Layers className="w-3.5 h-3.5" />
                               </button>
                             )}
-                            <span className="mx-1">|</span> Lab: <span className="truncate max-w-[120px] ml-1 px-1.5 py-0.5 bg-blue-100 text-blue-900 font-bold rounded-sm uppercase tracking-wider">{item.novoLaboratorio || item.originalLaboratorio || "GENÉRICO"}</span> <span className="mx-1">|</span> Unit: <span className={isAccepted ? "text-emerald-700 font-bold ml-1" : "text-gray-400 ml-1"}>{formatCurrency(item.novoPreco)}</span>
+                            <span className="mx-1">|</span> Lab: <span className="truncate max-w-[120px] ml-1 px-1.5 py-0.5 bg-blue-100 text-blue-900 font-bold rounded-sm uppercase tracking-wider">{item.novoLaboratorio || item.originalLaboratorio || "GENÉRICO"}</span> <span className="mx-1">|</span> Unit: <span className={item.isRupturaSubstitution ? "text-red-700 font-bold ml-1" : isAccepted ? "text-emerald-700 font-bold ml-1" : "text-gray-400 ml-1"}>{formatCurrency(item.novoPreco)}</span>
                           </div>
-                          {item.originalSemEstoque ? (
+                          {item.isRupturaSubstitution ? (
+                            <div className="mt-1 flex items-start gap-1 text-[9.5px] text-red-700 bg-red-100 p-1.5 rounded-sm border border-red-400 font-bold">
+                              <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5 text-red-600" />
+                              <span>🔴 RUPTURA: Produto original sem estoque. Substituto promovido como original.</span>
+                            </div>
+                          ) : item.originalSemEstoque ? (
                             <div className="mt-1 flex items-start gap-1 text-[9.5px] text-red-700 bg-red-50 p-1.5 rounded-sm border border-red-300 font-bold">
                               <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5 text-red-600" />
                               <span>🚨 MOTIVO DA TROCA (RUPTURA): Produto original sem estoque em nenhum fornecedor. Substituto sugerido para evitar falta.</span>
@@ -608,10 +634,15 @@ export default function SwapsTable({
                               <ArrowDownRight className="w-3 h-3 shrink-0 mt-0.5 text-emerald-600" />
                               <span>💰 MOTIVO DA TROCA (ECONOMIA): Substituto mais barato (Economia de {formatCurrency(item.originalPreco - item.novoPreco)}/un) mantendo o mesmo princípio ativo.</span>
                             </div>
+                          ) : item.novoEan === item.originalEan ? (
+                            <div className="mt-1 flex items-start gap-1 text-[9.5px] text-blue-800 bg-blue-50 p-1.5 rounded-sm border border-blue-300 font-bold">
+                              <CheckCircle className="w-3 h-3 shrink-0 mt-0.5 text-blue-600" />
+                              <span>✅ MANTIDO: Mesmo produto na melhor distribuidora disponível com estoque.</span>
+                            </div>
                           ) : (
                             <div className="mt-1 flex items-start gap-1 text-[9.5px] text-indigo-800 bg-indigo-50 p-1.5 rounded-sm border border-indigo-300 font-bold">
                               <Sparkles className="w-3 h-3 shrink-0 mt-0.5 text-indigo-600" />
-                              <span>💡 MOTIVO DA TROCA (CONDIÇÃO/PRAZO): Substituto sugerido por melhor condição na distribuidora.</span>
+                              <span>💡 MOTIVO DA TROCA: Substituto com estoque disponível no mercado.</span>
                             </div>
                           )}
                           {item.observacao && (
@@ -680,7 +711,12 @@ export default function SwapsTable({
                         </div>
 
                         {/* Seletor de Condição de Compra / Substituição de Laboratório */}
-                        <ConditionSelector item={item} onSelectCondition={onSelectCondition} compact />
+                        {(() => {
+                          const altsCount = item.alternatives?.length ?? 0;
+                          console.log(`[SWAPS-TABLE] RENDER EAN=${item.originalEan || item.novoEan} "${(item.originalDescricao || "").substring(0, 30)}" codInterno=${item.codInterno} | alternatives=${altsCount} | novoEan=${item.novoEan} | config=${!!config}`);
+                          return null;
+                        })()}
+                        <ConditionSelector item={item} onSelectCondition={onSelectCondition} compact config={config ? { token: config.token, cnpj: config.cnpj, useTestUrl: config.useTestUrl } : undefined} />
                       </td>
                     </tr>
                   );
@@ -1630,8 +1666,13 @@ export default function SwapsTable({
                                      return null;
                                    })()}
 
-                                   {/* Comercial condition selection */}
-                                   <ConditionSelector item={item} onSelectCondition={onSelectCondition} />
+                                     {/* Comercial condition selection */}
+                                     {(() => {
+                                       const altsCount = item.alternatives?.length ?? 0;
+                                       console.log(`[SWAPS-TABLE-DETAIL] RENDER EAN=${item.originalEan || item.novoEan} codInterno=${item.codInterno} | alternatives=${altsCount} | isDisregarded=${!!(item as any).isDisregarded}`);
+                                       return null;
+                                     })()}
+                                     <ConditionSelector item={item} onSelectCondition={onSelectCondition} config={config ? { token: config.token, cnpj: config.cnpj, useTestUrl: config.useTestUrl } : undefined} />
 
                                    {/* Alerta de Duplicidade Profarma */}
                                    {isProfarmaAlert && !isDisabled && profarmaDecisions[item.codInterno] !== 'keep' && (
@@ -1886,7 +1927,7 @@ export default function SwapsTable({
                           const nextHeaderId = `group-header-${gIdx + 1}`;
                           const targetElement = document.getElementById(nextHeaderId) || document.getElementById(currentHeaderId);
                           if (targetElement) {
-                            targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                            targetElement.scrollIntoView({ behavior: "smooth", block: "start" });
                           }
                         }, 100);
                       }}

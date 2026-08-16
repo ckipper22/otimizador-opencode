@@ -35,7 +35,7 @@ export function findBestSubstitute(
     if (!isOriginalEan) {
       const tipoItem = s.TipoItem || s.tipoItem || "";
       const tipoItemUpper = tipoItem.toUpperCase();
-      if (tipoItemUpper && !tiposAceitos.has(tipoItemUpper)) {
+      if (tipoItemUpper && !tiposAceitos.has(tipoItemUpper) && originalHasStock) {
         return false;
       }
     }
@@ -83,7 +83,9 @@ export function findBestSubstitute(
     return true;
   });
 
-  if (candidatos.length === 0) return null;
+  if (candidatos.length === 0) {
+    return null;
+  }
 
   let candidatosOriginais = candidatos.filter(c => cleanEan(c.Ean || c.ean || "") === origEan);
   let candidatosSubstitutos = candidatos.filter(c => cleanEan(c.Ean || c.ean || "") !== origEan).filter(s => {
@@ -91,7 +93,7 @@ export function findBestSubstitute(
       const estoque = parseInt(String(s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0)), 10) || 0;
       return estoque > 0;
     }
-    return true;
+    return false;
   });
 
   const temOriginalReal = candidatosOriginais.some(c => isRealOffer(c));

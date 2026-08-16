@@ -172,7 +172,39 @@ Quando o usuÃ¡rio clica no Ã­cone de lixeira (excluir), o cÃ³digo interno 
     *   Se as dosagens/quantidades forem validadas e o overlap de palavras for de pelo menos `0.6` (e com correspondÃªncia na primeira palavra da molÃ©cula), o sistema aceita a correspondÃªncia se a economia superar a `margemMinima`.
 *   **Interface e CÃ³pia (Faturamento Externo):** Itens direcionados para fornecedores externos aparecem agrupados em blocs destacados na cor esmeralda (verde) com uma tag "WHATSAPP". Em vez de enviar pela API (CORS/vÃ­nculo), a interface disponibiliza o botÃ£o "Copiar Pedido (WhatsApp)", gerando uma mensagem perfeitamente formatada e amigÃ¡vel (em formato de lista de texto) copiada para a Ã¡rea de transferÃªncia do usuÃ¡rio, permitindo o envio instantÃ¢neo via chat.
 
-### 4.6. Consulta de Itens por PerÃ­odo, Filtro de Faltas e Assistente de RedistribuiÃ§Ã£o (`/api/itens-confirmados-do-dia`, `/api/faturar` & `DailyItemsView.tsx`)
+### 4.7. Resolução de Nomes de Distribuidoras (Crítico para UI)
+
+**Problema:** A API SmartPed **não garante** que o campo `NomeDist` venha no objeto individual de cada oferta (`Condicoes[]`, `Substitutos[]`). O nome vem separado em:
+1. Array `dists[]` (ou `Dists[]`) na raiz de `Retorno` — cada item tem `CodDist` + `NomeDist`
+2. Endpoint cadastral `/api/Condicoes/Distribuidores` — retorna lista completa `Codigo` + `Nome`
+3. Campos variados dependendo do endpoint: `NomeDistribuidora` (Ofertas), `Nome_Dpe` (Sugestoes), `Nome` (Distribuidores)
+
+**Solução arquitetural (server.ts):**
+- `DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string>` — cache em memória inicializado com 40+ distribuidoras conhecidas no startup
+- `loadDistribuidoresFromAPI()` — chamado no startup; consome `/api/Condicoes/Distribuidores` e popula o cache
+- `enrichDistribuidoresFromPayload(payload)` — extrai `payload.Retorno.dists[]` de **qualquer** resposta SmartPed e atualiza o cache em tempo real
+- `resolveDistName(obj, codDist)` — resolver centralizado (linha ~40):
+  ```typescript
+  return (
+    obj?.NomeDist || obj?.nomeDist ||           // Maioria dos endpoints
+    obj?.NomeDistribuidora ||                   // Condicoes/Ofertas
+    obj?.Nome_Dpe ||                            // Condicoes/Sugestoes
+    obj?.Nome ||                                // Condicoes/Distribuidores
+    (code && DISTRIBUIDORAS_DYNAMIC_CACHE[code]) ||  // Cache dinâmico (primário)
+    (code && DISTRIBUIDORAS_MAP[code]) ||       // Mapa estático (fallback final)
+    (code ? `Distribuidor ${code}` : "Distribuidor")
+  );
+  ```
+- **Substituídos 8+ pontos** de parsing manual por `resolveDistName()` (linhas ~895, 1211, 1741, 2124, 2168, 4242, 4746, 4819, 4875)
+- **Erro crítico corrigido:** Linha 2124 lia `melhor.NomeDist` direto do objeto bruto do `findBestSubstitute` (que não tem esse campo). Corrigido para `resolveDistName(melhor, codDist)`.
+
+**Frontend (ConditionSelector.tsx):**
+- Recebe `item.distribuidora` **já resolvido** do backend — não faz busca própria
+- Dropdown usa `alt.distribuidora` diretamente (linhas 269, 288)
+- **Não busca em tempo real** se `item.alternatives.length > 0` (linha 44: removido `&& !isRuptura`)
+- Em ruptura, backend envia **TODAS** as alternativas (sem filtro de EAN original + escolhido) — filtro só aplica quando `originalHasStock === true` (server.ts:1995-2001)
+
+**Mapa estático (server/distributors.ts):** Corrigido alinhamento off-by-one (5↔6, 34↔59, 37↔60) + adicionados códigos faltantes (503=GCMEDICAMENTOS, 81=CervoSul, 624=SMARTDISTRIBUIDORA, etc.). Usado apenas como **último fallback** quando API falha completamente.
 *   **Controle de Datas FlexÃ­vel (HistÃ³rico por PerÃ­odo):** O endpoint aceita parÃ¢metros adicionais e opcionais `dataInicio` e `dataFim` (formatos ISO `YYYY-MM-DD`). A funÃ§Ã£o utilitÃ¡ria `formatToSmartpedDate` converte o formato de data do padrÃ£o web para o padrÃ£o exigido pelo SGF/Smartped (`DD/MM/YYYY`), possibilitando a pesquisa por qualquer intervalo de dias sem limitaÃ§Ã£o ao dia corrente.
 *   **Mapeamento Unificado de Status de Itens:** Para cada pedido do lote retornado, o backend captura os detalhes dos produtos e distribuidores parceiros, categorizando-os estruturalmente:
     *   **Faturado (Confirmado):** Itens cujo distribuidor finalizou o faturamento com sucesso (`Status === 3`) e que possuem `QuantFaturada > 0`.
@@ -323,6 +355,172 @@ Quando o usuÃ¡rio clica no Ã­cone de lixeira (excluir), o cÃ³digo interno 
 *   **Enriquecimento de DescriÃ§Ãµes e Cobertura Dupla de EANs (Monitoramento):**
     * Adicionados os cadastros estÃ¡ticos para os EANs `7891142165770` (Macrodantina 100mg C/28 Caps) e `7896112127680` (Maleato de Dexclorfeniramina 0,4mg/ml XPE 100ml) diretamente na base de dados de ERP simulada (`src/utils.ts` em `SAMPLE_SICF_FILE` e `HOMOLOGACAO_SICF_FILE`), garantindo que o `EAN_DATABASE` resolva os nomes instantaneamente.
     * O resolvedor de descriÃ§Ãµes no backend (`fetchEanDescriptions` em `server.ts`) foi otimizado para possuir **dupla-cobertura**: os itens que nÃ£o sÃ£o encontrados pelo endpoint de molÃ©culas (`api/Condicoes/Molecula`) agora passam automaticamente por uma consulta secundÃ¡ria em lote no endpoint de cotaÃ§Ã£o direta por EAN (`api/Condicoes/Ean`). Isso assegura que 100% dos itens do faturamento recebam sua descriÃ§Ã£o comercial legÃ­tima de forma dinÃ¢mica pela API.
+
+### 4.17. Itens Manuais (AdiÃ§Ã£o via BotÃ£o "+")
+*   **Fluxo de AdiÃ§Ã£o:** Quando o usuÃ¡rio clica no botÃ£o "+" para adicionar um item manualmente, o sistema:
+    1. Gera um `codInterno` Ãºnico (`MANUAL-{timestamp}-{random}`)
+    2. Salva no localStorage (`itens_manuais_adicionados`) para acesso imediato
+    3. Salva no Turso via endpoint `/api/salvar-item-manual` para persistÃªncia permanente
+*   **PersistÃªncia Turso:** Tabela `itens_manuais` com campos: `cod_interno`, `ean`, `descricao`, `laboratorio`, `distribuidora`, `cod_dist`, `qtd`, `preco_liquido`, `preco_fabrica`, `condicao`, `prazo`, `cnpj`, `status`, `data_adicao`
+*   **Aba "Itens Manuais" (DailyItemsView):** Mostra TODOS os itens digitados manualmente com status:
+    *   **Faturado** (verde): Item manual que aparece na API SmartPed com status "faturado"
+    *   **Falta** (vermelho): Item manual que aparece na API SmartPed com status "nao_confirmado"
+    *   **NÃ£o Faturado** (cinza): Item manual que nÃ£o aparece na API (ainda nÃ£o processado)
+*   **Endpoints:**
+    *   `POST /api/salvar-item-manual` — Salva item manual no Turso
+    *   `POST /api/itens-manuais` — Busca itens manuais do Turso por CNPJ e perÃ­odo
+*   **Purge AutomÃ¡tica:** Dados com mais de 6 meses sÃ£o deletados automaticamente (a cada 24h)
+
+### 4.18. Itens Confirmados (Retorno da SmartPed)
+*   **Fluxo de Consulta:** O endpoint `/api/itens-confirmados-do-dia` consulta a API SmartPed para obter pedidos e seus retornos:
+    1. Consulta Turso primeiro para itens jÃ¡ confirmados (cache local)
+    2. Consulta API SmartPed (`Pedido/Listar` + `Pedido/Retorno`) para novos retornos
+    3. Salva no Turso apenas itens com Status === 3 (faturados)
+    4. Combina resultados (Turso + API) evitando duplicatas
+*   **PersistÃªncia Turso:** Tabela `itens_confirmados` com campos: `num_pedido`, `ean`, `descricao`, `laboratorio`, `cod_dist`, `nome_dist`, `qtd_solicitada`, `qtd_faturada`, `preco_liquido`, `status`, `motivo`, `cnpj`, `data_confirmacao`
+*   **UPSERT:** Atualiza se o status mudar (ex: item fica "nao_confirmado" e depois vira "faturado")
+*   **Endpoints:**
+    *   `POST /api/itens-confirmados-do-dia` — Consulta itens confirmados (Turso + API)
+
+### 4.19. Purge AutomÃ¡tica de Dados (6 Meses)
+*   **PropÃ³sito:** Evitar crescimento infinito do banco de dados e manter a performance
+*   **Tabelas afetadas:** `orders`, `order_items`, `faturados`, `itens_confirmados`, `itens_manuais`
+*   **FrequÃªncia:** A cada 24 horas (via `setInterval` em `startDbCachePurge`)
+*   **CritÃ©rio:** Registros com `created_at` mais antigos que 6 meses
+*   **FunÃ§Ã£o:** `purgeOldData()` em `server/database.ts`
+
+### 4.20. Fluxo de Busca por Tipo de Item (Ruptura vs Sem Ruptura)
+
+#### 4.20.1. DecisÃ£o: O item estÃ¡ em ruptura?
+
+A decisÃ£o ocorre em `server.ts` (linha ~1367). O sistema verifica se o EAN original tem **qualquer oferta com estoque > 0** na SmartPed:
+
+```
+condicoesOriginal = [...condicoesRaw, ...substitutosRaw]
+  .filter(s => cleanEan(s.Ean) === cleanEan(item.ean))
+
+originalHasStock = condicoesOriginal.some(s => parseSmartPedEstoque(s.Estoque) > 0)
+```
+
+- `originalHasStock = true` → Caminho **SEM ruptura** (item tem estoque)
+- `originalHasStock = false` → Caminho **COM ruptura** (item sem estoque)
+
+#### 4.20.2. Fase de CotaÃ§Ã£o Inicial (IGUAL para ambos os caminhos)
+
+Antes de decidir ruptura ou nÃ£o, o sistema jÃ¡ buscou dados da SmartPed:
+
+1. **CotaÃ§Ã£o em lote** (linha ~460-670): Chamada `Condicoes/Ean` + `Condicoes/Molecula` em `Promise.all` para todos os EANs do SICF (batches de 40). Resultado: `apiResponses[ean] = { ItemPedido, Substitutos[], Condicoes[] }`
+2. **Fallback por princÃ­pio ativo** (linha ~673-975): Para itens sem ofertas/estoque, busca via `Condicoes/Molecula` (por DCB/molÃ©cula) + `Produtos/Buscar` (por descriÃ§ao limpa). Resultado: novos `Substitutos[]` injetados em `apiResponses[ean]`
+3. **UnificaÃ§Ã£o de equivalentes** (linha ~1006-1050): Para cada item, o sistema unifica respostas do EAN original + equivalentes locais (`LOCAL_EQUIVALENTS_DB`) + similares de mercado (Ferramentinhas) em `combinedSubstitutos[]` e `combinedCondicoes[]`
+
+#### 4.20.3. Caminho SEM Ruptura (`originalHasStock = true`)
+
+O item jÃ¡ tem estoque. O objetivo depende do tipo do item:
+
+**GenÃ©ricos (TipoItem "G") — Busca Completa:**
+O sistema aplica o mesmo fluxo de busca da ruptura para encontrar todos os fabricantes genÃ©ricos equivalentes:
+
+1. **Filtro de equivalÃªncia** (linha ~1137-1146): `combinedSubstitutos` Ã© filtrado por `validateSwapEquivalence` (dosagem, apresentaÃ§Ã£o, sabor)
+2. **TARGET-EAN-PRE** (linha ~1386-1453): Consulta EANs alvo dos substitutos jÃ¡ conhecidos via `Condicoes/Ean` + `Condicoes/Molecula`
+3. **RUPTURA-REGEX** (linha ~1455-1573): Busca por descriÃ§Ã£o via `Produtos/Buscar` + `Condicoes/Ean` — **tambÃ©m ativa para genÃ©ricos com estoque**
+4. **Rebuild** (linha ~1575-1617): Re-filtra, reconstrÃ³i `stockMapByEanDist`, `substitutos`, `condicoesEnriched`
+5. **findBestSubstitute** (swap-engine.ts): Motor escolhe o melhor genÃ©rico com filtros estritos:
+   - MantÃ©m mesma categoria: genÃ©rico → genÃ©rico (`isGeneric && !isCandidateGeneric → false`)
+   - Filtra por `tiposAceitos` (G, O) — nÃ£o aceita tipos S, R, E como substitutos
+   - Exige economia ≥ `margemMinima` em relaÃ§Ã£o ao benchmark
+6. **Filtro do dropdown** (linha ~2022): **NÃ£o filtra por EAN** — mantÃ©m TODAS as alternativas genÃ©ricas
+
+**Ã‰ticos/ReferÃªncia/Perfumaria/Similares (TipoItem R, E, O, S) — Busca do Mesmo Produto:**
+
+1. **TARGET-EAN-PRE** (linha ~1386-1453): Consulta EANs alvo dos substitutos (pode incluir mesmo produto com EAN diferente)
+2. **findBestSubstitute** (swap-engine.ts): Motor escolhe o melhor preÃ§o/condiÃ§Ã£o para o mesmo produto
+3. **Filtro do dropdown** (linha ~2022): Filtra para **mesmo produto** — inclui:
+   - EAN original
+   - EAN do melhor substituto escolhido
+   - EANs de `combinedSubstitutos` com **mesma descriÃ§Ã£o** do original (mesmo produto, cÃ³digo de barras diferente na SmartPed)
+
+**Resultado:**
+- GenÃ©ricos: ConditionSelector mostra **todas** as distribuidoras de todos os fabricantes genÃ©ricos encontrados
+- Ã‰ticos/Similares: ConditionSelector mostra distribuidoras do mesmo produto (EAN original + EANs com mesma descriÃ§ao)
+
+#### 4.20.4. Caminho COM Ruptura (`originalHasStock = false`)
+
+O item NÃƒO tem estoque. O objetivo Ã© encontrar **qualquer alternativa viÃ¡vel** para suprir a prateleira.
+
+**Fluxo — 3 camadas extras de busca:**
+
+**Camada 1: TARGET-EAN-PRE** (linha ~1386-1453)
+- Mesmo do caminho sem ruptura: consulta EANs alvo dos substitutos jÃ¡ conhecidos
+- Expande `combinedSubstitutos` com ofertas de distribuidoras
+
+**Camada 2: RUPTURA-REGEX** (linha ~1455-1573) — EXCLUSIVO de ruptura
+- Extrai keywords da descriÃ§Ã£o do original (ex: `"ROSUVASTATINA CALCICA 10MG 30CP REV"` → `["ROSUVASTATINA", "10MG", "30"]`)
+- Remove stop-words (`COM`, `CPR`, `COMP`, `REV`, `GENERICO`, `CALCICA`, etc.)
+- Busca via `Produtos/Buscar` com as 3 primeiras keywords (ex: `"ROSUVASTATINA 10MG 30"`)
+- Para cada EAN encontrado, consulta `Condicoes/Ean` em paralelo
+- Adiciona novas ofertas ao `combinedSubstitutos` (deduplicando por `${Ean}_${CodDist}_${Condicao}_${Prazo}`)
+
+**Camada 3: Filtro de tipos relaxado** (swap-engine.ts, linha ~35-41)
+- Em ruptura (`!originalHasStock`), aceita **qualquer tipo** (G, S, R, E)
+- Em sem ruptura, filtra por `tiposAceitos` (G, O)
+- Isso permite que um Ã©tico sem estoque seja substituÃ­do por um similar
+
+**Camada 4: Fallback Ferramentinhas** (linha ~1658-1710) — Ãºltimo recurso
+- Se `findBestSubstitute` retorna `null` (nenhum substituto SmartPed encontrado)
+- Chama `fetchSimilarGenericos(item.ean)` (API Ferramentinhas/Trier)
+- Mapeia similares do ERP como candidatos de fallback
+- Filtra por `validateSwapEquivalence` + estoque > 0 + preÃ§o > 0
+- Se encontrar candidatos, escolhe o mais barato como `isFallback: true`
+
+**Filtro do dropdown** (linha ~2022-2029): Em ruptura, **NÃƒO filtra por EAN** → mantÃ©m TODAS as alternativas para o ConditionSelector.
+
+**Resultado:** O ConditionSelector mostra todas as distribuidoras de todos os EANs equivalentes encontrados (original + genÃ©ricos + similares + descobertos por regex).
+
+#### 4.20.5. Tabela Comparativa Resumida
+
+| Aspecto | Ético/Similar s/ ruptura | Genérico s/ ruptura | Qualquer c/ ruptura |
+|---------|--------------------------|---------------------|---------------------|
+| `originalHasStock` | `true` | `true` | `false` |
+| TARGET-EAN-PRE | Sim | Sim | Sim |
+| RUPTURA-REGEX (busca por descriÃ§Ã£o) | **NÃ£o** | **Sim** | **Sim** |
+| Tipos aceitos (swap-engine) | G, O (estrito) | G, O (estrito) | **G, S, R, E (qualquer)** |
+| Filtro de categoria (genÃ©rico↔genÃ©rico) | **Estrito** | **Estrito** | **FlexÃ­vel** |
+| Exigir economia ≥ margemMinima | **Sim** | **Sim** | **NÃ£o** (bypass) |
+| Fallback Ferramentinhas | **NÃ£o** | **NÃ£o** | **Sim** |
+| EANs no dropdown | **Mesmo produto** (EAN + desc igual) | **TODOS** | **TODOS** |
+| `isRupturaSubstitution` | `false` | `false` | `true` (se encontrou substituto) |
+
+#### 4.20.6. Fluxo Visual Simplificado
+
+```
+[Arquivo SICF]
+    ↓
+[Cotação em lote: Condicoes/Ean + Condicoes/Molecula]
+    ↓
+[Fallback: busca por princípio ativo (DCB/molécula)]
+    ↓
+[Unificação: combinedSubstitutos + combinedCondicoes]
+    ↓
+[originalHasStock?]
+    ├── SIM (sem ruptura)
+    │   ├── [Filtro equivalência]
+    │   ├── [TARGET-EAN-PRE]
+    │   ├── [isGeneric?]
+    │   │   ├── SIM → [RUPTURA-REGEX — busca por descrição]
+    │   │   └── NÃO → (pula RUPTURA-REGEX)
+    │   ├── [findBestSubstitute — tipos estritos, margemMinima obrigatória]
+    │   └── [Dropdown:]
+    │       ├── Genérico: TODOS os EANs
+    │       └── Ético/Similar: mesmo produto (EAN + desc igual)
+    │
+    └── NÃO (ruptura)
+        ├── [Filtro equivalência]
+        ├── [TARGET-EAN-PRE]
+        ├── [RUPTURA-REGEX — busca por descrição]
+        ├── [findBestSubstitute — tipos relaxados, sem margemMinima]
+        ├── [Fallback Ferramentinhas — se findBestSubstitute = null]
+        └── [Dropdown: TODOS os EANs encontrados]
+```
 
 ---
 

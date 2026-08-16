@@ -197,16 +197,14 @@ export default function App() {
     descExtra: { vis: false, w: 100 },
     st:        { vis: false, w: 100 },
     pLiq:      { vis: true,  w: 120 },
-    prazo:     { vis: true,  w: 80  },
-    qtdMin:    { vis: true,  w: 100 },
-    pedMin:    { vis: true,  w: 110 },
+    prazo:     { vis: true,  w: 130 },
     acao:      { vis: true,  w: 180 },
   };
   const OFFER_COL_LABELS: Record<string, string> = {
     dist: "Distribuidora", prod: "Produto & EAN", pfab: "P. Fábrica",
     desc: "Desc %", descExtra: "Desc Extra %", st: "ST (R$)",
-    pLiq: "Preço Líquido", prazo: "Prazo", qtdMin: "Qtd Mín. Item",
-    pedMin: "Ped. Mín. Dist", acao: "Qtd / Ação",
+    pLiq: "Preço Líquido", prazo: "Prazo / Mín",
+    acao: "Qtd / Ação",
   };
   const OFFER_COL_KEYS = Object.keys(OFFER_COL_DEFAULTS);
 
@@ -299,7 +297,7 @@ export default function App() {
   const [itemWizardOffers, setItemWizardOffers] = useState<any[]>([]);
   const [isSearchingItemWizard, setIsSearchingItemWizard] = useState<boolean>(false);
 
-  const [showStats, setShowStats] = useState<boolean>(true);
+  const [showStats, setShowStats] = useState<boolean>(false);
   const [isSwapsTableVisible, setIsSwapsTableVisible] = useState<boolean>(true);
 
   const distributorGroupings = useMemo(() => {
@@ -2173,9 +2171,7 @@ export default function App() {
                               {offerColVis.descExtra && <th className="px-2.5 py-2 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[10px] text-right relative select-none" style={{ width: offerColWidths.descExtra }}><span>Desc Extra %</span><div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-gray-500/50" onMouseDown={(e) => { e.preventDefault(); setResizingCol({ key: 'descExtra', startX: e.clientX, startW: offerColWidths.descExtra }); }} /></th>}
                               {offerColVis.st && <th className="px-2.5 py-2 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[10px] text-right relative select-none" style={{ width: offerColWidths.st }}><span>ST (R$)</span><div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-gray-500/50" onMouseDown={(e) => { e.preventDefault(); setResizingCol({ key: 'st', startX: e.clientX, startW: offerColWidths.st }); }} /></th>}
                               {offerColVis.pLiq && <th className="px-2.5 py-2 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[10px] text-right text-emerald-400 relative select-none" style={{ width: offerColWidths.pLiq }}><span>Preço Líquido</span><div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-gray-500/50" onMouseDown={(e) => { e.preventDefault(); setResizingCol({ key: 'pLiq', startX: e.clientX, startW: offerColWidths.pLiq }); }} /></th>}
-                              {offerColVis.prazo && <th className="px-2.5 py-2 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[10px] text-center relative select-none" style={{ width: offerColWidths.prazo }}><span>Prazo</span><div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-gray-500/50" onMouseDown={(e) => { e.preventDefault(); setResizingCol({ key: 'prazo', startX: e.clientX, startW: offerColWidths.prazo }); }} /></th>}
-                              {offerColVis.qtdMin && <th className="px-2.5 py-2 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[10px] text-center relative select-none" style={{ width: offerColWidths.qtdMin }}><span>Qtd Mín. Item</span><div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-gray-500/50" onMouseDown={(e) => { e.preventDefault(); setResizingCol({ key: 'qtdMin', startX: e.clientX, startW: offerColWidths.qtdMin }); }} /></th>}
-                              {offerColVis.pedMin && <th className="px-2.5 py-2 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[10px] text-right relative select-none" style={{ width: offerColWidths.pedMin }}><span>Ped. Mín. Dist</span><div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-gray-500/50" onMouseDown={(e) => { e.preventDefault(); setResizingCol({ key: 'pedMin', startX: e.clientX, startW: offerColWidths.pedMin }); }} /></th>}
+                              {offerColVis.prazo && <th className="px-2.5 py-2 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[10px] text-center relative select-none" style={{ width: offerColWidths.prazo }}><span>Prazo / Mín</span><div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-gray-500/50" onMouseDown={(e) => { e.preventDefault(); setResizingCol({ key: 'prazo', startX: e.clientX, startW: offerColWidths.prazo }); }} /></th>}
                               {offerColVis.acao && <th className="px-2.5 py-2 border-b border-gray-700 font-bold uppercase tracking-wider text-[10px] text-center relative select-none" style={{ width: offerColWidths.acao }}><span>Qtd / Ação</span><div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-gray-500/50" onMouseDown={(e) => { e.preventDefault(); setResizingCol({ key: 'acao', startX: e.clientX, startW: offerColWidths.acao }); }} /></th>}
                             </tr>
                           </thead>
@@ -2269,25 +2265,19 @@ export default function App() {
                                   </td>}
 
                                   {offerColVis.prazo && <td className="px-2.5 py-2 border-r border-gray-200 align-middle text-center" style={{ width: offerColWidths.prazo }}>
-                                    <span className="bg-gray-100 border border-gray-300 text-gray-800 font-bold px-1.5 py-0.5 text-[10px]">
-                                      {offerPrazo > 0 ? `${offerPrazo}d` : "À Vista"}
-                                    </span>
-                                  </td>}
-
-                                  {offerColVis.qtdMin && <td className="px-2.5 py-2 border-r border-gray-200 align-middle text-center" style={{ width: offerColWidths.qtdMin }}>
-                                    {qtdMinItem > 1 ? (
-                                      <span className="bg-amber-100 text-amber-900 border border-amber-300 font-bold px-1.5 py-0.5 text-[10px]" title="Quantidade mínima exigida por item">
-                                        Mín {qtdMinItem} un
+                                    <div className="flex flex-col items-center gap-0.5">
+                                      <span className="bg-gray-100 border border-gray-300 text-gray-800 font-bold px-1.5 py-0.5 text-[10px]">
+                                        {offerPrazo > 0 ? `${offerPrazo}d` : "À Vista"}
                                       </span>
-                                    ) : (
-                                      <span className="text-gray-500">1 un</span>
-                                    )}
-                                  </td>}
-
-                                  {offerColVis.pedMin && <td className="px-2.5 py-2 border-r border-gray-200 align-middle text-right" style={{ width: offerColWidths.pedMin }}>
-                                    <span className="text-[11px] font-bold text-gray-700" title="Valor mínimo para faturamento desta distribuidora">
-                                      {formatCurrency(pedMinDist)}
-                                    </span>
+                                      {qtdMinItem > 1 && (
+                                        <span className="bg-amber-100 text-amber-900 border border-amber-300 font-bold px-1.5 py-0.5 text-[9px]" title="Quantidade mínima exigida por item">
+                                          Mín {qtdMinItem} un
+                                        </span>
+                                      )}
+                                      <span className="text-[9px] text-gray-500 font-medium" title="Valor mínimo para faturamento desta distribuidora">
+                                        Ped: {formatCurrency(pedMinDist)}
+                                      </span>
+                                    </div>
                                   </td>}
 
                                   {offerColVis.acao && <td className="px-2.5 py-2 align-middle text-center" style={{ width: offerColWidths.acao }}>

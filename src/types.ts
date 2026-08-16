@@ -35,6 +35,11 @@ export interface SwapReportItem {
   observacao?: string;
   isShortage?: boolean;
   originalSemEstoque?: boolean;
+  isRupturaSubstitution?: boolean;
+  originalRupturaEan?: string;
+  originalRupturaDescricao?: string;
+  originalRupturaLaboratorio?: string;
+  originalRupturaPreco?: number;
   originalPmc?: number;
   novoPmc?: number;
   alternatives?: Array<{

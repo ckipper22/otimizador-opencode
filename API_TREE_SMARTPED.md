@@ -120,6 +120,7 @@ PMC > pmc > Pmc > VlrPmc > vlr_pmc
 - Aceita multiplos EANs separados por virgula (chunking em lotes de 40)
 - SmartPed retorna EANs como String neste endpoint
 - PMC e Preco de Tabela vêm aninhados dentro de cada ItemPedido
+- **Resposta inclui array `dists[]` (ou `Dists[]`) na raiz de `Retorno`:** Cada item tem `CodDist` e `NomeDist`. Este array é a fonte primária para popular o cache dinâmico de nomes de distribuidoras (`enrichDistribuidoresFromPayload`). **Não confiar que `NomeDist` venha no objeto `Condicoes[]` individual** — vem separado no `dists[]`.
 
 > **⚠️ REGRAS CRÍTICAS PARA BUSCA POR DESCRIÇÃO (QtdMin)**
 >
@@ -249,6 +250,7 @@ POST /api/Condicoes/Molecula
 - `Condicoes` do proprio EAN original tambem vem no retorno
 - Comportamento de achatamento: filhos (`Condicoes`) herdam `Ean`, `Descricao`, `Laboratorio` do pai (`ItemPedido`)
 - Retorno pode vir como `itens` (lowercase) ou `Itens` (PascalCase) - checar ambos
+- **Resposta inclui array `dists[]` (ou `Dists[]`) na raiz de `Retorno`** (igual a Condicoes/Ean). Fonte para `enrichDistribuidoresFromPayload`. `NomeDist` **não vem** no objeto `Substitutos[]` individual.
 
 ---
 
@@ -438,8 +440,33 @@ POST /api/Condicoes/Distribuidores
 }
 ```
 
+**Resposta (200 OK) - Estrutura:**
+```json
+{
+  "Retorno": [
+    {
+      "Codigo": 4,
+      "Nome": "PROFARMA [SP]"
+    },
+    {
+      "Codigo": 503,
+      "Nome": "GCMEDICAMENTOS"
+    }
+  ]
+}
+```
+
+**Campos:** `Codigo` (number) = CodDist, `Nome` (string) = nome comercial da distribuidora.
+
 **Uso no sistema (`server.ts`):**
-- **Linha 4008** - Endpoint `/api/distribuidores`
+- **Linha ~4008** - Endpoint `/api/distribuidores` (proxy)
+- **Startup** - `loadDistribuidoresFromAPI()` popula `DISTRIBUIDORAS_DYNAMIC_CACHE` na inicialização do servidor
+- **Enriquecimento em tempo real** - `enrichDistribuidoresFromPayload()` lê `payload.Retorno.dists[]` de QUALQUER resposta SmartPed
+
+**Notas críticas:**
+- A API **não garante** que todos os CodDist ativos apareçam neste endpoint (ex: 503=GCMEDICAMENTOS pode faltar)
+- Por isso o sistema usa **cache dinâmico em 3 camadas**: (1) Startup via este endpoint, (2) `dists[]` de respostas de cotação, (3) Mapa estático `DISTRIBUIDORAS_MAP` como último fallback
+- Campos variáveis na resposta: `Codigo`/`codigo`, `Nome`/`nome` — sempre normalizar com `Number()` e `String().trim()`
 
 ---
 

@@ -293,6 +293,16 @@ export default function UploadBox({
             };
           });
 
+          // Log de diagnóstico: alternativas recebidas do backend
+          mappedItems.forEach((it) => {
+            const altsCount = it.alternatives?.length ?? 0;
+            if (altsCount === 0) {
+              console.log(`[UPLOAD-BOX] SEM ALTERNATIVAS EAN=${it.originalEan} "${it.originalDescricao?.substring(0, 40)}"`);
+            } else {
+              console.log(`[UPLOAD-BOX] EAN=${it.originalEan} → ${altsCount} alternativas do backend`);
+            }
+          });
+
           // Gerar um arquivo SICF virtual compatível com esses itens para fins de regeneração/download caso necessário
           const header = `1;${finalCnpj};CLIENTE IMPORTADO;`;
           const sicfLines = [header];

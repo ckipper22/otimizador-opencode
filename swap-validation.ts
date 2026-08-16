@@ -132,8 +132,7 @@ export function validateSwapEquivalence(
     origTipo === "ETICO" || 
     origTipo === "ÉTICO" || 
     origTipo === "R" || 
-    origTipo === "E" ||
-    origTipo === "O";
+    origTipo === "E";
 
   const origLab = getLab(orig);
   const isDaiichi = origLab.includes("DAIICHI") || origLab.includes("SANKYO");
@@ -193,7 +192,7 @@ export function validateSwapEquivalence(
   // 5. Match de Quantidade de Comprimidos / Apresentação (Tolerância Estrita)
   const extractPresentations = (desc: string) => {
     const matches: string[] = [];
-    const p1 = desc.match(/\b\d+\s*(?:CP|COMP|CAPS|CAP|DRG|SACHE|SACHET|AMP|ENV|EV)\b/gi) || [];
+    const p1 = desc.match(/\b\d+\s*(?:CP|COMP|CAPS|CAP|CPR|DRG|SACHE|SACHET|AMP|ENV|EV)\b/gi) || [];
     p1.forEach(m => {
       const digits = m.match(/\d+/);
       if (digits) matches.push(digits[0]);

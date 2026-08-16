@@ -1,5 +1,5 @@
-import React from "react";
-import { Tag, AlertTriangle, Sparkles, RefreshCw } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Tag, AlertTriangle, Sparkles, RefreshCw, Loader2 } from "lucide-react";
 import { SwapReportItem } from "../types";
 
 type Alternative = NonNullable<SwapReportItem["alternatives"]>[number];
@@ -9,6 +9,8 @@ interface ConditionSelectorProps {
   onSelectCondition?: (codInterno: string, selectedAlt: Alternative) => void;
   /** Compacto: usado dentro do Painel de Escolhas (linhas mais estreitas) */
   compact?: boolean;
+  /** Configuração para buscar alternativas em tempo real */
+  config?: { token?: string; cnpj?: string; useTestUrl?: boolean };
 }
 
 /**
@@ -19,9 +21,122 @@ interface ConditionSelectorProps {
  * Regra de negócio preservada: só lista alternativas com distribuidora real
  * (exclui "Não Encontrados" / "Sem Estoque") e com estoque > 0.
  */
-export function ConditionSelector({ item, onSelectCondition, compact = false }: ConditionSelectorProps) {
-  const alternatives = item.alternatives;
-  if (!alternatives || alternatives.length === 0) return null;
+export function ConditionSelector({ item, onSelectCondition, compact = false, config }: ConditionSelectorProps) {
+  const [liveAlternatives, setLiveAlternatives] = useState<Alternative[] | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Log de diagnóstico: o que o componente recebeu
+  useEffect(() => {
+    const altsCount = item.alternatives?.length ?? 0;
+    const ean = item.isRupturaSubstitution ? item.novoEan : (item.originalEan || item.novoEan || "=?");
+    const desc = (item.isRupturaSubstitution ? item.novaDescricao : (item.originalDescricao || item.novaDescricao || "")).substring(0, 40);
+    console.log(`[CONDITION-SELECTOR] EAN=${ean} "${desc}" | isRuptura=${item.isRupturaSubstitution} | item.alternatives=${altsCount} | liveAlternatives=${liveAlternatives?.length ?? "null"} | vai-buscar-tempo-real? ${altsCount === 0 && !!config?.token}`);
+  }, [item.alternatives, item.originalEan, item.originalDescricao, item.isRupturaSubstitution, item.novoEan, item.novaDescricao, liveAlternatives, config]);
+
+  // Buscar alternativas em tempo real se o array estiver vazio OU se for ruptura
+  useEffect(() => {
+    const altsCount = item.alternatives?.length ?? 0;
+    const isRuptura = item.isRupturaSubstitution;
+    
+    console.log(`[CONDITION-SELECTOR-DEBUG] EAN=${item.originalEan} | isRuptura=${isRuptura} | altsCount=${altsCount} | liveAlts=${liveAlternatives?.length ?? 'null'} | config=${!!config?.token}`);
+
+    // Se já tem alternativas (do backend), não buscar em tempo real
+    if (altsCount > 0) {
+      console.log(`[CONDITION-SELECTOR-DEBUG] PULANDO busca: já tem ${altsCount} alternativas do backend`);
+      return;
+    }
+    if (!config?.token || !config?.cnpj) {
+      console.log(`[CONDITION-SELECTOR-DEBUG] PULANDO busca: sem config (token=${!!config?.token}, cnpj=${!!config?.cnpj})`);
+      return;
+    }
+    if (liveAlternatives !== null) {
+      console.log(`[CONDITION-SELECTOR-DEBUG] PULANDO busca: já buscou (liveAlts=${liveAlternatives.length})`);
+      return;
+    }
+
+    // Quando é ruptura, usar o EAN do substituto (novoEan) para buscar alternativas
+    const searchEan = isRuptura ? item.novoEan : item.originalEan;
+    const searchDesc = isRuptura ? item.novaDescricao : item.originalDescricao;
+
+    console.log(`[CONDITION-SELECTOR-DEBUG] INICIANDO busca: EAN=${searchEan} | DESC="${searchDesc}" | isRuptura=${isRuptura}`);
+
+    const fetchAlternatives = async () => {
+      setIsLoading(true);
+      try {
+        const requestBody = {
+          ean: searchEan,
+          descricao: searchDesc,
+          token: config.token,
+          cnpj: config.cnpj,
+          useTestUrl: config.useTestUrl
+        };
+        console.log(`[CONDITION-SELECTOR-DEBUG] Enviando para /api/smartped-find-substitutes:`, JSON.stringify(requestBody, null, 2));
+        
+        const response = await fetch("/api/smartped-find-substitutes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody)
+        });
+        const data = await response.json();
+        
+        console.log(`[CONDITION-SELECTOR-DEBUG] RESPOSTA: response.ok=${response.ok} | alternatives=${data?.alternatives?.length ?? 0} | logs=${JSON.stringify(data?.logs)}`);
+        
+        if (response.ok && data.alternatives) {
+          console.log(`[CONDITION-SELECTOR-DEBUG] SUCESSO: ${data.alternatives.length} alternativas recebidas`);
+          data.alternatives.forEach((alt: any, i: number) => {
+            console.log(`[CONDITION-SELECTOR-DEBUG]   ${i+1}. ${alt.distribuidora} | EAN:${alt.ean} | preco:${alt.preco} | estoque:${alt.estoque}`);
+          });
+          
+          setLiveAlternatives(data.alternatives);
+        } else {
+          console.log(`[CONDITION-SELECTOR-DEBUG] FALHA: response.ok=${response.ok} | data=${JSON.stringify(data)}`);
+          setLiveAlternatives([]);
+        }
+      } catch (err) {
+        console.log(`[CONDITION-SELECTOR-DEBUG] ERRO:`, err);
+        setLiveAlternatives([]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchAlternatives();
+  }, [item.alternatives, item.originalEan, item.originalDescricao, item.isRupturaSubstitution, item.novoEan, item.novaDescricao, config, liveAlternatives]);
+
+  const alternatives = item.alternatives && item.alternatives.length > 0 ? item.alternatives : (liveAlternatives || []);
+
+  // Log final: quantas alternativas vão pro dropdown
+  useEffect(() => {
+    if (alternatives.length > 0) {
+      const validCount = alternatives.filter(isValidAlt).length;
+      const ean = item.isRupturaSubstitution ? item.novoEan : item.originalEan;
+      console.log(`[CONDITION-SELECTOR] DROPDOWN EAN=${ean} | total=${alternatives.length} | válidas=${validCount} | fonte=${item.alternatives?.length > 0 ? "backend" : "live-fetch"}`);
+    }
+  }, [alternatives, item.originalEan, item.isRupturaSubstitution, item.novoEan]);
+
+  // Se está carregando, mostrar loading
+  if (isLoading) {
+    return (
+      <div className={`${compact ? "mt-2 p-2" : "mt-3.5 p-3"} bg-gray-50 border border-gray-200 rounded-sm font-sans`}>
+        <div className="flex items-center gap-1.5 text-[10px] text-gray-500 font-bold uppercase tracking-wider">
+          <Loader2 className="w-3.5 h-3.5 text-gray-400 animate-spin shrink-0" />
+          <span>Buscando opções...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Se não há alternativas, mostrar mensagem informativa
+  if (alternatives.length === 0) {
+    return (
+      <div className={`${compact ? "mt-2 p-2" : "mt-3.5 p-3"} bg-gray-50 border border-gray-200 rounded-sm font-sans`}>
+        <div className="flex items-center gap-1.5 text-[10px] text-gray-500 font-bold uppercase tracking-wider">
+          <Tag className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+          <span>Sem opções alternativas disponíveis</span>
+        </div>
+      </div>
+    );
+  }
 
   const itemQtd = item.qtd;
   const qtdMinAlerta = !!(item.qtdMin && item.qtdMin > 0 && itemQtd < item.qtdMin);
@@ -34,19 +149,31 @@ export function ConditionSelector({ item, onSelectCondition, compact = false }: 
       dist.includes("NAO ENCONTRADOS") ||
       dist.includes("NÃO ENCONTRADO") ||
       dist.includes("NAO ENCONTRADO") ||
-      dist.includes("SEM ESTOQUE")
+      dist.includes("SEM ESTOQUE") ||
+      dist.includes("NAO ENCONTR") ||
+      dist.includes("NÃO ENCONTR") ||
+      dist.includes("ENCONTRADO") ||
+      dist === "0" ||
+      dist === "" ||
+      dist === "DISTRIBUIDOR"
     ) {
+      if (isCurrentAlt(alt)) return true;
       return false;
     }
-    return Number(alt.estoque ?? 0) > 0;
+    const stock = Number(alt.estoque ?? 0);
+    return stock > 0;
   };
 
-  const isCurrentAlt = (alt: Alternative) =>
-    alt.ean === item.novoEan &&
-    alt.distribuidora === item.distribuidora &&
-    alt.condicao === item.condicao &&
-    Math.abs(alt.preco - item.novoPreco) < 0.001 &&
-    alt.prazo === item.prazo;
+  const normalizeStr = (s: string) => (s || "").trim().toUpperCase();
+  const isCurrentAlt = (alt: Alternative) => {
+    if (alt.ean !== item.novoEan) return false;
+    const altDist = normalizeStr(alt.distribuidora);
+    const itemDist = normalizeStr(item.distribuidora);
+    if (altDist !== itemDist) return false;
+    const precoDiff = Math.abs(Number(alt.preco || 0) - Number(item.novoPreco || 0));
+    if (precoDiff >= 0.10) return false;
+    return true;
+  };
 
   const validAlts = alternatives.filter(isValidAlt);
   const otherValidAlts = validAlts.filter((alt) => !isCurrentAlt(alt));
@@ -116,12 +243,13 @@ export function ConditionSelector({ item, onSelectCondition, compact = false }: 
             <optgroup label="📋 CONDIÇÃO DE COMPRA (Mesmo Medicamento / Mesma Marca)">
               {sameProductAlts.map((alt) => {
                 const altIdx = alternatives.indexOf(alt);
+                const isSelected = isCurrentAlt(alt);
                 return (
-                  <option key={altIdx} value={altIdx}>
-                    {alt.qtdMin > 0 ? `⚠️ [MÍN: ${alt.qtdMin}un]` : "✅ [SEM MÍNIMO]"} {alt.distribuidora} -{" "}
-                    {alt.condicao} (R$ {alt.preco.toFixed(2).replace(".", ",")}){" "}
+                  <option key={altIdx} value={altIdx} className={isSelected ? "bg-blue-100 text-blue-900 font-black" : ""}>
+                    {isSelected ? "★ " : ""}[{alt.distribuidora || "Distribuidor"}]{" "}
+                    {alt.qtdMin > 0 ? `⚠️[MÍN:${alt.qtdMin}un] ` : ""}{alt.condicao} (R$ {alt.preco.toFixed(2).replace(".", ",")}){" "}
                     {alt.prazo > 0 ? `| ${alt.prazo}d` : "| Vista"}
-                    {isCurrentAlt(alt) ? " (Atual) ★" : ""}
+                    {isSelected ? " ◄ SELECIONADO" : ""}
                   </option>
                 );
               })}
@@ -132,12 +260,13 @@ export function ConditionSelector({ item, onSelectCondition, compact = false }: 
             <optgroup label="🔬 SUBSTITUIÇÃO (Outro Laboratório / Outro Fabricante)">
               {otherProductAlts.map((alt) => {
                 const altIdx = alternatives.indexOf(alt);
+                const isSelected = isCurrentAlt(alt);
                 const altDesc = alt.descricao || "";
                 return (
-                  <option key={altIdx} value={altIdx}>
-                    [{alt.laboratorio || "GENÉRICO"}] {altDesc.substring(0, 30)}... |{" "}
+                  <option key={altIdx} value={altIdx} className={isSelected ? "bg-blue-100 text-blue-900 font-black" : ""}>
+                    {isSelected ? "★ " : ""}[{alt.laboratorio || "GENÉRICO"}] {altDesc.substring(0, 30)}... |{" "}
                     {alt.qtdMin > 0 ? `⚠️ [MÍN: ${alt.qtdMin}un]` : "✅ [SEM MÍNIMO]"} {alt.distribuidora} (R${" "}
-                    {Number(alt.preco ?? 0).toFixed(2).replace(".", ",")}){isCurrentAlt(alt) ? " (Atual) ★" : ""}
+                    {Number(alt.preco ?? 0).toFixed(2).replace(".", ",")}){isSelected ? " ◄ SELECIONADO" : ""}
                   </option>
                 );
               })}

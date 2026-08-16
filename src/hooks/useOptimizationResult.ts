@@ -304,6 +304,17 @@ export function useOptimizationResult({
         next.delete(codInterno);
       } else {
         next.add(codInterno);
+        // Remover item do localStorage itens_manuais_adicionados se for manual
+        if (codInterno.startsWith("MANUAL-")) {
+          try {
+            const stored = localStorage.getItem("itens_manuais_adicionados");
+            if (stored) {
+              const list = JSON.parse(stored);
+              const updated = list.filter((it: any) => it.codInterno !== codInterno);
+              localStorage.setItem("itens_manuais_adicionados", JSON.stringify(updated));
+            }
+          } catch {}
+        }
       }
       return next;
     });
@@ -478,6 +489,22 @@ export function useOptimizationResult({
         return baseItem;
       });
   }, [result, disregardedCodes, disabledItemCodes, overriddenDistributors, billedItemCodes]);
+
+  // Log diagnóstico: verificar se alternatives sobrevive ao activeReport
+  useMemo(() => {
+    if (!activeReport || activeReport.length === 0) return;
+    activeReport.forEach((item: any) => {
+      const altsCount = item.alternatives?.length ?? 0;
+      console.log(`[ACTIVE-REPORT] EAN=${item.originalEan || item.novoEan} codInterno=${item.codInterno} | alternatives=${altsCount} | dist=${item.distribuidora}`);
+      // Log cirúrgico: detalhar cada alternativa para rastrear estoque fictício
+      if (altsCount > 0) {
+        console.log(`[ALT-DETAILS] EAN=${item.originalEan || item.novoEan} — ${altsCount} alternativas:`);
+        item.alternatives.forEach((a: any, i: number) => {
+          console.log(`[ALT-DETAILS]   ${i+1}. ${a.distribuidora} | EAN:${a.ean} | estoque:${a.estoque} | preco:${a.preco} | condicao:${a.condicao} | prazo:${a.prazo}`);
+        });
+      }
+    });
+  }, [activeReport]);
 
   const profarmaRecentOrdersEans = useMemo(() => {
     if (!dailyOrders || !Array.isArray(dailyOrders)) return new Set<string>();
