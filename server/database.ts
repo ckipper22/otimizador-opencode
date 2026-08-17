@@ -139,6 +139,35 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_itens_manuais_cnpj ON itens_manuais(cnpj);
   CREATE INDEX IF NOT EXISTS idx_itens_manuais_data ON itens_manuais(data_adicao);
   CREATE INDEX IF NOT EXISTS idx_itens_manuais_status ON itens_manuais(status);
+  CREATE TABLE IF NOT EXISTS precos_cache (
+    ean TEXT,
+    cod_dist INTEGER,
+    condicao TEXT,
+    prazo INTEGER,
+    preco_liquido REAL,
+    estoque INTEGER,
+    nome_dist TEXT,
+    qtd_min INTEGER DEFAULT 0,
+    tipo_item TEXT,
+    ultima_atualizacao TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (ean, cod_dist, condicao, prazo)
+  );
+  CREATE INDEX IF NOT EXISTS idx_precos_cache_ean ON precos_cache(ean);
+  CREATE INDEX IF NOT EXISTS idx_precos_cache_update ON precos_cache(ultima_atualizacao);
+  CREATE TABLE IF NOT EXISTS produtos_cache (
+    ean TEXT PRIMARY KEY,
+    descricao TEXT,
+    laboratorio TEXT,
+    dcb TEXT,
+    molecula TEXT,
+    concentracao TEXT,
+    apresentacao TEXT,
+    tipo_item TEXT,
+    ultima_atualizacao TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_produtos_cache_dcb ON produtos_cache(dcb);
+  CREATE INDEX IF NOT EXISTS idx_produtos_cache_molecula ON produtos_cache(molecula);
+  CREATE INDEX IF NOT EXISTS idx_produtos_cache_update ON produtos_cache(ultima_atualizacao);
 `;
 
 export async function initTursoSchema() {
@@ -409,6 +438,160 @@ export function startDbCachePurge() {
   setInterval(async () => {
     await purgeOldData();
   }, 24 * 60 * 60 * 1000);
+}
+
+// Produtos Cache (DCB, molecula, concentracao)
+export async function saveProdutoCache(item: {
+  ean: string; descricao?: string; laboratorio?: string;
+  dcb?: string; molecula?: string; concentracao?: string;
+  apresentacao?: string; tipoItem?: string;
+}) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `INSERT OR REPLACE INTO produtos_cache (ean, descricao, laboratorio, dcb, molecula, concentracao, apresentacao, tipo_item, ultima_atualizacao)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`;
+    const args = [item.ean, item.descricao || null, item.laboratorio || null, item.dcb || null, item.molecula || null, item.concentracao || null, item.apresentacao || null, item.tipoItem || null];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function countProdutosCache(): Promise<number> {
+  const d = getDb();
+  if (!d) return 0;
+  try {
+    const sql = `SELECT COUNT(*) as count FROM produtos_cache`;
+    let row: any;
+    if (USE_TURSO) { row = await d.get(sql); } else { row = d.prepare(sql).get(); }
+    return row?.count || 0;
+  } catch { return 0; }
+}
+
+// Precos Cache (preços e estoque do giro diário)
+export async function savePrecosCacheBatch(items: Array<{
+  ean: string; codDist: number; condicao: string; prazo: number;
+  precoLiquido: number; estoque: number; nomeDist: string;
+  qtdMin?: number; tipoItem?: string;
+}>) {
+  const d = getDb();
+  if (!d || items.length === 0) return;
+  try {
+    const sql = `INSERT OR REPLACE INTO precos_cache (ean, cod_dist, condicao, prazo, preco_liquido, estoque, nome_dist, qtd_min, tipo_item, ultima_atualizacao)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`;
+    for (const item of items) {
+      const args = [item.ean, item.codDist, item.condicao, item.prazo, item.precoLiquido, item.estoque, item.nomeDist, item.qtdMin || 0, item.tipoItem || null];
+      if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+    }
+  } catch {}
+}
+
+export async function getPrecoCacheByEan(ean: string): Promise<any[]> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT * FROM precos_cache WHERE ean = ? ORDER BY preco_liquido ASC`;
+    if (USE_TURSO) { return await d.all(sql, ean); }
+    return d.prepare(sql).all(ean);
+  } catch { return []; }
+}
+
+export async function getPrecoCacheByEans(eans: string[]): Promise<Map<string, any[]>> {
+  const d = getDb();
+  const result = new Map<string, any[]>();
+  if (!d || eans.length === 0) return result;
+  try {
+    const placeholders = eans.map(() => '?').join(',');
+    const sql = `SELECT * FROM precos_cache WHERE ean IN (${placeholders}) ORDER BY preco_liquido ASC`;
+    let rows: any[];
+    if (USE_TURSO) { rows = await d.all(sql, ...eans); } else { rows = d.prepare(sql).all(...eans); }
+    for (const row of rows) {
+      const existing = result.get(row.ean) || [];
+      existing.push(row);
+      result.set(row.ean, existing);
+    }
+  } catch {}
+  return result;
+}
+
+export async function listPrecosCache(limit = 50): Promise<any[]> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT * FROM precos_cache ORDER BY preco_liquido ASC LIMIT ?`;
+    if (USE_TURSO) { return await d.all(sql, limit); }
+    return d.prepare(sql).all(limit);
+  } catch { return []; }
+}
+
+export async function countPrecosCache(): Promise<number> {
+  const d = getDb();
+  if (!d) return 0;
+  try {
+    const sql = `SELECT COUNT(*) as count FROM precos_cache`;
+    let row: any;
+    if (USE_TURSO) { row = await d.get(sql); } else { row = d.prepare(sql).get(); }
+    return row?.count || 0;
+  } catch { return 0; }
+}
+
+export async function purgePrecosCache(): Promise<number> {
+  const d = getDb();
+  if (!d) return 0;
+  try {
+    const countSql = `SELECT COUNT(*) as count FROM precos_cache`;
+    let before: any;
+    if (USE_TURSO) { before = await d.get(countSql); } else { before = d.prepare(countSql).get(); }
+    const count = before?.count || 0;
+    const sql = `DELETE FROM precos_cache`;
+    if (USE_TURSO) { await d.run(sql); } else { d.prepare(sql).run(); }
+    return count;
+  } catch { return 0; }
+}
+
+export async function getLastPrecoSync(): Promise<string | null> {
+  const d = getDb();
+  if (!d) return null;
+  try {
+    const sql = `SELECT MAX(ultima_atualizacao) as last_sync FROM precos_cache`;
+    let row: any;
+    if (USE_TURSO) { row = await d.get(sql); } else { row = d.prepare(sql).get(); }
+    return row?.last_sync || null;
+  } catch { return null; }
+}
+
+// EANs Fixos — usa tabela existente sugestoes_eans (populados uma vez via Sugestoes — nunca atualizados)
+export async function saveEansFixos(eans: Array<{ ean: string; descricao?: string; laboratorio?: string; codDist?: number; nomeDist?: string }>) {
+  const d = getDb();
+  if (!d || eans.length === 0) return;
+  try {
+    const sql = `INSERT OR REPLACE INTO sugestoes_eans (ean, descricao, laboratorio, cod_dist, nome_dist, ultima_atualizacao) VALUES (?, ?, ?, ?, ?, datetime('now'))`;
+    for (const e of eans) {
+      const args = [e.ean, e.descricao || null, e.laboratorio || null, e.codDist || null, e.nomeDist || null];
+      if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+    }
+  } catch {}
+}
+
+export async function getEansFixos(): Promise<string[]> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT ean FROM sugestoes_eans ORDER BY ultima_atualizacao DESC`;
+    let rows: any[];
+    if (USE_TURSO) { rows = await d.all(sql); } else { rows = d.prepare(sql).all(); }
+    return rows.map((r: any) => r.ean).filter((e: string) => !!e);
+  } catch { return []; }
+}
+
+export async function countEansFixos(): Promise<number> {
+  const d = getDb();
+  if (!d) return 0;
+  try {
+    const sql = `SELECT COUNT(*) as count FROM sugestoes_eans`;
+    let row: any;
+    if (USE_TURSO) { row = await d.get(sql); } else { row = d.prepare(sql).get(); }
+    return row?.count || 0;
+  } catch { return 0; }
 }
 
 export function closeDb() {

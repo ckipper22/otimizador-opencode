@@ -197,6 +197,17 @@ O cache de 5min para condições comerciais é um "bônus" — o valor real do T
     - **Status:** Corrigido.
 
 21. **Busca por tipo de item — Genéricos buscam completa, Éticos buscam mesmo produto:**
+
+22. **Sync de preços — purge corrigido + fallback descartado + EANs fixos populados:**
+    - **Purge:** Movido para DEPOIS da busca bem-sucedida (era antes → perdia 7470 registros se falhasse).
+    - **Teste local:** 567 sugestões, 448 EANs, 3601 preços salvos no Turso (teste do sync original).
+    - **Fallback inteligente (EANs no Turso):** Criado tabela `sugestoes_eans`, funções, endpoint → **REMOVIDO** — analisado e descartado pois sem preços o `precos_cache` não serve (RUPTURA-REGEX exige preço+estoque).
+    - **Decisão final:** **Não sincronizar preços** no Cloud (variam muito, cache desatualizado não ajuda).
+    - **Implementado:** Endpoint `/api/sync-eans-fixed` — roda UMA VEZ local, popula EANs do `Sugestoes` na tabela existente `sugestoes_eans` (Turso).
+    - **Resultado:** 449 EANs únicos salvos no Turso (tabela `sugestoes_eans`).
+    - **Cloud Run:** `runPriceSync` comentado (não roda mais), `checkAndRunPriceSync` comentado (auto-sync 10h desligado), endpoint `/api/sync-prices` mantido mas com placeholder desativado.
+    - **Reativação futura:** Descomentar `runPriceSync`, `checkAndRunPriceSync`, endpoint `/api/sync-prices` e configurar Cloud NAT se quiser voltar a sincronizar preços.
+    - **Status:** Código limpo, pronto para deploy.
     - **Problema:** O caminho sem ruptura fazia busca limitada para TODOS os tipos de item (apenas TARGET-EAN-PRE, sem RUPTURA-REGEX). Genéricos com estoque não encontravam todos os fabricantes equivalentes. Éticos/Similares tinham dropdown filtrado para apenas 2 EANs.
     - **Causa arquitetural:** A condição `if (!originalHasStock)` bloqueava a RUPTURA-REGEX e o filtro de dropdown flexível para todos os itens com estoque.
     - **Correção aplicada (server.ts):**
@@ -218,6 +229,85 @@ O cache de 5min para condições comerciais é um "bônus" — o valor real do T
       - `novoEan === originalEan` → "✅ MANTIDO: Mesmo produto na melhor distribuidora"
       - `novoEan !== originalEan` → "💡 Substituto com estoque disponível"
     - **Status:** Implementado.
+
+23. **RUPTURA-REGEX consulta precos_cache antes de API:**
+    - **Problema:** RUPTURA-REGEX fazia chamadas individuais `Condicoes/Ean` para cada EAN descoberto pelo `Produtos/Buscar` (16 EANs = 16 chamadas API).
+    - **Correção:** Antes de chamar API, consulta `precos_cache` via `getPrecoCacheByEans()`. EANs encontrados entram direto no `combinedSubstitutos` sem chamada API. Apenas EANs ausentes vão à API.
+    - **Resultado:** Rosuvastatina (16 EANs) → `Cache: 16/16 | API chamada: 0`. Aciclovir (9 EANs) → `Cache: 9/9 | API: 0`.
+    - **Status:** Implementado.
+
+24. **RUPTURA-REGEX salva no precos_cache para reuso futuro:**
+    - **Problema:** EANs descobertos pelo RUPTURA-REGEX não eram salvos no cache. Na próxima otimização, os mesmos EANs iam à API novamente.
+    - **Correção:** Após chamada API no RUPTURA-REGEX, resultados são salvos em batch via `savePrecosCacheBatch()`. EANs ficam disponíveis para reuso no mesmo dia.
+    - **Status:** Implementado.
+
+25. **Purge diário do precos_cache às 10h:**
+    - **Problema:** preços cached pelo RUPTURA-REGEX poderiam ficar desatualizados se a SmartPed alterasse preços durante o dia.
+    - **Correção:** Função `purgePrecosCache()` deleta TODOS os registros antes do `runPriceSync()` às 10h. Ciclo: purge → sync → cache limpo.
+    - **Status:** Implementado.
+
+26. **ConditionSelector: badge de condição atual (não tenta match na lista):**
+    - **Problema:** `isCurrentAlt` tentava combinar `item.novoEan` + `item.distribuidora` com as alternativas. Mas o item escolhido pelo motor (GCMEDICAMENTOS, R$5.87) **não existia** na lista de alternativas (fora deduplicado/filtrado). Resultado: dropdown sempre mostrava "Selecione uma condição..." sem marcar nada.
+    - **Causa raiz:** As alternativas são as opções DISPONÍVEIS para troca, não incluem a opção já escolhida.
+    - **Correção:** Badge azul separado acima do dropdown mostra ★ Atual: `[GCMEDICAMENTOS] R$ 5,87 | FIXA | EAN: 7897595635792`. Dropdown lista apenas alternativas para trocar.
+    - **Arquivo:** `src/components/ConditionSelector.tsx`
+    - **Status:** Implementado.
+
+27. **Sync de preços (`runPriceSync`) — purge antes da sync + Sugestoes retorna null do Cloud:**
+    - **Problema 1 (CRÍTICO):** `purgePrecosCache()` era chamado ANTES da busca de Sugestoes. Se a sync falhasse, o cache ficava vazio (7470 registros perdidos).
+    - **Correção 1:** Purge movido para DEPOIS da busca bem-sucedida. Agora: busca → [sucesso] → purge → salva.
+    - **Problema 2 (BLOQUEIO DE IP):** O endpoint `Condicoes/Sugestoes` retorna `{ Mensagem: "...", Retorno: null }` quando chamado do Cloud Run. Localmente funciona (540 sugestões). Causa provável: SmartPed filtra/rejeita requests de IPs de datacenter (Cloud Run usa IPs dinâmicos de datacenter do Google).
+    - **Evidência:** `Condicoes/Ean` e `Condicoes/Molecula` funcionam do Cloud (botão +). Apenas `Sugestoes` falha.
+    - **Impacto:** `precos_cache` fica vazio no Cloud — sync de preços não popula dados.
+    - **Status:** PURGE CORRIGIDO. Sync funciona LOCAL (testado: 567 sugestões, 448 EANs, 3601 preços salvos). No Cloud falha por bloqueio de IP do `Sugestoes`.
+    - **Decisão (esta sessão):** Avaliado fallback inteligente (salvar só EANs no Turso) → **DESCARTADO** — sem preços, o `precos_cache` não serve para nada (RUPTURA-REGEX precisa preço+estoque). Opções restantes: Cloud NAT (~$32/mês), contato SmartPed, ou aceitar cache vazio no Cloud.
+
+28. **Sync de produtos (`runSyncInBackground`) — nunca popula `produtos_cache`:**
+    - **Problema:** O endpoint `/api/sync-produtos` não tem trigger automático (diferente do sync-prices que roda às 10h). A tabela `produtos_cache` fica eternamente vazia.
+    - **Além disso:** O parsing de `Lancamentos` e `Sugestoes` dentro de `runSyncInBackground` retorna "undefined encontrados" — bug pré-existente.
+    - **Status:** PENDENTE — precisa de auto-run + correção de parsing.
+
+29. **Regra de debug: pesquisa em forums/GitHub antes de propor soluções:**
+    - **Problema:** Durante debug, tentei propor soluções (fallback para EAN_DATABASE) sem antes pesquisar a causa raiz em forums, GitHub ou documentação profissional.
+    - **Regra:** Sempre pesquisar em fonts externas (GitHub issues, StackOverflow, docs oficiais) antes de propor soluções de infra/debug. Evitar "inventar" soluções.
+    - **Status:** ADICIONADA como regra #26 no AGENTS.md.
+
+---
+
+## 4.21. Sync de Preços no Cloud — Status Atual
+
+### Contexto
+- `runPriceSync()` chama `Condicoes/Sugestoes` para obter EANs do histórico de compras
+- **Local:** retorna 567 sugestões, 448 EANs únicos, 3601 preços salvos (testado nesta sessão)
+- **Cloud Run:** retorna `{ Mensagem: "...", Retorno: null }` → sync falha → cache vazio
+- Outros endpoints (`Condicoes/Ean`, `Condicoes/Molecula`) funcionam normalmente do Cloud
+
+### Causa Provável
+SmartPed API filtra ou rejeita requests de IPs de datacenter. Cloud Run usa IPs dinâmicos de datacenter do Google (não residenciais).
+
+### Avaliação de Soluções (esta sessão)
+
+| Opção | Veredito |
+|-------|----------|
+| **IP estático via Cloud NAT** | Viável (~$32/mês) — resolveria raiz |
+| **Proxy residencial** | Complexo, custo variável |
+| **Fallback inteligente (EANs no Turso)** | **DESCARTADO** — sem preços, `precos_cache` não serve (RUPTURA-REGEX precisa preço+estoque) |
+| **Contato SmartPed** | Pendente — pode resolver raiz |
+| **Sync via Cron externo** | Funciona — rodar local e enviar ao Turso |
+
+### Decisão Final (Esta Sessão)
+
+**Não sincronizar preços** no Cloud Run — preços variam muito, cache desatualizado não ajuda. RUPTURA-REGEX chama API direto (mais lento mas sempre fresco).
+
+**Implementado:** Endpoint `/api/sync-eans-fixed` — roda UMA VEZ local, popula EANs do `Sugestoes` na tabela existente `sugestoes_eans` (Turso).
+- **Resultado:** 449 EANs únicos salvos no Turso.
+- **Cloud Run:** `runPriceSync` comentado, `checkAndRunPriceSync` comentado (auto-sync 10h desligado), endpoint `/api/sync-prices` com placeholder desativado.
+- **Reativação futura:** Descomentar `runPriceSync`, `checkAndRunPriceSync`, endpoint `/api/sync-prices` + configurar Cloud NAT (~$32/mês) se quiser voltar a sincronizar preços.
+
+### Opções para Próxima Ação (se quiser resolver)
+1. Configurar Cloud NAT no GCP (custo ~$32/mês, resolve definitivamente)
+2. Contatar SmartPed para whitelist de IP
+3. Aceitar status quo: no Cloud `precos_cache` vazio, RUPTURA-REGEX chama API direto
 
 ---
 
@@ -352,6 +442,33 @@ $tursoToken = ($envFile | Select-String "TURSO_AUTH_TOKEN=").ToString().Split("=
 
 # Descrever revisão específica
 & "$gcloud" run revisions describe smartped-cli-00035-w4s --region us-east1 --project gen-lang-client-0702342051
+
+# Ver variáveis de ambiente configuradas no serviço
+& "$gcloud" run services describe smartped-cli --region us-east1 --project gen-lang-client-0702342051 --format="value(spec.template.spec.containers[0].env)"
+```
+
+### Endpoints de Administração (chamar via Invoke-RestMethod)
+```powershell
+# Variáveis base
+$envFile = Get-Content .env
+$token = ($envFile | Select-String "SMARTPED_PRODUCTION_TOKEN=").ToString().Split("=",2)[1]
+$cnpj = ($envFile | Select-String "SMARTPED_DEFAULT_CNPJ=").ToString().Split("=",2)[1]
+$body = @{ token = $token; cnpj = $cnpj } | ConvertTo-Json
+
+# Trigger sync de preços manual
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/sync-prices" -Method POST -ContentType "application/json" -Body $body
+
+# Status do sync de preços
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/sync-prices/status" -Method GET
+
+# Trigger sync de produtos manual
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/sync-produtos" -Method POST -ContentType "application/json" -Body $body
+
+# Status do sync de produtos
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/sync-status" -Method GET
+
+# Health check
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/health" -Method GET
 ```
 
 ### Terminal (processos)

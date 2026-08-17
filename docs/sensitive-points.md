@@ -93,6 +93,31 @@ $tursoToken = ($envFile | Select-String "TURSO_AUTH_TOKEN=").ToString().Split("=
 
 # Descrever revisão específica
 & "$gcloud" run revisions describe smartped-cli-00022-f44 --region us-east1 --project gen-lang-client-0702342051
+
+# Ver variáveis de ambiente configuradas no serviço
+& "$gcloud" run services describe smartped-cli --region us-east1 --project gen-lang-client-0702342051 --format="value(spec.template.spec.containers[0].env)"
+```
+
+**Endpoints de administração (chamar via Invoke-RestMethod):**
+```powershell
+# Trigger sync de preços manual
+$envFile = Get-Content .env
+$token = ($envFile | Select-String "SMARTPED_PRODUCTION_TOKEN=").ToString().Split("=",2)[1]
+$cnpj = ($envFile | Select-String "SMARTPED_DEFAULT_CNPJ=").ToString().Split("=",2)[1]
+$body = @{ token = $token; cnpj = $cnpj } | ConvertTo-Json
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/sync-prices" -Method POST -ContentType "application/json" -Body $body
+
+# Status do sync de preços
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/sync-prices/status" -Method GET
+
+# Trigger sync de produtos manual
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/sync-produtos" -Method POST -ContentType "application/json" -Body $body
+
+# Status do sync de produtos
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/sync-status" -Method GET
+
+# Health check
+Invoke-RestMethod -Uri "https://smartped-cli-887122622666.us-east1.run.app/api/health" -Method GET
 ```
 
 **Variáveis de Ambiente / Conexão:**

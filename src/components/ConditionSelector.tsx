@@ -103,6 +103,30 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
     fetchAlternatives();
   }, [item.alternatives, item.originalEan, item.originalDescricao, item.isRupturaSubstitution, item.novoEan, item.novaDescricao, config, liveAlternatives]);
 
+  const cleanEanLocal = (e: string) => {
+    if (!e) return "";
+    const cleaned = String(e).trim().replace(/\D/g, "");
+    if (!cleaned) return "";
+    if (cleaned.length <= 13) return cleaned.padStart(13, "0");
+    return cleaned;
+  };
+
+  const getAlt = (alt: Alternative) => {
+    const a = alt as any;
+    return {
+      ean: alt.ean || a.Ean || a.ean || "",
+      distribuidora: alt.distribuidora || a.NomeDist || a.nomeDist || "",
+      condicao: alt.condicao || a.Condicao || a.condicao || "FIXA",
+      preco: Number(alt.preco ?? a.Pliquido ?? a.precoLiquido ?? a.preco ?? 0),
+      prazo: Number(alt.prazo ?? a.Prazo ?? a.prazo ?? 0),
+      qtdMin: Number(alt.qtdMin ?? a.QtdMin ?? a.qtdMin ?? 0),
+      laboratorio: alt.laboratorio || a.Laboratorio || a.laboratorio || "",
+      descricao: alt.descricao || a.Descricao || a.descricao || "",
+      codDist: Number(alt.codDist ?? a.CodDist ?? a.codDist ?? 0),
+      estoque: Number(alt.estoque ?? a.Estoque ?? a.estoque ?? 0),
+    };
+  };
+
   const alternatives = item.alternatives && item.alternatives.length > 0 ? item.alternatives : (liveAlternatives || []);
 
   // Log final: quantas alternativas vão pro dropdown
@@ -142,7 +166,8 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
   const qtdMinAlerta = !!(item.qtdMin && item.qtdMin > 0 && itemQtd < item.qtdMin);
 
   const isValidAlt = (alt: Alternative) => {
-    const dist = String(alt.distribuidora || "").trim().toUpperCase();
+    const altAny = alt as any;
+    const dist = String(alt.distribuidora || altAny.NomeDist || altAny.nomeDist || "").trim().toUpperCase();
     if (
       !alt.distribuidora ||
       dist.includes("NÃO ENCONTRADOS") ||
@@ -166,26 +191,45 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
 
   const normalizeStr = (s: string) => (s || "").trim().toUpperCase();
   const isCurrentAlt = (alt: Alternative) => {
-    if (alt.ean !== item.novoEan) return false;
-    const altDist = normalizeStr(alt.distribuidora);
-    const itemDist = normalizeStr(item.distribuidora);
-    if (altDist !== itemDist) return false;
-    const precoDiff = Math.abs(Number(alt.preco || 0) - Number(item.novoPreco || 0));
-    if (precoDiff >= 0.10) return false;
-    return true;
+    const altAny = alt as any;
+    const altEan = alt.ean || altAny.Ean || "";
+    if (cleanEanLocal(altEan) !== cleanEanLocal(item.novoEan)) return false;
+
+    // Match por codDist (mais confiável que nome)
+    const altCodDist = Number(alt.codDist ?? altAny.CodDist ?? altAny.codDist ?? 0);
+    const itemCodDist = Number((item as any).codDist ?? 0);
+    const precoDiff = Math.abs(Number(alt.preco ?? altAny.Pliquido ?? altAny.precoLiquido ?? 0) - Number(item.novoPreco ?? 0));
+
+    if (altCodDist > 0 && itemCodDist > 0) {
+      return altCodDist === itemCodDist && precoDiff < 0.10;
+    }
+
+    // Fallback: match por nome normalizado
+    const altDist = normalizeStr(alt.distribuidora || altAny.NomeDist || altAny.nomeDist || "");
+    const itemDist = normalizeStr(item.distribuidora || "");
+    return altDist === itemDist && precoDiff < 0.10;
   };
 
   const validAlts = alternatives.filter(isValidAlt);
   const otherValidAlts = validAlts.filter((alt) => !isCurrentAlt(alt));
   if (otherValidAlts.length === 0) return null;
 
-  const sameProductAlts = validAlts.filter((alt) => alt.ean === item.originalEan);
-  const otherProductAlts = validAlts.filter((alt) => alt.ean !== item.originalEan);
+  const sameProductAlts = validAlts.filter((alt) => {
+    const a = alt as any;
+    return cleanEanLocal(alt.ean || a.Ean || "") === cleanEanLocal(item.originalEan);
+  });
+  const otherProductAlts = validAlts.filter((alt) => {
+    const a = alt as any;
+    return cleanEanLocal(alt.ean || a.Ean || "") !== cleanEanLocal(item.originalEan);
+  });
 
   const cheapestSameProductNoMinAlt = (() => {
-    const sameNoMin = validAlts.filter((alt) => alt.ean === item.originalEan && (!alt.qtdMin || alt.qtdMin <= 0));
+    const sameNoMin = validAlts.filter((alt) => {
+      const a = alt as any;
+      return cleanEanLocal(alt.ean || a.Ean || "") === cleanEanLocal(item.originalEan) && (!(alt.qtdMin ?? a.QtdMin ?? 0) || (alt.qtdMin ?? a.QtdMin ?? 0) <= 0);
+    });
     if (sameNoMin.length === 0) return null;
-    const cheapest = [...sameNoMin].sort((a, b) => a.preco - b.preco)[0];
+    const cheapest = [...sameNoMin].sort((a, b) => (a.preco ?? (a as any).Pliquido ?? 0) - (b.preco ?? (b as any).Pliquido ?? 0))[0];
     if (isCurrentAlt(cheapest)) return null;
     const currentHasMin = !!(item.qtdMin && item.qtdMin > 0);
     if (currentHasMin || cheapest.preco < item.novoPreco - 0.01) return cheapest;
@@ -194,7 +238,7 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
 
   const cheapestOtherItemAlt = (() => {
     if (otherProductAlts.length === 0) return null;
-    const cheapest = [...otherProductAlts].sort((a, b) => a.preco - b.preco)[0];
+    const cheapest = [...otherProductAlts].sort((a, b) => (a.preco ?? (a as any).Pliquido ?? 0) - (b.preco ?? (b as any).Pliquido ?? 0))[0];
     if (isCurrentAlt(cheapest)) return null;
     if (cheapest.preco < item.novoPreco - 0.01) return cheapest;
     return null;
@@ -205,6 +249,18 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
   const showOtherProductQuickAction = !!cheapestOtherItemAlt && cheapestOtherItemAlt.preco < item.novoPreco - 0.01;
 
   const currentIndex = alternatives.findIndex(isCurrentAlt);
+
+  // Log diagnóstico quando currentIndex === -1 (nenhum match encontrado)
+  useEffect(() => {
+    if (alternatives.length > 0 && currentIndex === -1) {
+      const ean = item.isRupturaSubstitution ? item.novoEan : item.originalEan;
+      console.log(`[CONDITION-SELECTOR] ⚠️ NENHUM MATCH | EAN(item)=${item.novoEan} | dist(item)=${item.distribuidora} | preco(item)=${item.novoPreco}`);
+      alternatives.slice(0, 3).forEach((alt, i) => {
+        const g = getAlt(alt);
+        console.log(`[CONDITION-SELECTOR]   alt[${i}]: ean=${g.ean} | dist=${g.distribuidora} | preco=${g.preco} | eanMatch=${cleanEanLocal(g.ean) === cleanEanLocal(item.novoEan)}`);
+      });
+    }
+  }, [currentIndex, alternatives, item.novoEan, item.distribuidora, item.novoPreco]);
 
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const idx = parseInt(e.target.value, 10);
@@ -224,9 +280,19 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
         <span>Opções de Compra &amp; Substituição de Laboratório</span>
       </div>
 
+      {/* Badge da condição atual (sempre visível) */}
+      <div className="flex items-center gap-2 p-2 bg-blue-50 border border-blue-300 rounded-sm text-[10px]">
+        <span className="font-black text-blue-800 uppercase tracking-wider">★ Atual:</span>
+        <span className="font-bold text-blue-900">
+          [{item.distribuidora || "Distribuidor"}] {item.novoPreco > 0 ? `R$ ${item.novoPreco.toFixed(2).replace(".", ",")}` : ""}
+          {item.condicao ? ` | ${item.condicao}` : ""}{item.prazo ? ` | ${item.prazo}d` : ""}
+        </span>
+        <span className="text-blue-600 font-mono">EAN: {item.novoEan}</span>
+      </div>
+
       <div className="flex flex-col gap-1">
         <label className="text-[9px] text-gray-500 font-bold uppercase">
-          Selecione a condição ou laboratório desejado:
+          Trocar para outra condição/laboratório:
         </label>
         <select
           value={currentIndex}
@@ -235,7 +301,7 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
         >
           {currentIndex === -1 && (
             <option value={-1} disabled>
-              Selecione uma condição...
+              Selecione uma condição alternativa...
             </option>
           )}
 
@@ -243,13 +309,12 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
             <optgroup label="📋 CONDIÇÃO DE COMPRA (Mesmo Medicamento / Mesma Marca)">
               {sameProductAlts.map((alt) => {
                 const altIdx = alternatives.indexOf(alt);
-                const isSelected = isCurrentAlt(alt);
+                const g = getAlt(alt);
                 return (
-                  <option key={altIdx} value={altIdx} className={isSelected ? "bg-blue-100 text-blue-900 font-black" : ""}>
-                    {isSelected ? "★ " : ""}[{alt.distribuidora || "Distribuidor"}]{" "}
-                    {alt.qtdMin > 0 ? `⚠️[MÍN:${alt.qtdMin}un] ` : ""}{alt.condicao} (R$ {alt.preco.toFixed(2).replace(".", ",")}){" "}
-                    {alt.prazo > 0 ? `| ${alt.prazo}d` : "| Vista"}
-                    {isSelected ? " ◄ SELECIONADO" : ""}
+                  <option key={altIdx} value={altIdx}>
+                    [{g.distribuidora || "Distribuidor"}]{" "}
+                    {g.qtdMin > 0 ? `⚠️[MÍN:${g.qtdMin}un] ` : ""}{g.condicao} (R$ {g.preco.toFixed(2).replace(".", ",")}){" "}
+                    {g.prazo > 0 ? `| ${g.prazo}d` : "| Vista"}
                   </option>
                 );
               })}
@@ -260,13 +325,12 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
             <optgroup label="🔬 SUBSTITUIÇÃO (Outro Laboratório / Outro Fabricante)">
               {otherProductAlts.map((alt) => {
                 const altIdx = alternatives.indexOf(alt);
-                const isSelected = isCurrentAlt(alt);
-                const altDesc = alt.descricao || "";
+                const g = getAlt(alt);
                 return (
-                  <option key={altIdx} value={altIdx} className={isSelected ? "bg-blue-100 text-blue-900 font-black" : ""}>
-                    {isSelected ? "★ " : ""}[{alt.laboratorio || "GENÉRICO"}] {altDesc.substring(0, 30)}... |{" "}
-                    {alt.qtdMin > 0 ? `⚠️ [MÍN: ${alt.qtdMin}un]` : "✅ [SEM MÍNIMO]"} {alt.distribuidora} (R${" "}
-                    {Number(alt.preco ?? 0).toFixed(2).replace(".", ",")}){isSelected ? " ◄ SELECIONADO" : ""}
+                  <option key={altIdx} value={altIdx}>
+                    [{g.laboratorio || "GENÉRICO"}] {g.descricao.substring(0, 30)}... |{" "}
+                    {g.qtdMin > 0 ? `⚠️ [MÍN: ${g.qtdMin}un]` : "✅ [SEM MÍNIMO]"} {g.distribuidora} (R${" "}
+                    {g.preco.toFixed(2).replace(".", ",")})
                   </option>
                 );
               })}

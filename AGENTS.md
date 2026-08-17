@@ -37,5 +37,6 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
     - **Éticos/Referência/Similares (R, E, O, S) sem ruptura:** Busca do MESMO PRODUTO — inclui apenas TARGET-EAN-PRE. Dropdown filtra para EANs do mesmo produto (mesmo EAN ou EAN diferente com mesma descrição na SmartPed).
     - **Qualquer item em ruptura:** Busca COMPLETA — RUPTURA-REGEX + Ferramentinhas fallback + tipos relaxados + todos EANs no dropdown.
     - A decisão é: `isGeneric` (TipoItem="G") + `originalHasStock` (tem estoque>0). Ver seção 4.20 de `docs/business-rules.md`.
+26. **PESQUISA EXTERNA ANTES DE DEBUGAR:** Quando um bug não tem causa óbvia no código (ex: funciona local mas não no Cloud), SEMPRE pesquisar em fonts externas (GitHub issues, StackOverflow, docs oficiais da plataforma, forums) antes de propor soluções. Evitar "inventar" soluções sem evidência externa. Registrar descobertas em `LLM_CONTEXT.md` (seção 4.21 ou similar).
 
 *Sempre se comunique em português.*
