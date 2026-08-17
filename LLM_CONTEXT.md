@@ -427,6 +427,19 @@ $envFile = Get-Content .env
 $tursoUrl = ($envFile | Select-String "TURSO_DATABASE_URL=").ToString().Split("=",2)[1]
 $tursoToken = ($envFile | Select-String "TURSO_AUTH_TOKEN=").ToString().Split("=",2)[1]
 & "$gcloud" run deploy smartped-cli --source . --region us-east1 --project gen-lang-client-0702342051 --set-env-vars="TURSO_DATABASE_URL=$tursoUrl,TURSO_AUTH_TOKEN=$tursoToken"
+```
+
+### Produção (URL fixa)
+**URL:** https://smartped-cli-887122622666.us-east1.run.app
+
+**Versão atual (deploy 2026-08-17):** `smartped-cli-00040-dk4`
+
+**Estado do deploy:**
+- `runPriceSync` desativado (código comentado)
+- `checkAndRunPriceSync` desativado (auto-sync 10h desligado)
+- `/api/sync-prices` retorna 503 DESATIVADO
+- `/api/sync-eans-fixed` disponível (roda 1x local → popula `sugestoes_eans` no Turso)
+- `precos_cache` vazio no Cloud — RUPTURA-REGEX chama API direto
 
 # Ver logs (últimas 20 entradas)
 & "$gcloud" logging read "resource.type=cloud_run_revision AND resource.labels.service_name=smartped-cli" --limit 20 --project gen-lang-client-0702342051 --format="text(timestamp,textPayload)"
