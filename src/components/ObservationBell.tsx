@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef } from "react";
 import { BellRing } from "lucide-react";
 
-export const ObservationBell = ({ ean }: { ean: string }) => {
+export const ObservationBell = ({ ean, origem }: { ean: string; origem?: string }) => {
   const [observation, setObservation] = useState<string | null>(null);
   const [hasFetched, setHasFetched] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!ean || ean === "0" || hasFetched) return;
+    // Itens manuais/encomenda não buscam observação na Trier
+    if (origem === "encomenda" || origem === "manual") return;
 
     const observer = new IntersectionObserver(
       (entries) => {

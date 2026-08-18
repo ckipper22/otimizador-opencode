@@ -43,6 +43,17 @@ function initSchemaSync() {
   const d = getDb();
   if (!d || USE_TURSO) return;
   d.exec(SCHEMA_SQL);
+  runMigrations(d);
+}
+
+function runMigrations(d: any) {
+  try {
+    // Migração: adicionar colunas 'origem' e 'id_encomenda' na tabela itens_manuais (se não existirem)
+    d.exec(`ALTER TABLE itens_manuais ADD COLUMN origem TEXT DEFAULT 'manual';`);
+  } catch {}
+  try {
+    d.exec(`ALTER TABLE itens_manuais ADD COLUMN id_encomenda TEXT;`);
+  } catch {}
 }
 
 const SCHEMA_SQL = `
@@ -134,7 +145,9 @@ const SCHEMA_SQL = `
     status TEXT DEFAULT 'adicionado',
     data_adicao TEXT,
     created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    updated_at TEXT DEFAULT (datetime('now')),
+    origem TEXT DEFAULT 'manual',
+    id_encomenda TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_itens_manuais_cnpj ON itens_manuais(cnpj);
   CREATE INDEX IF NOT EXISTS idx_itens_manuais_data ON itens_manuais(data_adicao);
@@ -357,17 +370,18 @@ export async function saveItemManual(item: {
   distribuidora: string; codDist: number; qtd: number; precoLiquido: number;
   precoFabrica?: number; condicao?: string; prazo?: number; cnpj: string;
   dataAdicao: string; status?: string;
+  origem?: string; idEncomenda?: string;
 }) {
   const d = getDb();
   if (!d) return;
   try {
-    const sql = `INSERT INTO itens_manuais (cod_interno, ean, descricao, laboratorio, distribuidora, cod_dist, qtd, preco_liquido, preco_fabrica, condicao, prazo, cnpj, status, data_adicao, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    const sql = `INSERT INTO itens_manuais (cod_interno, ean, descricao, laboratorio, distribuidora, cod_dist, qtd, preco_liquido, preco_fabrica, condicao, prazo, cnpj, status, data_adicao, updated_at, origem, id_encomenda)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
       ON CONFLICT(cod_interno) DO UPDATE SET
         qtd = excluded.qtd,
         status = excluded.status,
-        updated_at = datetime('now')`;
-    const args = [item.codInterno, item.ean, item.descricao, item.laboratorio, item.distribuidora, item.codDist, item.qtd, item.precoLiquido, item.precoFabrica || 0, item.condicao || "", item.prazo || 0, item.cnpj, item.status || "adicionado", item.dataAdicao];
+        updated_at = datetime('now)`;
+    const args = [item.codInterno, item.ean, item.descricao, item.laboratorio, item.distribuidora, item.codDist, item.qtd, item.precoLiquido, item.precoFabrica || 0, item.condicao || "", item.prazo || 0, item.cnpj, item.status || "adicionado", item.dataAdicao, item.origem || "manual", item.idEncomenda || null];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
 }

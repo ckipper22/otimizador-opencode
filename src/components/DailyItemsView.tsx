@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Loader2, RefreshCw, Search, Calendar, CheckCircle2, XCircle, FileText, ShoppingBag, Shuffle, AlertCircle, Check, Info, ArrowRight, TrendingUp, PlusCircle } from 'lucide-react';
+import { Loader2, RefreshCw, Search, Calendar, CheckCircle2, XCircle, FileText, ShoppingBag, Shuffle, AlertCircle, Check, Info, ArrowRight, TrendingUp, PlusCircle, Package } from 'lucide-react';
 
 const getTodayString = () => {
   const d = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
@@ -39,6 +39,8 @@ export const DailyItemsView = ({
   const [redistributeLogs, setRedistributeLogs] = useState<string[]>([]);
   const [redistributeError, setRedistributeError] = useState<string | null>(null);
   const [redistributionSuccess, setRedistributionSuccess] = useState(false);
+
+  const [showOnlyEncomendas, setShowOnlyEncomendas] = useState(false);
 
   const fetchOrders = async () => {
     setLoading(true);
@@ -221,7 +223,12 @@ export const DailyItemsView = ({
         if (activeTab === "nao_confirmado" && item.status !== "nao_confirmado") return false;
       }
 
-      // 2. Filtro de Pesquisa (Nome, EAN ou Distribuidora)
+      // 2. Filtro "Apenas Encomendas" (apenas na aba manuais)
+      if (activeTab === "manuais_adicionados" && showOnlyEncomendas) {
+        if (item.origem !== "encomenda") return false;
+      }
+
+      // 3. Filtro de Pesquisa (Nome, EAN ou Distribuidora)
       if (searchQuery.trim() !== "") {
         const query = searchQuery.toLowerCase();
         const matchesName = (item.nome || item.descricao || "").toLowerCase().includes(query);
@@ -232,7 +239,7 @@ export const DailyItemsView = ({
 
       return true;
     });
-  }, [sortedItems, activeTab, searchQuery]);
+  }, [sortedItems, activeTab, searchQuery, showOnlyEncomendas]);
 
   // Contadores dinâmicos para as abas
   const tabCounts = useMemo(() => {
@@ -582,14 +589,28 @@ export const DailyItemsView = ({
         {/* Controles de pesquisa e ações adicionais */}
         <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
           {activeTab === "manuais_adicionados" && tabCounts.manuais_adicionados > 0 && (
-            <button
-              onClick={handleClearManualsHistory}
-              className="px-3 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 hover:text-gray-900 transition-colors text-xs font-bold uppercase flex items-center gap-1.5 cursor-pointer"
-              title="Limpar o registro local de itens manuais adicionados"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Limpar Histórico</span>
-            </button>
+            <>
+              <button
+                onClick={handleClearManualsHistory}
+                className="px-3 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 hover:text-gray-900 transition-colors text-xs font-bold uppercase flex items-center gap-1.5 cursor-pointer"
+                title="Limpar o registro local de itens manuais adicionados"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Limpar Histórico</span>
+              </button>
+              <label className="flex items-center gap-2 px-3 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 hover:text-gray-900 transition-colors text-xs font-bold uppercase cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showOnlyEncomendas}
+                  onChange={(e) => setShowOnlyEncomendas(e.target.checked)}
+                  className="w-4 h-4 border-gray-300 text-violet-600 focus:ring-violet-500"
+                />
+                <span className="flex items-center gap-1">
+                  <Package className="w-3.5 h-3.5 text-violet-600" />
+                  Apenas Encomendas
+                </span>
+              </label>
+            </>
           )}
 
           {/* Input Pesquisa */}
@@ -691,8 +712,19 @@ export const DailyItemsView = ({
                       />
                     )}
                     <div className={!isFaturado ? "pl-0" : "pl-7 md:pl-7"}>
-                      <span className="font-bold text-gray-800 text-xs md:text-xs block">{displayName}</span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-gray-800 text-xs md:text-xs block">{displayName}</span>
+                        {item.origem === "encomenda" && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 bg-violet-100 text-violet-800 border border-violet-300 text-[9px] font-bold">
+                            <Package className="w-2.5 h-2.5 mr-0.5" />
+                            Encomenda
+                          </span>
+                        )}
+                      </div>
                       <span className="text-[10px] text-gray-400 font-mono">EAN: {item.ean}</span>
+                      {item.id_encomenda && (
+                        <span className="text-[9px] text-gray-400 font-mono ml-1">ID: {item.id_encomenda}</span>
+                      )}
                     </div>
                   </div>
 

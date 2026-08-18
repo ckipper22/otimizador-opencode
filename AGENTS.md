@@ -39,4 +39,17 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
     - A decisão é: `isGeneric` (TipoItem="G") + `originalHasStock` (tem estoque>0). Ver seção 4.20 de `docs/business-rules.md`.
 26. **PESQUISA EXTERNA ANTES DE DEBUGAR:** Quando um bug não tem causa óbvia no código (ex: funciona local mas não no Cloud), SEMPRE pesquisar em fonts externas (GitHub issues, StackOverflow, docs oficiais da plataforma, forums) antes de propor soluções. Evitar "inventar" soluções sem evidência externa. Registrar descobertas em `LLM_CONTEXT.md` (seção 4.21 ou similar).
 
+27. **MODAL ENCOMENDAS — PADRÃO IGUAL AO MODAL "+" (ADIÇÃO MANUAL):** O modal de importar encomendas deve seguir exatamente o padrão do modal de adição manual (botão "+"):
+    - Tabela horizontal: Checkbox | Produto&EAN | Cliente/Hora | Observação | Oferta(Dropdown) | Qtd
+    - Dropdown com `<optgroup>`: 📦 Mesmo Produto | 🔄 Genéricos/Similares
+    - Busca SEM filtro `tipos` (encomendas não filtram por [G,O])
+    - Botões "Adicionar" individuais REMOVIDOS → fluxo: checkbox + qtd + "Importar Selecionados" (um clique)
+    - Estado persistente: linha amarela + botão verde "Adicionado" (não some após timeout)
+    - `alternatives` preenchido na criação → evita busca tempo real no ConditionSelector/ObservationBell
+    - **`alternatives` leva TODAS as ofertas** (não apenas a selecionada) → ConditionSelector no pré-pedido permite trocar fornecedor/condição
+    - Proteção: ConditionSelector e ObservationBell pulam itens `origem="encomenda" || "manual"`
+
+28. **PMC — APENAS SE API RETORNA, SEM FALLBACK:** PMC (Preço Máximo ao Consumidor) só aparece se a SmartPed retornar o campo. **NUNCA** calcular fallback `preco * 1.4`. Backend (`server.ts` `/api/search-products`) não calcula PMC — repassa `PMC` direto do JSON SmartPed. Frontend (`App.tsx`) normaliza `offer.PMC || offer.pmc` (case-sensitivity). Visual: fonte 11px bold, texto rosa, fundo rosa transparente (`bg-pink-100/60`). Campo `originalPmc`/`novoPmc` nas linhas do relatório vem do `useOptimizationResult.activeReport` via spread `...item`.
+29. **CASE-SENSITIVITY SMARTPED:** A API SmartPed retorna campos com maiúsculas/minúsculas inconsistentes (`PMC`/`pmc`, `Pmc`, `VlrPmc`). Sempre usar fallback: `field || field_lowercase || field_PascalCase`. Verificar em: `/api/search-products` (backend), `App.tsx` (frontend), `useManualSearch.ts` (normalização).
+
 *Sempre se comunique em português.*

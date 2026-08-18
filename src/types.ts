@@ -42,20 +42,26 @@ export interface SwapReportItem {
   originalRupturaPreco?: number;
   originalPmc?: number;
   novoPmc?: number;
+  origem?: string;
+  idEncomenda?: string;
   alternatives?: Array<{
     ean: string;
     descricao: string;
     laboratorio: string;
     preco: number;
+    precoLiquido?: number;
     pmc?: number;
     condicao: string;
     distribuidora: string;
     codDist: number;
     prazo: number;
     qtdMin: number;
-    qtdMax: number;
-    cx: number;
+    qtdMax?: number;
+    cx?: number;
     estoque: number;
+    codProdutoDist?: string;
+    codProduto?: string;
+    pedidoMinimo?: number;
   }>;
 }
 

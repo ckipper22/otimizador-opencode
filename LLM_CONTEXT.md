@@ -272,6 +272,57 @@ O cache de 5min para condições comerciais é um "bônus" — o valor real do T
     - **Regra:** Sempre pesquisar em fonts externas (GitHub issues, StackOverflow, docs oficiais) antes de propor soluções de infra/debug. Evitar "inventar" soluções.
     - **Status:** ADICIONADA como regra #26 no AGENTS.md.
 
+30. **Modal Importar Encomendas — Refatoração Completa (2026-08-18):**
+    - **Layout tabela horizontal** (igual modal "+" adição manual): Checkbox | Produto&EAN | Cliente/Hora | Observação | Oferta(Dropdown) | Qtd
+    - **Dropdown separado em 2 grupos** (`<optgroup>`): 📦 Mesmo Produto (mesmo EAN) | 🔄 Genéricos/Similares (outro EAN)
+    - **Ordenação**: mesmo EAN primeiro, depois preço ascendente
+    - **Busca sem filtro `tipos`** — encomendas não filtram por [G,O], retorna todas ofertas com estoque
+    - **Observação**: TODAS em vermelho (`text-red-700 bg-red-50 font-bold text-[12px]`)
+    - **Cliente/Hora**: telefone, dataHora, fornecedor, previsão em `text-[11px]` (tamanho dropdown)
+    - **Estado persistente**: linha amarela + botão verde "Adicionado" ao importar (não some após 2.5s)
+    - **Botões "Adicionar" individuais REMOVIDOS** — fluxo: marcar checkboxes → ajustar qtd → "Importar Selecionados" (um clique)
+    - **Toolbar/rodapé compactos** — mais linhas visíveis
+    - **Proteção anti-busca-desnecessária**: ConditionSelector e ObservationBell pulam itens `origem="encomenda" || "manual"` (evita centenas de chamadas Molecula/Similares/Substitutos)
+    - **`alternatives` preenchido** nos 3 pontos de adição (encomenda individual, lote, botão "+") — evita busca tempo real
+    - **Arquivos**: `src/App.tsx` (modal encomendas), `src/hooks/useManualSearch.ts`, `src/components/ConditionSelector.tsx`, `src/components/ObservationBell.tsx`, `src/components/SwapsTable.tsx`
+
+31. **PMC — Correção completa (2026-08-18):**
+    - **Problema 1:** Backend (`server.ts` `/api/search-products`) retornava `pmc: 0` para todos — `extractPmc()` não encontrava o campo pois `foundItems` tinha PMC mas o re-mapping para `mappedItems` perdia a informação.
+    - **Problema 2:** Frontend (`App.tsx:2830`) só verificava `offer.PMC` (uppercase), mas o backend retornava `pmc` (lowercase).
+    - **Causa raiz backend:** `extractPmc()` era chamado em dados brutos da SmartPed antes do enriquecimento. PMC real vinha no array `foundItems` via `PMC: finalPmc` mas o re-mapping re-extraía de `c` (raw) que não tinha PMC.
+    - **Correções:**
+      1. Backend: `extractPmc()` agora busca em `foundItems` (enriquecidos) ANTES de buscar em `c` (raw). Não calcula mais fallback `preco * 1.4`.
+      2. Frontend: PMC case-sensitivity corrigido — `(offer.PMC !== undefined && offer.PMC > 0) || (offer.pmc !== undefined && offer.pmc > 0)`.
+      3. Normalização: `useManualSearch.ts:227` usa `PMC: rawOffer.PMC ?? rawOffer.pmc ?? rawOffer.Pmc ?? 0`.
+      4. Visual: PMC exibido dentro da coluna "Preço Líquido" (pLiq), fonte 11px bold, texto rosa, fundo rosa transparente (`bg-pink-100/60`).
+    - **Regra definida:** PMC só aparece se a SmartPed retornar. NUNCA calcular fallback `preco * 1.4`.
+    - **Arquivos afetados:** `server.ts` (extractPmc + response mapping), `src/App.tsx:2830` (case-sensitivity), `src/hooks/useManualSearch.ts` (normalização)
+    - **Deploy:** `smartped-cli-00045-hxd` (Cloud Run)
+    - **Status:** RESOLVIDO
+
+32. **Encomendas — alternatives agora leva todas as ofertas (2026-08-18):**
+    - **Problema:** Ao importar encomendas (lote ou individual), o `alternatives` recebia apenas 1 oferta (a selecionada no dropdown). Resultado: ConditionSelector no pré-pedido ficava sem opções para trocar fornecedor/condição. Se o pedido mínimo não batia, não havia como mudar.
+    - **Causa raiz:** `handleConfirmImportEncomendas` e `handleAddEncomendaItem` criavam `alternatives: [{...singleOffer}]` em vez de mapear todas as `item.ofertas`.
+    - **Correções:**
+      1. Ambos os caminhos agora fazem `(item.ofertas || []).filter(Boolean).map(...)` — todas as ofertas viram alternativas.
+      2. `types.ts`: campos `precoLiquido`, `codProdutoDist`, `codProduto`, `pedidoMinimo`, `origem`, `idEncomenda` adicionados ao tipo `SwapReportItem` e `alternatives`.
+    - **Deploy:** `smartped-cli-00047-c4j` (Cloud Run)
+    - **Status:** RESOLVIDO
+
+33. **PMC precedência de operadores — tela branca no modal "+":**
+    - **Problema:** Condição `{(offer.PMC !== undefined && offer.PMC > 0) || (offer.pmc !== undefined && offer.pmc > 0) && (<span>)}` tinha precedência incorreta — `&&` vinculava antes de `||`, fazendo retornar `true` (React null) quando `offer.PMC > 0`.
+    - **Correção:** Adicionados parênteses externos: `{((... || ...)) && (<span>)}`.
+    - **Deploy:** `smartped-cli-00047-c4j` (Cloud Run)
+    - **Status:** RESOLVIDO
+
+34. **Variáveis de ambiente perdidas no deploy — encomendas "Não autorizado":**
+    - **Problema:** Deploy com `--set-env-vars="TURSO_..."` substituiu TODAS as variáveis, apagando `ENCOMENDAS_INTEGRATION_KEY` e `ENCOMENDAS_API_URL` do Cloud Run. Encomendas retornavam 401 "Não autorizado".
+    - **Causa raiz:** `--set-env-vars` substitui (não adiciona). Variáveis de integração foram perdidas.
+    - **Correção:** Deploy agora usa `--env-vars-file cloud-env.yaml` com todas as 12 variáveis do `.env`.
+    - **Nota:** Arquivo `cloud-env.yaml` é temporário (gerado e deletado após deploy). Não commitar.
+    - **Deploy:** `smartped-cli-00046-q6q` + `00047-c4j` (Cloud Run)
+    - **Status:** RESOLVIDO
+
 ---
 
 ## 4.21. Sync de Preços no Cloud — Status Atual
@@ -432,7 +483,7 @@ $tursoToken = ($envFile | Select-String "TURSO_AUTH_TOKEN=").ToString().Split("=
 ### Produção (URL fixa)
 **URL:** https://smartped-cli-887122622666.us-east1.run.app
 
-**Versão atual (deploy 2026-08-17):** `smartped-cli-00040-dk4`
+**Versão atual (deploy 2026-08-18):** `smartped-cli-00047-c4j`
 
 **Estado do deploy:**
 - `runPriceSync` desativado (código comentado)
@@ -512,6 +563,89 @@ npm cache clean --force
 | `TURSO_AUTH_TOKEN` | Token de autenticação Turso |
 | `APP_ADMIN_EMAILS` | E-mails admin (separados por vírgula) |
 | `APP_ADMIN_PASSWORD` | Senha admin |
+| `ENCOMENDAS_API_URL` | URL base do sistema encomendas (ex: `https://encomenda-com-smartped-...`) |
+| `ENCOMENDAS_INTEGRATION_KEY` | Chave `x-api-key` para autenticação entre sistemas |
+
+---
+
+## 10. Integração com Sistema de Encomendas (IMPLEMENTADA - 2026-08-17)
+
+### Contexto
+Temos **dois sistemas separados** que se integram:
+
+| Sistema | URL | Função |
+|---------|-----|--------|
+| **Otimizador (este projeto)** | https://smartped-cli-887122622666.us-east1.run.app | Cota preços, otimiza compras, fatura na SmartPed |
+| **Encomendas (outro projeto)** | https://encomenda-com-smartped-887122622666.us-east1.run.app | Registra encomendas do balcão (status: Pendente/Encomendado/Recebido) |
+
+### Fluxo de Integração Implementado
+
+```
+1. Balcão cadastra encomenda → status "Pendente" (sistema encomendas)
+2. Otimizador: Botão "📦 Importar Encomendas" → GET /api/integracao/encomendas/pendentes
+3. Para cada encomenda:
+   - COM EAN → busca direta Condicoes/Ean + Condicoes/Molecula
+   - SEM EAN → Produtos/Buscar por descrição → Condicoes/Ean + Molecula
+4. Modal de revisão mostra ofertas encontradas → usuário seleciona/ajusta qtd
+5. Confirma → salva como itens manuais (origem="encomenda", id_encomenda) + injeta no lote
+6. (Opcional) POST /api/integracao/encomendas/confirmar-pedido para baixar status
+```
+
+### Endpoints Implementados (NESTE Projeto - Otimizador)
+
+| Endpoint | Método | Função |
+|----------|--------|--------|
+| `/api/integracao/encomendas/pendentes` | GET | Proxy → sistema encomendas externo (valida x-api-key) |
+| `/api/integracao/encomendas/confirmar-pedido` | POST | Proxy → sistema encomendas externo (valida x-api-key) |
+
+### Especificação da API do Sistema Encomendas (Externo)
+
+**URL Base:** https://encomenda-com-smartped-887122622666.us-east1.run.app
+
+**Autenticação:** `x-api-key: <CHAVE_INTEGRACAO>` (configurada em `ENCOMENDAS_INTEGRATION_KEY`)
+
+**GET /api/integracao/encomendas/pendentes** (sistema encomendas)
+- Retorna: array de `{ id, codigoBarras, item, quantidade, status, cliente, telefone, atendente, observacoes, data }`
+- Filtro: apenas `status === "Pendente"`
+
+**POST /api/integracao/encomendas/confirmar-pedido** (sistema encomendas)
+- Payload: `{ itens: [{ id, fornecedor, dataPrevisao }] }`
+- Atualiza: status → "Encomendado", preenche `fornecedor` e `dataPrevisao`
+
+### Frontend: Botão "Importar Encomendas" (📦)
+
+- **Posição:** Flutuante, `bottom-20` (mobile) / `bottom-28` (desktop), acima do botão "+"
+- **Fluxo:** Clica → busca pendentes → busca ofertas SmartPed para cada → modal de revisão
+- **Modal:** Draggable, redimensionável, mostra logs, permite escolher oferta e qtd por encomenda
+- **Confirma:** Injeta itens no relatório ativo + salva em localStorage + Turso (origem="encomenda")
+
+### Itens Manuais - Novos Campos (Tabela `itens_manuais`)
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `origem` | TEXT DEFAULT 'manual' | `'manual'` (botão +) ou `'encomenda'` (importado) |
+| `id_encomenda` | TEXT | ID da encomenda no sistema externo (para rastreabilidade) |
+
+### DailyItemsView - Filtro "Apenas Encomendas"
+
+- Na aba "Itens Manuais", checkbox "📦 Apenas Encomendas" filtra para `origem === "encomenda"`
+- Tag visual violeta "📦 Encomenda" aparece no nome do produto
+- ID da encomenda exibido junto ao EAN
+
+### Variáveis de Ambiente Novas
+
+| Variável | Descrição |
+|----------|-----------|
+| `ENCOMENDAS_API_URL` | URL base do sistema encomendas (ex: `https://encomenda-com-smartped-...`) |
+| `ENCOMENDAS_INTEGRATION_KEY` | Chave `x-api-key` para autenticação entre sistemas |
+
+### Observações Importantes
+
+- O sistema encomendas **já tem** os endpoints necessários implementados
+- Proxies HTTP criados no otimizador validam `x-api-key` antes de repassar
+- Itens importados são tratados **exatamente como itens manuais** (mesma tabela, mesma UI)
+- Tag `origem="encomenda"` permite diferenciar visualmente sem duplicar lógica
+- Responsividade mobile: botões flutuantes ajustam posição, modais têm `maxWidth: calc(100vw - 2rem)`
 
 ---
 

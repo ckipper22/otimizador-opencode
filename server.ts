@@ -178,7 +178,9 @@ app.post("/api/salvar-item-manual", async (req, res) => {
       prazo: item.prazo || 0,
       cnpj: cnpj,
       dataAdicao: item.dataAdicao || new Date().toISOString(),
-      status: item.status || "adicionado"
+      status: item.status || "adicionado",
+      origem: item.origem || "manual",
+      idEncomenda: item.idEncomenda || null
     });
     res.json({ sucesso: true });
   } catch (err: any) {
@@ -198,6 +200,77 @@ app.post("/api/itens-manuais", async (req, res) => {
     res.json({ itens });
   } catch (err: any) {
     console.error("Erro ao buscar itens manuais:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== INTEGRACAO SISTEMA ENCOMENDAS =====
+const ENCOMENDAS_API_URL = process.env.ENCOMENDAS_API_URL || "https://encomenda-com-smartped-887122622666.us-east1.run.app";
+const ENCOMENDAS_API_KEY = process.env.ENCOMENDAS_INTEGRATION_KEY || "";
+
+// Proxy GET /api/integracao/encomendas/pendentes -> chama sistema encomendas
+app.get("/api/integracao/encomendas/pendentes", async (req, res) => {
+  try {
+    // Usa a chave do .env diretamente (frontend não precisa enviar)
+    const response = await fetch(`${ENCOMENDAS_API_URL}/api/integracao/encomendas/pendentes`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ENCOMENDAS_API_KEY
+      }
+    });
+
+    const rawText = await response.text();
+    console.log("[ENCOMENDAS PROXY] Status:", response.status, "Raw response (first 500 chars):", rawText.substring(0, 500));
+    
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (e) {
+      throw new Error(`Resposta não é JSON válido. Status: ${response.status}. Início da resposta: ${rawText.substring(0, 200)}`);
+    }
+    
+    if (!response.ok) {
+      throw new Error(data.error || `Erro ${response.status} ao buscar encomendas`);
+    }
+
+    // Filtrar apenas status "Pendente" (garantia extra)
+    const pendentes = (data.encomendas || data || []).filter((e: any) => e.status === "Pendente");
+
+    res.json({ encomendas: pendentes });
+  } catch (err: any) {
+    console.error("Erro ao buscar encomendas pendentes:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Proxy POST /api/integracao/encomendas/confirmar-pedido -> chama sistema encomendas
+app.post("/api/integracao/encomendas/confirmar-pedido", async (req, res) => {
+  try {
+    const { itens } = req.body;
+    if (!itens || !Array.isArray(itens) || itens.length === 0) {
+      return res.status(400).json({ error: "Array 'itens' é obrigatório." });
+    }
+
+    // O sistema externo espera POST em /api/integracao/encomendas/confirmar-pedido
+    // com { itens: [{ id, fornecedor, dataPrevisao }] }
+    const response = await fetch(`${ENCOMENDAS_API_URL}/api/integracao/encomendas/confirmar-pedido`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ENCOMENDAS_API_KEY
+      },
+      body: JSON.stringify({ itens })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `Erro ${response.status} ao confirmar encomendas`);
+    }
+
+    res.json({ sucesso: true, resultado: data });
+  } catch (err: any) {
+    console.error("Erro ao confirmar encomendas:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2438,12 +2511,12 @@ let condicoesEnriched = condicoes.map((c: any) => {
           const apiOriginalPmc = extractPmc(ref) || extractPmc(itemPedido);
           const originalTablePrice = extractTablePrice(ref) || extractTablePrice(itemPedido);
           const baseOriginalPmc = originalTablePrice > 0 ? originalTablePrice : item.precoOriginal;
-          const calcOriginalPmc = apiOriginalPmc > 0 ? apiOriginalPmc : 0;
+          const calcOriginalPmc = apiOriginalPmc > 0 ? apiOriginalPmc : (baseOriginalPmc > 0 ? Number((baseOriginalPmc * 1.4).toFixed(2)) : 0);
 
           const apiNovoPmc = extractPmc(melhor);
           const novoTablePrice = extractTablePrice(melhor);
           const baseNovoPmc = novoTablePrice > 0 ? novoTablePrice : precoNovo;
-          const calcNovoPmc = apiNovoPmc > 0 ? apiNovoPmc : 0;
+          const calcNovoPmc = apiNovoPmc > 0 ? apiNovoPmc : (baseNovoPmc > 0 ? Number((baseNovoPmc * 1.4).toFixed(2)) : 0);
 
           const alertResult = calculateQuantityAlert(
             item.precoOriginal,
@@ -2592,7 +2665,7 @@ let condicoesEnriched = condicoes.map((c: any) => {
           const apiOriginalPmc = extractPmc(ref) || extractPmc(itemPedido);
           const originalTablePrice = extractTablePrice(ref) || extractTablePrice(itemPedido);
           const baseOriginalPmc = originalTablePrice > 0 ? originalTablePrice : item.precoOriginal;
-          const calcOriginalPmc = apiOriginalPmc > 0 ? apiOriginalPmc : 0;
+          const calcOriginalPmc = apiOriginalPmc > 0 ? apiOriginalPmc : (baseOriginalPmc > 0 ? Number((baseOriginalPmc * 1.4).toFixed(2)) : 0);
           const calcNovoPmc = calcOriginalPmc;
 
           const alertResult = calculateQuantityAlert(
@@ -2650,11 +2723,12 @@ let condicoesEnriched = condicoes.map((c: any) => {
             })()
           });
         }
-      } else {
-        logs.push(`âš ï¸ [MANTER ORIGINAL] EAN ${item.ean} (${item.descricao}) nÃ£o obteve retorno da API SmartPed. Mantendo original.`);
+} else {
+        logs.push(`⚠️ [MANTER ORIGINAL] EAN ${item.ean} (${item.descricao}) não obteve retorno da API SmartPed. Mantendo original.`);
         
         const qtdNum = parseFloat(item.qtd.replace(",", "."));
-        const fallbackPmc = 0;
+        const fallbackOriginalPmc = item.precoOriginal > 0 ? Number((item.precoOriginal * 1.4).toFixed(2)) : 0;
+        const fallbackNovoPmc = fallbackOriginalPmc;
         report.push({
           codInterno: item.codInterno,
           originalEan: item.ean,
@@ -2662,12 +2736,12 @@ let condicoesEnriched = condicoes.map((c: any) => {
           originalLaboratorio: item.laboratorio,
           originalPreco: item.precoOriginal,
           originalPrecoCotado: item.precoOriginal,
-          originalPmc: fallbackPmc,
+          originalPmc: fallbackOriginalPmc,
           novoEan: item.ean,
           novaDescricao: item.descricao,
           novoLaboratorio: item.laboratorio,
           novoPreco: item.precoOriginal,
-          novoPmc: fallbackPmc,
+          novoPmc: fallbackNovoPmc,
           qtd: qtdNum,
           economiaUnit: 0,
           economiaTotal: 0,
@@ -4044,6 +4118,8 @@ app.post("/api/search-products", async (req, res) => {
                   const apiPmc = extractPmc(cond);
                   const finalPmc = apiPmc > 0 ? apiPmc : 0;
 
+                  log(`[PMC DEBUG] EAN=${searchQuery} Dist=${codDist} apiPmc=${apiPmc} basePmc=${condBasePmc} finalPmc=${finalPmc}`);
+
                   foundItems.push({
                     Descricao: cond.Descricao || cond.descricao || desc,
                     Laboratorio: cond.Laboratorio || cond.laboratorio || lab,
@@ -4655,6 +4731,7 @@ app.post("/api/search-products", async (req, res) => {
       const baseForPmc = tablePrice > 0 ? tablePrice : precoUnit;
       const apiPmc = extractPmc(it);
       const pmcVal = apiPmc > 0 ? apiPmc : 0;
+      log(`[PMC MAP DEBUG] EAN=${eanStr} apiPmc=${apiPmc} pmcVal=${pmcVal} fieldPMC=${it.PMC} fieldpmc=${it.pmc} fieldPmc=${it.Pmc}`);
       const precoOriginalVal = tablePrice > 0 ? tablePrice : precoUnit;
 
       const itemCodDist = it.CodDist !== undefined ? it.CodDist : (it.codDist !== undefined ? it.codDist : 2);
@@ -4721,6 +4798,8 @@ app.post("/api/search-products", async (req, res) => {
       isCheapest: idx === 0,
       isCheapestGeneric: it.ean === cheapestGenericEan
     }));
+
+    log(`[PMC FINAL DEBUG] Final items with PMC: ${finalItems.filter(i => i.pmc > 0).length}/${finalItems.length} | Sample: ${finalItems.slice(0,3).map(i => `${i.ean}:pmc=${i.pmc}`).join(', ')}`);
 
     res.json({
       sucesso: true,

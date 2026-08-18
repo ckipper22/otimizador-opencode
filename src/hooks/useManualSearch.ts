@@ -222,7 +222,9 @@ export function useManualSearch({
       const normalizedOffer = {
         ...rawOffer,
         _calcPLiquido: pLiquido,
-        _calcPrazo: prazoNum
+        _calcPrazo: prazoNum,
+        // Garantir que PMC seja preservado (case-insensitive)
+        PMC: rawOffer.PMC ?? rawOffer.pmc ?? rawOffer.Pmc ?? 0
       };
 
       if (!groupMap.has(groupKey)) {
@@ -272,8 +274,8 @@ export function useManualSearch({
     const economiaUnit = Math.max(0, offerPrecoFab - offerPrecoLiq);
     const economiaTotal = economiaUnit * qtyToAdd;
 
-    const calcOriginalPmc = offer.pmc !== undefined && offer.pmc > 0 ? offer.pmc : (offerPrecoFab > 0 ? Number((offerPrecoFab * 1.4).toFixed(2)) : 0);
-    const calcNovoPmc = offer.pmc !== undefined && offer.pmc > 0 ? offer.pmc : (offerPrecoLiq > 0 ? Number((offerPrecoLiq * 1.4).toFixed(2)) : 0);
+    const calcOriginalPmc = (offer.pmc !== undefined && offer.pmc > 0) || (offer.PMC !== undefined && offer.PMC > 0) ? (offer.pmc || offer.PMC) : (offerPrecoFab > 0 ? Number((offerPrecoFab * 1.4).toFixed(2)) : 0);
+    const calcNovoPmc = (offer.pmc !== undefined && offer.pmc > 0) || (offer.PMC !== undefined && offer.PMC > 0) ? (offer.pmc || offer.PMC) : (offerPrecoLiq > 0 ? Number((offerPrecoLiq * 1.4).toFixed(2)) : 0);
 
     const newItem: SwapReportItem = {
       codInterno: randomCod,
@@ -297,7 +299,23 @@ export function useManualSearch({
       codProdutoDist: offerCodProdDist,
       prazo: offerPrazo,
       codProduto: offerCodProd,
-      pedidoMinimo: offerPedMin
+      pedidoMinimo: offerPedMin,
+      alternatives: [{
+        ean: offerEan,
+        descricao: offerDesc,
+        laboratorio: offerLab,
+        distribuidora: offerDist,
+        codDist: offerCodDist,
+        preco: offerPrecoLiq,
+        precoLiquido: offerPrecoLiq,
+        estoque: offerEstoque,
+        condicao: offerCondicao,
+        prazo: offerPrazo,
+        codProdutoDist: offerCodProdDist,
+        codProduto: offerCodProd,
+        pedidoMinimo: offerPedMin,
+        qtdMin: offer.QtdMin || offer.qtdMin || 0
+      }]
     };
 
     if (offerDist && offerDist !== "Não Encontrados" && offerDist !== "Sem Estoque") {
@@ -346,7 +364,8 @@ export function useManualSearch({
         precoFabrica: offerPrecoFab,
         condicao: offerCondicao,
         prazo: offerPrazo,
-        dataAdicao: new Date().toISOString()
+        dataAdicao: new Date().toISOString(),
+        origem: "manual"
       });
       localStorage.setItem("itens_manuais_adicionados", JSON.stringify(list));
     } catch (e) {
@@ -371,7 +390,8 @@ export function useManualSearch({
             precoFabrica: offerPrecoFab,
             condicao: offerCondicao,
             prazo: offerPrazo,
-            dataAdicao: new Date().toISOString()
+            dataAdicao: new Date().toISOString(),
+            origem: "manual"
           },
           cnpj: config.cnpj || ""
         })

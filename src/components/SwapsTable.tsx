@@ -587,7 +587,7 @@ export default function SwapsTable({
                             )}
                             <span className="mx-1">|</span> Lab: <span className="truncate max-w-[120px] ml-1 px-1.5 py-0.5 bg-gray-200 text-gray-800 font-bold rounded-sm uppercase tracking-wider">{item.isRupturaSubstitution ? (item.novoLaboratorio || "GENÉRICO") : (item.originalLaboratorio || "GENÉRICO")}</span> <span className="mx-1">|</span> Unit: {formatCurrency(item.isRupturaSubstitution ? item.novoPreco : item.originalPreco)}
                           </div>
-                          <ObservationBell ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} />
+                          <ObservationBell ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} origem={item.origem} />
                         </div>
                       </td>
 
@@ -651,7 +651,7 @@ export default function SwapsTable({
                               <span>{stripHtml(item.observacao)}</span>
                             </div>
                           )}
-                          <ObservationBell ean={item.novoEan} />
+                          <ObservationBell ean={item.novoEan} origem={item.origem} />
                         </div>
                       </td>
 
@@ -1573,7 +1573,7 @@ export default function SwapsTable({
                                     )}
                                   </div>
 
-                                  <ObservationBell ean={item.originalEan} />
+                                  <ObservationBell ean={item.originalEan} origem={item.origem} />
 
 
                                   {item.observacao && (
@@ -1616,7 +1616,7 @@ export default function SwapsTable({
                                       </div>
                                     </div>
                                   )}
-                                  <ObservationBell ean={item.novoEan} />
+<ObservationBell ean={item.novoEan} origem={item.origem} />
 
                                    {(() => {
                                      if ((item.cx && item.cx > 1) || (item.qtdMin && item.qtdMin > 0) || (item.qtdMax && item.qtdMax > 0)) {

@@ -37,12 +37,18 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
   useEffect(() => {
     const altsCount = item.alternatives?.length ?? 0;
     const isRuptura = item.isRupturaSubstitution;
+    const isManualOrEncomenda = item.origem === "encomenda" || item.origem === "manual";
     
-    console.log(`[CONDITION-SELECTOR-DEBUG] EAN=${item.originalEan} | isRuptura=${isRuptura} | altsCount=${altsCount} | liveAlts=${liveAlternatives?.length ?? 'null'} | config=${!!config?.token}`);
+    console.log(`[CONDITION-SELECTOR-DEBUG] EAN=${item.originalEan} | isRuptura=${isRuptura} | altsCount=${altsCount} | liveAlts=${liveAlternatives?.length ?? 'null'} | config=${!!config?.token} | origem=${item.origem}`);
 
     // Se já tem alternativas (do backend), não buscar em tempo real
     if (altsCount > 0) {
       console.log(`[CONDITION-SELECTOR-DEBUG] PULANDO busca: já tem ${altsCount} alternativas do backend`);
+      return;
+    }
+    // Itens manuais/encomenda nunca buscam em tempo real - já vieram com a oferta escolhida
+    if (isManualOrEncomenda) {
+      console.log(`[CONDITION-SELECTOR-DEBUG] PULANDO busca: item manual/encomenda (origem=${item.origem})`);
       return;
     }
     if (!config?.token || !config?.cnpj) {

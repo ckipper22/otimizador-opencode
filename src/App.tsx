@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, Suspense } from "react";
-import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, ArrowDown, ChevronRight, XCircle, Copy, Lock, Mail, Eye, EyeOff, Settings, ArrowUp, GripVertical } from "lucide-react";
+import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, ArrowDown, ChevronRight, XCircle, Copy, Lock, Mail, Eye, EyeOff, Settings, ArrowUp, GripVertical, ShoppingBag, Package, Loader2, Check, AlertCircle as AlertCircleIcon } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import UploadBox from "./components/UploadBox";
 import ConfigurationPanel from "./components/ConfigurationPanel";
@@ -300,6 +300,21 @@ export default function App() {
   const [showStats, setShowStats] = useState<boolean>(false);
   const [isSwapsTableVisible, setIsSwapsTableVisible] = useState<boolean>(true);
 
+  // Encomendas Import State
+  const [isEncomendasImportOpen, setIsEncomendasImportOpen] = useState<boolean>(false);
+  const [encomendasList, setEncomendasList] = useState<any[]>([]);
+  const [encomendasWithOffers, setEncomendasWithOffers] = useState<any[]>([]);
+  const [isSearchingEncomendas, setIsSearchingEncomendas] = useState<boolean>(false);
+  const [encomendasSearchError, setEncomendasSearchError] = useState<string | null>(null);
+  const [encomendasSearchLogs, setEncomendasSearchLogs] = useState<string[]>([]);
+  const [encomendasModalWidth, setEncomendasModalWidth] = useState<string>(() => sessionStorage.getItem('encomendas_modal_width') || "1200px");
+  const [encomendasModalHeight, setEncomendasModalHeight] = useState<string>(() => sessionStorage.getItem('encomendas_modal_height') || "800px");
+  const [encomendasQuantities, setEncomendasQuantities] = useState<Record<string, number>>({});
+  const [encomendasActionSuccessKey, setEncomendasActionSuccessKey] = useState<string | null>(null);
+  const [encomendasAddedKeys, setEncomendasAddedKeys] = useState<Set<string>>(new Set());
+  const [showEncomendasLogs, setShowEncomendasLogs] = useState<boolean>(false);
+  const encomendasTableRef = useRef<HTMLDivElement>(null);
+
   const distributorGroupings = useMemo(() => {
     if (!activeReport || activeReport.length === 0) return [];
     const map = new Map<string, { name: string; totalValue: number; itemsCount: number; items: any[] }>();
@@ -400,6 +415,565 @@ export default function App() {
     setCompletingTargetDist(null);
     setCompletingEligibleItems([]);
     setCompletingSelectedCodes(new Set());
+  };
+
+  // Importar Encomendas - Busca encomendas pendentes no sistema externo e busca ofertas na SmartPed
+  const handleImportEncomendas = async () => {
+    setIsEncomendasImportOpen(true);
+    setEncomendasWithOffers([]);
+    setEncomendasSearchError(null);
+    setEncomendasSearchLogs(["[INICIANDO] Buscando encomendas pendentes no sistema externo..."]);
+
+    try {
+      // 1. Buscar encomendas pendentes via proxy (server usa a chave do .env)
+      const response = await fetch("/api/integracao/encomendas/pendentes", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" }
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || `Erro ${response.status} ao buscar encomendas`);
+      }
+
+      const encomendas = data.encomendas || [];
+      setEncomendasList(encomendas);
+      setEncomendasSearchLogs(prev => [...prev, `[OK] ${encomendas.length} encomenda(s) pendente(s) encontrada(s).`]);
+
+      if (encomendas.length === 0) {
+        setEncomendasSearchLogs(prev => [...prev, `[INFO] Nenhuma encomenda pendente no momento.`]);
+        return;
+      }
+
+      // 2. Para cada encomenda, buscar ofertas na SmartPed
+      setIsSearchingEncomendas(true);
+      const results: any[] = [];
+
+      for (const enc of encomendas) {
+        const ean = enc.codigoBarras || enc.ean;
+        const descricao = enc.item || enc.descricao || "";
+        const quantidade = enc.quantidade || 1;
+        const idEncomenda = enc.id;
+        const cliente = enc.cliente || "";
+        const telefone = enc.telefone || "";
+        const observacoes = enc.observacoes || "";
+        const fornecedorSugerido = enc.fornecedor || "";
+        const dataPrevisao = enc.dataPrevisao || "";
+        const dataHora = enc.data ? new Date(enc.data).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : "";
+
+        setEncomendasSearchLogs(prev => [...prev, `[BUSCA] ${descricao.substring(0, 40)}... (Qtd: ${quantidade})`]);
+
+        try {
+          let ofertas: any[] = [];
+          let logs: string[] = [];
+
+          if (ean && /^\d+$/.test(String(ean).trim())) {
+            // Tem EAN - busca robusta: Condicoes/Ean + Condicoes/Molecula em paralelo (igual otimização)
+            setEncomendasSearchLogs(prev => [...prev, `  -> Busca robusta por EAN: ${ean} (Ean + Molecula)`]);
+            const searchResp = await fetch("/api/search-products", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                query: ean,
+                token: config.token,
+                cnpj: config.cnpj,
+                useTestUrl: config.useTestUrl,
+                simulationMode: config.simulationMode,
+                permitirSemEstoque: false,
+                // tipos: config.tipos,  // REMOVIDO: para encomendas não filtrar por tipo - queremos o produto exato
+                margemMinima: config.margemMinima,
+                onlyExactEan: false,  // Busca completa com substitutos
+                skipMolecula: false   // Chama Molecula para trazer substitutos/genéricos
+              })
+            });
+
+            if (searchResp.ok) {
+              const searchData = await searchResp.json();
+              ofertas = searchData.items || [];
+              logs = searchData.logs || [];
+            }
+          } else {
+            // Sem EAN - busca por descrição completa: Produtos/Buscar -> EANs -> Condicoes/Ean + Molecula
+            setEncomendasSearchLogs(prev => [...prev, `  -> Busca por descrição: "${descricao}" (Busca + Ean + Molecula)`]);
+            const searchResp = await fetch("/api/search-products", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                query: descricao,
+                token: config.token,
+                cnpj: config.cnpj,
+                useTestUrl: config.useTestUrl,
+                simulationMode: config.simulationMode,
+                permitirSemEstoque: false,
+                // tipos: config.tipos,  // REMOVIDO: para encomendas não filtrar por tipo
+                margemMinima: config.margemMinima,
+                skipMolecula: false  // Busca completa com Molecula
+              })
+            });
+
+            if (searchResp.ok) {
+              const searchData = await searchResp.json();
+              ofertas = searchData.items || [];
+              logs = searchData.logs || [];
+            }
+          }
+
+          // Filtrar apenas ofertas com estoque
+          const ofertasComEstoque = ofertas.filter((o: any) => {
+            const est = o.estoque !== undefined ? o.estoque : (o.Estoque !== undefined ? o.Estoque : 9999);
+            return est > 0;
+          });
+
+          // Ordenar: mesmo EAN primeiro (maior prioridade), depois por preço líquido ascendente
+          const originalEanClean = (ean || "").replace(/^0+/, "");
+          ofertasComEstoque.sort((a: any, b: any) => {
+            const aEan = (a.ean || a.Ean || "").replace(/^0+/, "");
+            const bEan = (b.ean || b.Ean || "").replace(/^0+/, "");
+            const aIsSame = aEan === originalEanClean;
+            const bIsSame = bEan === originalEanClean;
+            if (aIsSame && !bIsSame) return -1;
+            if (!aIsSame && bIsSame) return 1;
+            const aPrice = Number(a.pliquidoUni || a.pliquido || a.precoLiquido || a.preco || a.Preco || 0);
+            const bPrice = Number(b.pliquidoUni || b.pliquido || b.precoLiquido || b.preco || b.Preco || 0);
+            return aPrice - bPrice;
+          });
+
+          results.push({
+            encomenda: enc,
+            idEncomenda,
+            ean,
+            descricao,
+            quantidade,
+            cliente,
+            telefone,
+            observacoes,
+            fornecedorSugerido,
+            dataPrevisao,
+            dataHora,
+            ofertas: ofertasComEstoque,
+            logs,
+            temOfertas: ofertasComEstoque.length > 0,
+            selecionada: ofertasComEstoque.length > 0,
+            ofertaSelecionada: ofertasComEstoque.length > 0 ? ofertasComEstoque[0] : null,
+            qtdSelecionada: quantidade
+          });
+
+          setEncomendasSearchLogs(prev => [...prev, `  -> ${ofertasComEstoque.length} oferta(s) com estoque encontrada(s)`]);
+
+        } catch (err: any) {
+          results.push({
+            encomenda: enc,
+            idEncomenda,
+            ean,
+            descricao,
+            quantidade,
+            cliente,
+            telefone,
+            observacoes,
+            fornecedorSugerido,
+            dataPrevisao,
+            dataHora,
+            ofertas: [],
+            logs: [],
+            temOfertas: false,
+            selecionada: false,
+            ofertaSelecionada: null,
+            qtdSelecionada: quantidade,
+            erro: err.message
+          });
+          setEncomendasSearchLogs(prev => [...prev, `  -> ERRO: ${err.message}`]);
+        }
+      }
+
+      setEncomendasWithOffers(results);
+      setEncomendasSearchLogs(prev => [...prev, `[CONCLUÍDO] Busca finalizada para todas as encomendas.`]);
+
+    } catch (err: any) {
+      setEncomendasSearchError(err.message);
+      setEncomendasSearchLogs(prev => [...prev, `[ERRO] ${err.message}`]);
+    } finally {
+      setIsSearchingEncomendas(false);
+    }
+  };
+
+  // Adicionar item de encomenda individual (estilo botão "+")
+  const handleAddEncomendaItem = (item: any, quantity: number, itemKey: string) => {
+    const qtyToAdd = parseFloat(String(quantity));
+    if (isNaN(qtyToAdd) || qtyToAdd <= 0) {
+      alert("Defina uma quantidade válida maior que zero.");
+      return;
+    }
+
+    const oferta = item.ofertaSelecionada;
+    if (!oferta) {
+      alert("Selecione uma oferta válida.");
+      return;
+    }
+
+    const randomCod = "MANUAL-" + Date.now() + "-" + Math.floor(1000 + Math.random() * 9000);
+    
+    const offerEan = String(oferta.ean || oferta.Ean || item.ean || "").trim();
+    const offerDesc = oferta.descricao || oferta.Descricao || item.descricao;
+    const offerLab = oferta.laboratorio || oferta.Laboratorio || oferta.nom_laborat || "";
+    const offerDist = oferta.distribuidora || oferta.NomeDist || (oferta.codDist ? `Distribuidora ${oferta.codDist}` : "Distribuidora");
+    const offerPrecoLiq = Number(oferta.pliquidoUni || oferta.pliquido || oferta.precoLiquido || oferta.preco || oferta.Preco || 0);
+    const offerPrecoFab = Number(oferta.pfabrica || oferta.Pfabrica || oferta.precoOriginal || oferta.precoFabrica || 0);
+    const offerEstoque = Number(oferta.estoque !== undefined ? oferta.estoque : (oferta.Estoque !== undefined ? oferta.Estoque : 9999));
+    const offerCodDist = Number(oferta.codDist !== undefined ? oferta.codDist : (oferta.CodDist !== undefined ? oferta.CodDist : 0));
+    const offerCondicao = oferta.condicao || oferta.Condicao || oferta.NomeCondicao || "FIXA";
+    const offerPrazo = Number(oferta.prazo !== undefined ? oferta.prazo : (oferta.Prazo !== undefined ? oferta.Prazo : 0));
+    const offerCodProdDist = oferta.codProdutoDist || oferta.CodProdutoDist || oferta.cod_produtodist || "";
+    const offerCodProd = oferta.codProduto || oferta.CodProduto || "";
+
+    // Calcular pedido mínimo da distribuidora
+    let offerPedMin = 150;
+    const nameLower = (offerDist || "").toLowerCase();
+    if (nameLower.includes("panpharma") || nameLower.includes("panfarma")) offerPedMin = 250;
+    else if (nameLower.includes("profarma")) offerPedMin = 250;
+    else if (nameLower.includes("santacruz") || nameLower.includes("santa cruz")) offerPedMin = 300;
+    else if (nameLower.includes("servimed")) offerPedMin = 200;
+    else if (nameLower.includes("gam")) offerPedMin = 150;
+    else if (nameLower.includes("anb")) offerPedMin = 250;
+    else if (nameLower.includes("orizon") || nameLower.includes("dimeval")) offerPedMin = 200;
+
+    const newItem = {
+      codInterno: randomCod,
+      originalEan: offerEan,
+      originalDescricao: oferta.descricao || oferta.Descricao || item.descricao,
+      originalLaboratorio: offerLab,
+      originalPreco: offerPrecoFab > 0 ? offerPrecoFab : offerPrecoLiq,
+      originalPmc: oferta.PMC && oferta.PMC > 0 ? oferta.PMC : (offerPrecoFab > 0 ? Number((offerPrecoFab * 1.4).toFixed(2)) : 0),
+      novoEan: offerEan,
+      novaDescricao: oferta.descricao || oferta.Descricao || item.descricao,
+      novoLaboratorio: offerLab,
+      novoPreco: offerPrecoLiq,
+      novoPmc: oferta.PMC && oferta.PMC > 0 ? oferta.PMC : (offerPrecoLiq > 0 ? Number((offerPrecoLiq * 1.4).toFixed(2)) : 0),
+      qtd: qtyToAdd,
+      economiaUnit: Math.max(0, offerPrecoFab - offerPrecoLiq),
+      economiaTotal: Math.max(0, offerPrecoFab - offerPrecoLiq) * qtyToAdd,
+      distribuidora: offerDist,
+      estoque: offerEstoque,
+      codDist: offerCodDist,
+      condicao: offerCondicao,
+      codProdutoDist: offerCodProdDist,
+      prazo: offerPrazo,
+      codProduto: offerCodProd,
+      pedidoMinimo: offerPedMin,
+      origem: "encomenda",
+      idEncomenda: item.idEncomenda,
+      alternatives: (item.ofertas || []).filter(Boolean).map((o: any) => {
+        const oEan = String(o.ean || o.Ean || "").trim();
+        const oDesc = o.descricao || o.Descricao || offerDesc;
+        const oLab = o.laboratorio || o.Laboratorio || o.nom_laborat || offerLab;
+        const oDist = o.distribuidora || o.NomeDist || (o.codDist ? `Distribuidora ${o.codDist}` : "Distribuidora");
+        const oPLiq = Number(o.pliquidoUni || o.pliquido || o.precoLiquido || o.preco || o.Preco || 0);
+        const oEst = Number(o.estoque !== undefined ? o.estoque : (o.Estoque !== undefined ? o.Estoque : 0));
+        const oCodDist = Number(o.codDist !== undefined ? o.codDist : (o.CodDist !== undefined ? o.CodDist : 0));
+        const oCond = o.condicao || o.Condicao || o.NomeCondicao || "FIXA";
+        const oPrazo = Number(o.prazo !== undefined ? o.prazo : (o.Prazo !== undefined ? o.Prazo : 0));
+        const oCodProdDist = o.codProdutoDist || o.CodProdutoDist || o.cod_produtodist || "";
+        const oCodProd = o.codProduto || o.CodProduto || "";
+        let oPedMin = 150;
+        const oNameLower = (oDist || "").toLowerCase();
+        if (oNameLower.includes("panpharma") || oNameLower.includes("panfarma")) oPedMin = 250;
+        else if (oNameLower.includes("profarma")) oPedMin = 250;
+        else if (oNameLower.includes("santacruz") || oNameLower.includes("santa cruz")) oPedMin = 300;
+        else if (oNameLower.includes("servimed")) oPedMin = 200;
+        else if (oNameLower.includes("gam")) oPedMin = 150;
+        else if (oNameLower.includes("anb")) oPedMin = 250;
+        else if (oNameLower.includes("orizon") || oNameLower.includes("dimeval")) oPedMin = 200;
+        return {
+          ean: oEan,
+          descricao: oDesc,
+          laboratorio: oLab,
+          distribuidora: oDist,
+          codDist: oCodDist,
+          preco: oPLiq,
+          precoLiquido: oPLiq,
+          estoque: oEst,
+          condicao: oCond,
+          prazo: oPrazo,
+          codProdutoDist: oCodProdDist,
+          codProduto: oCodProd,
+          pedidoMinimo: oPedMin,
+          qtdMin: o.QtdMin || o.qtdMin || 0
+        };
+      })
+    };
+
+    // Adicionar ao relatório de otimização
+    setResult((prev: any) => {
+      const prevReport = prev ? prev.report : [];
+      const updatedReport = [newItem, ...prevReport];
+      const activeSwaps = updatedReport.filter((it: any) => !disregardedCodes.has(it.codInterno));
+      const newTotalSavings = activeSwaps.reduce((acc: number, it: any) => acc + (it.economiaTotal || 0), 0);
+
+      return {
+        ...(prev || {}),
+        summary: {
+          ...(prev ? prev.summary : { totalItems: 0, itemsTreated: 0, itemsSwapped: 0, totalSavings: 0 }),
+          totalItems: (prev?.summary?.totalItems || 0) + 1,
+          itemsTreated: (prev?.summary?.itemsTreated || 0) + 1,
+          itemsSwapped: (prev?.summary?.itemsSwapped || 0) + 1,
+          totalSavings: newTotalSavings
+        },
+        report: updatedReport,
+        unmatched: prev ? prev.unmatched : [],
+        shortages: prev ? prev.shortages : []
+      };
+    });
+
+    // Salvar no localStorage
+    try {
+      const stored = localStorage.getItem("itens_manuais_adicionados");
+      const list = stored ? JSON.parse(stored) : [];
+      list.push({
+        codInterno: randomCod,
+        ean: offerEan,
+        descricao: oferta.descricao || oferta.Descricao || item.descricao,
+        laboratorio: offerLab,
+        distribuidora: offerDist,
+        codDist: offerCodDist,
+        qtd: qtyToAdd,
+        precoLiquido: offerPrecoLiq,
+        precoFabrica: offerPrecoFab,
+        condicao: offerCondicao,
+        prazo: offerPrazo,
+        dataAdicao: new Date().toISOString(),
+        origem: "encomenda",
+        idEncomenda: item.idEncomenda
+      });
+      localStorage.setItem("itens_manuais_adicionados", JSON.stringify(list));
+    } catch (e) {
+      console.error("Erro ao salvar item manual no localStorage:", e);
+    }
+
+    // Salvar no Turso via endpoint
+    try {
+      fetch("/api/salvar-item-manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item: {
+            codInterno: randomCod,
+            ean: offerEan,
+            descricao: oferta.descricao || oferta.Descricao || item.descricao,
+            laboratorio: offerLab,
+            distribuidora: offerDist,
+            codDist: offerCodDist,
+            qtd: qtyToAdd,
+            precoLiquido: offerPrecoLiq,
+            precoFabrica: offerPrecoFab,
+            condicao: offerCondicao,
+            prazo: offerPrazo,
+            dataAdicao: new Date().toISOString(),
+            origem: "encomenda",
+            idEncomenda: item.idEncomenda
+          },
+          cnpj: config.cnpj || ""
+        })
+      }).catch(e => console.error("Erro ao salvar item manual no Turso:", e));
+    } catch (e) {
+      console.error("Erro ao salvar item manual no Turso:", e);
+    }
+
+    // Feedback visual
+    setEncomendasActionSuccessKey(itemKey);
+    setEncomendasAddedKeys(prev => new Set(prev).add(itemKey));
+    setTimeout(() => {
+      setEncomendasActionSuccessKey(null);
+    }, 2500);
+  };
+
+  // Confirmar Importação de Encomendas - Salva como itens manuais com origem="encomenda"
+  const handleConfirmImportEncomendas = async () => {
+    const itensParaImportar = encomendasWithOffers.filter(e => e.selecionada && e.temOfertas && e.ofertaSelecionada);
+    if (itensParaImportar.length === 0) return;
+
+    try {
+      for (const item of itensParaImportar) {
+        const oferta = item.ofertaSelecionada;
+        const randomCod = "MANUAL-" + Date.now() + "-" + Math.floor(1000 + Math.random() * 9000);
+        
+        const offerEan = String(oferta.ean || oferta.Ean || item.ean || "").trim();
+        const offerDesc = oferta.descricao || oferta.Descricao || item.descricao;
+        const offerLab = oferta.laboratorio || oferta.Laboratorio || oferta.nom_laborat || "";
+        const offerDist = oferta.distribuidora || oferta.NomeDist || (oferta.codDist ? `Distribuidora ${oferta.codDist}` : "Distribuidora");
+        const offerPrecoLiq = Number(oferta.pliquidoUni || oferta.pliquido || oferta.precoLiquido || oferta.preco || oferta.Preco || 0);
+        const offerPrecoFab = Number(oferta.pfabrica || oferta.Pfabrica || oferta.precoOriginal || oferta.precoFabrica || 0);
+        const offerEstoque = Number(oferta.estoque !== undefined ? oferta.estoque : (oferta.Estoque !== undefined ? oferta.Estoque : 9999));
+        const offerCodDist = Number(oferta.codDist !== undefined ? oferta.codDist : (oferta.CodDist !== undefined ? oferta.CodDist : 0));
+        const offerCondicao = oferta.condicao || oferta.Condicao || oferta.NomeCondicao || "FIXA";
+        const offerPrazo = Number(oferta.prazo !== undefined ? oferta.prazo : (oferta.Prazo !== undefined ? oferta.Prazo : 0));
+        const offerCodProdDist = oferta.codProdutoDist || oferta.CodProdutoDist || oferta.cod_produtodist || "";
+        const offerCodProd = oferta.codProduto || oferta.CodProduto || "";
+
+        // Calcular pedido mínimo da distribuidora
+        let offerPedMin = 150;
+        const nameLower = (offerDist || "").toLowerCase();
+        if (nameLower.includes("panpharma") || nameLower.includes("panfarma")) offerPedMin = 250;
+        else if (nameLower.includes("profarma")) offerPedMin = 250;
+        else if (nameLower.includes("santacruz") || nameLower.includes("santa cruz")) offerPedMin = 300;
+        else if (nameLower.includes("servimed")) offerPedMin = 200;
+        else if (nameLower.includes("gam")) offerPedMin = 150;
+        else if (nameLower.includes("anb")) offerPedMin = 250;
+        else if (nameLower.includes("orizon") || nameLower.includes("dimeval")) offerPedMin = 200;
+
+        const newItem = {
+          codInterno: randomCod,
+          originalEan: offerEan,
+          originalDescricao: offerDesc,
+          originalLaboratorio: offerLab,
+          originalPreco: offerPrecoFab > 0 ? offerPrecoFab : offerPrecoLiq,
+          originalPmc: oferta.PMC && oferta.PMC > 0 ? oferta.PMC : (offerPrecoFab > 0 ? Number((offerPrecoFab * 1.4).toFixed(2)) : 0),
+          novoEan: offerEan,
+          novaDescricao: offerDesc,
+          novoLaboratorio: offerLab,
+          novoPreco: offerPrecoLiq,
+          novoPmc: oferta.PMC && oferta.PMC > 0 ? oferta.PMC : (offerPrecoLiq > 0 ? Number((offerPrecoLiq * 1.4).toFixed(2)) : 0),
+          qtd: item.qtdSelecionada,
+          economiaUnit: Math.max(0, offerPrecoFab - offerPrecoLiq),
+          economiaTotal: Math.max(0, offerPrecoFab - offerPrecoLiq) * item.qtdSelecionada,
+          distribuidora: offerDist,
+          estoque: offerEstoque,
+          codDist: offerCodDist,
+          condicao: offerCondicao,
+          codProdutoDist: offerCodProdDist,
+          prazo: offerPrazo,
+          codProduto: offerCodProd,
+          pedidoMinimo: offerPedMin,
+          origem: "encomenda",
+          idEncomenda: item.idEncomenda,
+          alternatives: (item.ofertas || []).filter(Boolean).map((o: any) => {
+            const oEan = String(o.ean || o.Ean || "").trim();
+            const oDesc = o.descricao || o.Descricao || offerDesc;
+            const oLab = o.laboratorio || o.Laboratorio || o.nom_laborat || offerLab;
+            const oDist = o.distribuidora || o.NomeDist || (o.codDist ? `Distribuidora ${o.codDist}` : "Distribuidora");
+            const oPLiq = Number(o.pliquidoUni || o.pliquido || o.precoLiquido || o.preco || o.Preco || 0);
+            const oEst = Number(o.estoque !== undefined ? o.estoque : (o.Estoque !== undefined ? o.Estoque : 0));
+            const oCodDist = Number(o.codDist !== undefined ? o.codDist : (o.CodDist !== undefined ? o.CodDist : 0));
+            const oCond = o.condicao || o.Condicao || o.NomeCondicao || "FIXA";
+            const oPrazo = Number(o.prazo !== undefined ? o.prazo : (o.Prazo !== undefined ? o.Prazo : 0));
+            const oCodProdDist = o.codProdutoDist || o.CodProdutoDist || o.cod_produtodist || "";
+            const oCodProd = o.codProduto || o.CodProduto || "";
+            let oPedMin = 150;
+            const oNameLower = (oDist || "").toLowerCase();
+            if (oNameLower.includes("panpharma") || oNameLower.includes("panfarma")) oPedMin = 250;
+            else if (oNameLower.includes("profarma")) oPedMin = 250;
+            else if (oNameLower.includes("santacruz") || oNameLower.includes("santa cruz")) oPedMin = 300;
+            else if (oNameLower.includes("servimed")) oPedMin = 200;
+            else if (oNameLower.includes("gam")) oPedMin = 150;
+            else if (oNameLower.includes("anb")) oPedMin = 250;
+            else if (oNameLower.includes("orizon") || oNameLower.includes("dimeval")) oPedMin = 200;
+            return {
+              ean: oEan,
+              descricao: oDesc,
+              laboratorio: oLab,
+              distribuidora: oDist,
+              codDist: oCodDist,
+              preco: oPLiq,
+              precoLiquido: oPLiq,
+              estoque: oEst,
+              condicao: oCond,
+              prazo: oPrazo,
+              codProdutoDist: oCodProdDist,
+              codProduto: oCodProd,
+              pedidoMinimo: oPedMin,
+              qtdMin: o.QtdMin || o.qtdMin || 0
+            };
+          })
+        };
+
+        // Adicionar ao relatório de otimização
+        setResult((prev: any) => {
+          const prevReport = prev ? prev.report : [];
+          const updatedReport = [newItem, ...prevReport];
+          const activeSwaps = updatedReport.filter((it: any) => !disregardedCodes.has(it.codInterno));
+          const newTotalSavings = activeSwaps.reduce((acc: number, it: any) => acc + (it.economiaTotal || 0), 0);
+
+          return {
+            ...(prev || {}),
+            summary: {
+              ...(prev ? prev.summary : { totalItems: 0, itemsTreated: 0, itemsSwapped: 0, totalSavings: 0 }),
+              totalItems: (prev?.summary?.totalItems || 0) + 1,
+              itemsTreated: (prev?.summary?.itemsTreated || 0) + 1,
+              itemsSwapped: (prev?.summary?.itemsSwapped || 0) + 1,
+              totalSavings: newTotalSavings
+            },
+            report: updatedReport,
+            unmatched: prev ? prev.unmatched : [],
+            shortages: prev ? prev.shortages : []
+          };
+        });
+
+        // Salvar no localStorage
+        try {
+          const stored = localStorage.getItem("itens_manuais_adicionados");
+          const list = stored ? JSON.parse(stored) : [];
+          list.push({
+            codInterno: randomCod,
+            ean: offerEan,
+            descricao: offerDesc,
+            laboratorio: offerLab,
+            distribuidora: offerDist,
+            codDist: offerCodDist,
+            qtd: item.qtdSelecionada,
+            precoLiquido: offerPrecoLiq,
+            precoFabrica: offerPrecoFab,
+            condicao: offerCondicao,
+            prazo: offerPrazo,
+            dataAdicao: new Date().toISOString(),
+            origem: "encomenda",
+            idEncomenda: item.idEncomenda
+          });
+          localStorage.setItem("itens_manuais_adicionados", JSON.stringify(list));
+        } catch (e) {
+          console.error("Erro ao salvar item manual no localStorage:", e);
+        }
+
+        // Salvar no Turso via endpoint
+        try {
+          await fetch("/api/salvar-item-manual", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              item: {
+                codInterno: randomCod,
+                ean: offerEan,
+                descricao: offerDesc,
+                laboratorio: offerLab,
+                distribuidora: offerDist,
+                codDist: offerCodDist,
+                qtd: item.qtdSelecionada,
+                precoLiquido: offerPrecoLiq,
+                precoFabrica: offerPrecoFab,
+                condicao: offerCondicao,
+                prazo: offerPrazo,
+                dataAdicao: new Date().toISOString(),
+                origem: "encomenda",
+                idEncomenda: item.idEncomenda
+              },
+              cnpj: config.cnpj || ""
+            })
+          });
+        } catch (e) {
+          console.error("Erro ao salvar item manual no Turso:", e);
+        }
+      }
+
+      // Fechar modal e limpar estado
+      setIsEncomendasImportOpen(false);
+      setEncomendasList([]);
+      setEncomendasWithOffers([]);
+      
+      // TODO: Chamar endpoint para confirmar encomendas no sistema externo
+      // const idsConfirmar = itensParaImportar.map(i => ({ id: i.idEncomenda, fornecedor: i.ofertaSelecionada.distribuidora, dataPrevisao: new Date().toISOString().split('T')[0] }));
+      // await fetch("/api/integracao/encomendas/confirmar-pedido", { method: "POST", ... });
+
+    } catch (err: any) {
+      console.error("Erro ao importar encomendas:", err);
+      alert("Erro ao importar encomendas: " + err.message);
+    }
   };
 
   // Switch tabs and automatically configure state for homologation
@@ -620,6 +1194,13 @@ export default function App() {
                 <span>Motor Offline</span>
               </span>
             )}
+
+            {/* Version / Build Info */}
+            <div className="text-[9px] font-mono text-gray-500 bg-gray-100 border border-gray-200 px-2 py-1 flex items-center gap-2 select-text">
+              <span>v: {typeof __BUILD_INFO__ !== 'undefined' ? __BUILD_INFO__.commit : 'dev'}</span>
+              <span className="text-gray-400">|</span>
+              <span>{typeof __BUILD_INFO__ !== 'undefined' ? __BUILD_INFO__.timestamp : new Date().toISOString().slice(0,19).replace('T',' ')}</span>
+            </div>
 
             {/* Parâmetros do Otimizador Trigger */}
             <div className="relative">
@@ -1712,25 +2293,50 @@ export default function App() {
         )}
 
         {/* Billing Success Modal */}
-        {/* Floating Manual Add Button */}
+        {/* Floating Buttons: Importar Encomendas + Manual Add (responsive stacking on mobile) */}
         {mainView === "optimize" && (
-          <motion.div
-            drag
-            dragMomentum={false}
-            whileDrag={{ scale: 1.1 }}
-            onDragStart={() => (isDragging.current = true)}
-            onDragEnd={() => setTimeout(() => (isDragging.current = false), 50)}
-            className="fixed bottom-8 right-8 z-40"
-          >
-            <button
-              onClick={() => {
-                if (!isDragging.current) setIsManualAddModalOpen(true);
-              }}
-              className="bg-emerald-700 hover:bg-emerald-800 text-white rounded-full p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center space-x-2 transition-colors group"
+          <>
+            {/* Importar Encomendas Button - mobile: bottom-20, desktop: bottom-28 */}
+            <motion.div
+              drag
+              dragMomentum={false}
+              whileDrag={{ scale: 1.1 }}
+              onDragStart={() => (isDragging.current = true)}
+              onDragEnd={() => setTimeout(() => (isDragging.current = false), 50)}
+              className="fixed bottom-20 md:bottom-28 right-4 md:right-8 z-40"
             >
-              <Plus className="w-6 h-6 group-hover:scale-110 transition-transform" />
-            </button>
-          </motion.div>
+              <button
+                onClick={() => {
+                  if (!isDragging.current) {
+                    handleImportEncomendas();
+                  }
+                }}
+                className="bg-violet-700 hover:bg-violet-800 text-white rounded-full p-4 md:p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center space-x-2 transition-colors group"
+                title="Importar Encomendas Pendentes"
+              >
+                <ShoppingBag className="w-6 h-6 group-hover:scale-110 transition-transform" />
+              </button>
+            </motion.div>
+
+            {/* Manual Add Button (+) - mobile: bottom-8, desktop: bottom-8 */}
+            <motion.div
+              drag
+              dragMomentum={false}
+              whileDrag={{ scale: 1.1 }}
+              onDragStart={() => (isDragging.current = true)}
+              onDragEnd={() => setTimeout(() => (isDragging.current = false), 50)}
+              className="fixed bottom-8 right-4 md:right-8 z-40"
+            >
+              <button
+                onClick={() => {
+                  if (!isDragging.current) setIsManualAddModalOpen(true);
+                }}
+                className="bg-emerald-700 hover:bg-emerald-800 text-white rounded-full p-4 md:p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center space-x-2 transition-colors group"
+              >
+                <Plus className="w-6 h-6 group-hover:scale-110 transition-transform" />
+              </button>
+            </motion.div>
+          </>
         )}
 
         {/* Manual Add Modal */}
@@ -1750,6 +2356,8 @@ export default function App() {
                 height: manualModalHeight,
                 minWidth: "450px",
                 minHeight: "350px",
+                maxWidth: "calc(100vw - 2rem)",
+                maxHeight: "calc(100vh - 4rem)",
               }}
               onPointerDown={(e) => {
                 if (e.target === e.currentTarget) {
@@ -2259,9 +2867,16 @@ export default function App() {
                                   </td>}
 
                                   {offerColVis.pLiq && <td className="px-2.5 py-2 border-r border-gray-200 align-middle text-right" style={{ width: offerColWidths.pLiq }}>
-                                    <span className="font-black text-sm text-emerald-700 bg-emerald-50 px-1.5 py-0.5 border border-emerald-200">
-                                      {formatCurrency(pLiquido)}
-                                    </span>
+                                    <div className="flex flex-col items-end gap-0.5">
+                                      <span className="font-black text-sm text-emerald-700 bg-emerald-50 px-1.5 py-0.5 border border-emerald-200">
+                                        {formatCurrency(pLiquido)}
+                                      </span>
+                                       {((offer.PMC !== undefined && offer.PMC > 0) || (offer.pmc !== undefined && offer.pmc > 0)) && (
+                                        <span className="text-[11px] font-bold text-pink-700 bg-pink-100/60 px-1.5 py-0.5 border border-pink-200" title="Preço Máximo ao Consumidor (PMC)">
+                                          PMC: {formatCurrency(offer.PMC || offer.pmc || 0)}
+                                        </span>
+                                      )}
+                                    </div>
                                   </td>}
 
                                   {offerColVis.prazo && <td className="px-2.5 py-2 border-r border-gray-200 align-middle text-center" style={{ width: offerColWidths.prazo }}>
@@ -2334,6 +2949,441 @@ export default function App() {
                     <div className="p-6 bg-white border-2 border-[#141414] text-center text-xs text-gray-600 font-mono shadow-[3px_3px_0px_0px_rgba(20,20,20,1)]">
                       Nenhuma oferta comercial com estoque localizada para "{manualQuery}".
                     </div>
+                  )}
+                </div>
+              </div>
+</motion.div>
+            )}
+          </AnimatePresence>
+
+        {/* Encomendas Import Modal - Estilo igual ao modal "+" (manual add) */}
+        <AnimatePresence>
+          {isEncomendasImportOpen && (
+            <motion.div
+              drag
+              dragListener={false}
+              dragMomentum={false}
+              dragConstraints={{ left: -800, right: 800, top: -600, bottom: 800 }}
+              dragControls={dragControls}
+              className="fixed z-50 p-3"
+              style={{
+                top: "5vh",
+                left: "5vw",
+                width: encomendasModalWidth,
+                height: encomendasModalHeight,
+                minWidth: "500px",
+                minHeight: "400px",
+                maxWidth: "calc(100vw - 2rem)",
+                maxHeight: "calc(100vh - 4rem)",
+              }}
+              onPointerDown={(e) => {
+                if (e.target === e.currentTarget) {
+                  dragControls.start(e);
+                }
+              }}
+            >
+              <div
+                className="relative bg-[#DCDAD7] border-4 border-[#141414] rounded-none flex flex-col shadow-[8px_8px_0px_0px_rgba(20,20,20,1)] w-full h-full overflow-hidden select-text"
+                ref={(node) => {
+                  if (node) {
+                    const observer = new ResizeObserver((entries) => {
+                      for (let entry of entries) {
+                        const { width, height } = entry.contentRect;
+                        if (width > 100 && height > 100) {
+                          const wStr = `${width}px`;
+                          const hStr = `${height}px`;
+                          sessionStorage.setItem('encomendas_modal_width', wStr);
+                          sessionStorage.setItem('encomendas_modal_height', hStr);
+                        }
+                      }
+                    });
+                    observer.observe(node);
+                  }
+                }}
+              >
+                {/* Resize Handles */}
+                <div 
+                  className="absolute top-0 left-3 right-3 h-2 cursor-ns-resize z-35 bg-transparent"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    const startY = e.clientY;
+                    const parent = e.currentTarget.parentElement;
+                    if (!parent) return;
+                    const startH = parent.offsetHeight;
+                    const onMove = (me: PointerEvent) => {
+                      const dy = me.clientY - startY;
+                      const newH = Math.max(400, startH - dy);
+                      setEncomendasModalHeight(`${newH}px`);
+                      sessionStorage.setItem('encomendas_modal_height', `${newH}px`);
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('pointermove', onMove);
+                      window.removeEventListener('pointerup', onUp);
+                    };
+                    window.addEventListener('pointermove', onMove);
+                    window.addEventListener('pointerup', onUp);
+                  }}
+                />
+                <div 
+                  className="absolute bottom-0 left-3 right-3 h-2 cursor-ns-resize z-35 bg-transparent"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    const startY = e.clientY;
+                    const parent = e.currentTarget.parentElement;
+                    if (!parent) return;
+                    const startH = parent.offsetHeight;
+                    const onMove = (me: PointerEvent) => {
+                      const dy = me.clientY - startY;
+                      const newH = Math.max(400, startH + dy);
+                      setEncomendasModalHeight(`${newH}px`);
+                      sessionStorage.setItem('encomendas_modal_height', `${newH}px`);
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('pointermove', onMove);
+                      window.removeEventListener('pointerup', onUp);
+                    };
+                    window.addEventListener('pointermove', onMove);
+                    window.addEventListener('pointerup', onUp);
+                  }}
+                />
+                <div 
+                  className="absolute left-0 top-3 bottom-3 w-2 cursor-ew-resize z-35 bg-transparent"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    const startX = e.clientX;
+                    const parent = e.currentTarget.parentElement;
+                    if (!parent) return;
+                    const startW = parent.offsetWidth;
+                    const onMove = (me: PointerEvent) => {
+                      const dx = me.clientX - startX;
+                      const newW = Math.max(500, startW - dx);
+                      setEncomendasModalWidth(`${newW}px`);
+                      sessionStorage.setItem('encomendas_modal_width', `${newW}px`);
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('pointermove', onMove);
+                      window.removeEventListener('pointerup', onUp);
+                    };
+                    window.addEventListener('pointermove', onMove);
+                    window.addEventListener('pointerup', onUp);
+                  }}
+                />
+                <div 
+                  className="absolute right-0 top-3 bottom-3 w-2 cursor-ew-resize z-35 bg-transparent"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    const startX = e.clientX;
+                    const parent = e.currentTarget.parentElement;
+                    if (!parent) return;
+                    const startW = parent.offsetWidth;
+                    const onMove = (me: PointerEvent) => {
+                      const dx = me.clientX - startX;
+                      const newW = Math.max(500, startW + dx);
+                      setEncomendasModalWidth(`${newW}px`);
+                      sessionStorage.setItem('encomendas_modal_width', `${newW}px`);
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('pointermove', onMove);
+                      window.removeEventListener('pointerup', onUp);
+                    };
+                    window.addEventListener('pointermove', onMove);
+                    window.addEventListener('pointerup', onUp);
+                  }}
+                />
+                {/* Modal Header */}
+                <div 
+                  className="bg-violet-800 text-white px-5 py-3.5 flex items-center justify-between border-b-2 border-[#141414] cursor-move select-none shrink-0"
+                  onPointerDown={(e) => dragControls.start(e)}
+                >
+                  <div className="flex flex-col">
+                    <div className="flex items-center space-x-2.5">
+                      <Package className="w-5 h-5 text-violet-300" />
+                      <h2 className="font-serif italic text-lg sm:text-xl font-bold tracking-tight">
+                        Importar Encomendas Pendentes
+                      </h2>
+                      <span className="bg-violet-500/20 text-violet-300 border border-violet-500/30 text-[10px] font-mono px-2 py-0.5 font-bold uppercase tracking-wider hidden sm:inline-block">
+                        SmartPed Live API
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-violet-200 font-mono mt-1">
+                      {encomendasWithOffers.length > 0 ? 
+                        `${encomendasWithOffers.filter(e => e.selecionada && e.temOfertas).length} de ${encomendasWithOffers.length} encomendas prontas para importar` :
+                        isSearchingEncomendas ? "Buscando ofertas na SmartPed..." : "Buscando encomendas pendentes..."}
+                    </p>
+                  </div>
+                  <button onClick={() => { setIsEncomendasImportOpen(false); setEncomendasList([]); setEncomendasWithOffers([]); setEncomendasAddedKeys(new Set()); }} className="text-white/70 hover:text-white transition-colors cursor-pointer">
+                    <XCircle className="w-6 h-6" />
+                  </button>
+                </div>
+
+{/* Modal Content - Estilo Manual Add Modal */}
+                <div className="p-2 sm:p-3 overflow-y-auto flex-1 flex flex-col space-y-2 min-w-0 w-full max-w-full">
+                  {/* Status de Busca */}
+                  {isSearchingEncomendas && (
+                    <div className="flex items-center justify-center gap-2 p-4 bg-white border-2 border-[#141414]">
+                      <Loader2 className="w-6 h-6 animate-spin text-violet-600" />
+                      <p className="text-sm font-bold text-gray-800">Buscando ofertas na SmartPed para cada encomenda...</p>
+                    </div>
+                  )}
+
+                  {encomendasSearchError && (
+                    <div className="p-4 bg-rose-50 border-2 border-rose-300 text-rose-800 text-xs font-medium flex items-center gap-2">
+                      <AlertCircleIcon className="w-4 h-4 shrink-0" />
+                      <span>Erro: {encomendasSearchError}</span>
+                    </div>
+                  )}
+
+                  {/* Tabela de Encomendas - Estilo Manual Add Modal */}
+                  {encomendasWithOffers.length > 0 && !isSearchingEncomendas && (
+                    <div className="bg-white border-2 border-[#141414] shadow-[3px_3px_0px_0px_rgba(20,20,20,1)] flex-1 min-h-0 flex flex-col">
+                      {/* Toolbar */}
+                      <div className="bg-gray-100 border-b border-gray-200 p-2 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <label className="flex items-center gap-1.5 text-[9px] font-bold text-gray-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={encomendasWithOffers.every(e => e.selecionada && e.temOfertas)}
+                              onChange={(e) => {
+                                setEncomendasWithOffers(prev => prev.map(item => ({ ...item, selecionada: e.target.checked && item.temOfertas })));
+                              }}
+                              className="w-3.5 h-3.5 border-gray-300 text-violet-600 focus:ring-violet-500"
+                            />
+                            <span className="font-bold text-[#141414] text-[9px] uppercase">Sel. todas</span>
+                          </label>
+                          <span className="text-[9px] text-gray-500 font-mono">
+                            {encomendasWithOffers.filter(e => e.selecionada && e.temOfertas).length} de {encomendasWithOffers.length}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[9px] text-gray-500">Logs:</span>
+                          <button
+                            onClick={() => setShowEncomendasLogs(!showEncomendasLogs)}
+                            className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-gray-200 hover:bg-gray-300 border border-gray-300 transition-colors"
+                          >
+                            {showEncomendasLogs ? 'Ocultar' : 'Mostrar'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Tabela de Ofertas - Estilo Manual Add Modal */}
+                      <div ref={encomendasTableRef} className="overflow-x-auto overflow-y-auto custom-table-scrollbar border-t border-gray-200 bg-white flex-1 min-h-0">
+                        <table className="w-full text-xs font-mono whitespace-nowrap" style={{ minWidth: 840 }}>
+                          <thead className="bg-[#141414] text-white sticky top-0 z-10">
+                            <tr>
+                              <th className="px-2 py-1 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[9px] text-center relative select-none" style={{ width: 36 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={encomendasWithOffers.every(e => e.selecionada && e.temOfertas)}
+                                  onChange={(e) => {
+                                    setEncomendasWithOffers(prev => prev.map(item => ({ ...item, selecionada: e.target.checked && item.temOfertas })));
+                                  }}
+                                  className="w-4 h-4 border-gray-300 text-violet-600 focus:ring-violet-500"
+                                />
+                              </th>
+                              <th className="px-2 py-1 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[9px] text-left relative select-none" style={{ width: 200 }}>
+                                <span>Produto & EAN</span>
+                              </th>
+                              <th className="px-2 py-1 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[9px] text-left relative select-none" style={{ width: 150 }}>
+                                <span>Cliente / Hora</span>
+                              </th>
+                              <th className="px-2 py-1 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[9px] text-left relative select-none" style={{ width: 180 }}>
+                                <span>Observação</span>
+                              </th>
+                              <th className="px-2 py-1 border-b border-r border-gray-700 font-bold uppercase tracking-wider text-[9px] text-left relative select-none" style={{ width: 180 }}>
+                                <span>Oferta (Dropdown)</span>
+                              </th>
+                              <th className="px-2 py-1 border-b border-gray-700 font-bold uppercase tracking-wider text-[9px] text-center relative select-none" style={{ width: 90 }}>
+                                <span>Qtd</span>
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200">
+                            {encomendasWithOffers.map((item, idx) => {
+                              const enc = item.encomenda;
+                              const temOfertas = item.temOfertas;
+                              const ofertaSel = item.ofertaSelecionada;
+                              const temErro = !!item.erro;
+                              const semOfertas = !temOfertas && !temErro;
+                              
+                              const itemRowKey = `${item.idEncomenda}_${idx}`;
+                              const currentQty = encomendasQuantities[itemRowKey] !== undefined ? encomendasQuantities[itemRowKey] : item.quantidade;
+                              const isAddedSuccess = encomendasActionSuccessKey === itemRowKey;
+                              const isAdded = encomendasAddedKeys.has(itemRowKey);
+                              const disabled = !item.selecionada || !temOfertas || !item.ofertaSelecionada;
+
+                              return (
+                                <tr key={itemRowKey} className={`transition-colors ${isAdded ? 'bg-yellow-100 border-l-4 border-yellow-400' : (item.selecionada ? 'bg-violet-50/70' : (idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70'))} ${temErro ? 'border-l-4 border-l-rose-500' : ''}`}>
+                                  {/* Checkbox */}
+                                  <td className="px-2 py-1 border-r border-gray-200 align-middle text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={item.selecionada}
+                                      disabled={!item.temOfertas}
+                                      onChange={(e) => {
+                                        setEncomendasWithOffers(prev => {
+                                          const updated = [...prev];
+                                          updated[idx] = { ...updated[idx], selecionada: e.target.checked && item.temOfertas };
+                                          return updated;
+                                        });
+                                      }}
+                                      className="w-4 h-4 border-gray-300 text-violet-600 focus:ring-violet-500 disabled:opacity-30 cursor-pointer"
+                                    />
+                                  </td>
+
+                                  {/* Produto & EAN */}
+                                  <td className="px-2 py-1 border-r border-gray-200 align-middle whitespace-normal" style={{ width: 200 }}>
+                                    <div className="font-bold text-[#141414] select-text line-clamp-2 leading-tight text-[10px]">{item.descricao}</div>
+                                    <div className="flex items-center gap-1 mt-0.5">
+                                      <span className="text-[9px] text-gray-600 font-mono select-text">{item.ean || "—"}</span>
+                                      <button onClick={() => navigator.clipboard.writeText(item.ean || "")} className="text-gray-400 hover:text-[#141414] cursor-pointer" title="Copiar EAN">
+                                        <Copy className="w-3 h-3" />
+                                      </button>
+                                      {item.erro && (
+                                        <span className="text-[8px] bg-rose-100 text-rose-700 px-1 py-0.5 font-bold">ERRO</span>
+                                      )}
+                                      {!item.erro && !item.temOfertas && (
+                                        <span className="text-[8px] bg-amber-100 text-amber-700 px-1 py-0.5 font-bold">Sem ofertas</span>
+                                      )}
+                                    </div>
+                                  </td>
+
+                                  {/* Cliente / Hora */}
+                                  <td className="px-2 py-1 border-r border-gray-200 align-middle whitespace-normal" style={{ width: 150 }}>
+                                    <div className="text-[12px] text-gray-600 select-text font-bold">{item.cliente || "—"}</div>
+                                    {item.telefone && (
+                                      <div className="text-[11px] text-gray-500 font-mono select-text">{item.telefone}</div>
+                                    )}
+                                    {item.dataHora && (
+                                      <div className="text-[11px] text-violet-600 font-mono select-text mt-0.5">{item.dataHora}</div>
+                                    )}
+                                    {item.fornecedorSugerido && (
+                                      <div className="text-[11px] text-emerald-600 font-bold mt-0.5">Fornec: {item.fornecedorSugerido}</div>
+                                    )}
+                                    {item.dataPrevisao && (
+                                      <div className="text-[11px] text-blue-600 font-mono mt-0.5">Prev: {item.dataPrevisao}</div>
+                                    )}
+                                  </td>
+
+                                  {/* Observação */}
+                                  <td className="px-2 py-1 border-r border-gray-200 align-middle whitespace-normal" style={{ width: 180 }}>
+                                    <div className="text-[12px] text-red-700 bg-red-50 font-bold select-text line-clamp-2 leading-tight px-1.5 py-0.5 rounded">
+                                      {item.observacoes || "—"}
+                                    </div>
+                                  </td>
+
+                                  {/* Oferta Dropdown */}
+                                  <td className="px-2 py-1 border-r border-gray-200 align-middle" style={{ width: 180 }}>
+                                    {item.temOfertas && item.ofertas.length > 0 ? (
+                                      (() => {
+                                        const originalEan = (item.ean || "").replace(/^0+/, "");
+                                        const mesmoProduto = item.ofertas.filter((o: any) => (o.ean || o.Ean || "").replace(/^0+/, "") === originalEan);
+                                        const genericosSimilares = item.ofertas.filter((o: any) => (o.ean || o.Ean || "").replace(/^0+/, "") !== originalEan);
+                                        return (
+                                          <select
+                                            value={item.ofertaSelecionada ? `${item.ofertaSelecionada.distribuidora}|${item.ofertaSelecionada.precoLiquido || item.ofertaSelecionada.preco || 0}` : ""}
+                                            onChange={(e) => {
+                                              const [dist, preco] = e.target.value.split("|");
+                                              const oferta = item.ofertas.find((o: any) => o.distribuidora === dist && (o.precoLiquido || o.preco || 0) == preco);
+                                              if (oferta) {
+                                                setEncomendasWithOffers(prev => {
+                                                  const updated = [...prev];
+                                                  updated[idx] = { ...updated[idx], ofertaSelecionada: oferta };
+                                                  return updated;
+                                                });
+                                              }
+                                            }}
+                                            disabled={!item.selecionada}
+                                            className="w-full text-xs px-2 py-1 border border-gray-300 bg-white disabled:bg-gray-100"
+                                          >
+                                            <option value="">-- Escolher oferta --</option>
+                                            {mesmoProduto.length > 0 && (
+                                              <optgroup label="📦 Mesmo Produto (mesmo EAN)">
+                                                {mesmoProduto.map((o: any, oi: number) => (
+                                                  <option key={`same-${oi}`} value={`${o.distribuidora}|${o.precoLiquido || o.preco || 0}`}>
+                                                    {o.distribuidora} - R$ {(o.precoLiquido || o.preco || 0).toFixed(2)} - {o.estoque === 2 ? "Normal" : o.estoque === 1 ? "Baixo" : "Sem"} - {o.condicao || "FIXA"} {o.prazo ? `${o.prazo}d` : "À Vista"}
+                                                  </option>
+                                                ))}
+                                              </optgroup>
+                                            )}
+                                            {genericosSimilares.length > 0 && (
+                                              <optgroup label="🔄 Genéricos/Similares (outro EAN)">
+                                                {genericosSimilares.map((o: any, oi: number) => (
+                                                  <option key={`gen-${oi}`} value={`${o.distribuidora}|${o.precoLiquido || o.preco || 0}`}>
+                                                    {o.distribuidora} - R$ {(o.precoLiquido || o.preco || 0).toFixed(2)} - {o.estoque === 2 ? "Normal" : o.estoque === 1 ? "Baixo" : "Sem"} - {o.condicao || "FIXA"} {o.prazo ? `${o.prazo}d` : "À Vista"}
+                                                  </option>
+                                                ))}
+                                              </optgroup>
+                                            )}
+                                          </select>
+                                        );
+                                      })()
+                                    ) : (
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] text-amber-700 bg-amber-100 px-1.5 py-0.5 font-bold">Sem ofertas</span>
+                                        <button
+                                          onClick={() => {
+                                            setManualAddOriginItem({ ean: item.ean || "", descricao: item.descricao, laboratorio: "" });
+                                            setIsManualAddModalOpen(true);
+                                            setIsEncomendasImportOpen(false);
+                                          }}
+                                          className="px-2 py-1 text-[10px] font-bold uppercase bg-amber-600 hover:bg-amber-700 text-white border border-amber-700 transition-colors"
+                                          title="Buscar manualmente no modal Adição Manual"
+                                        >
+                                          Buscar manual
+                                        </button>
+                                      </div>
+                                    )}
+                                  </td>
+
+                                  {/* Qtd */}
+                                  <td className="px-2 py-1 border-r border-gray-200 align-middle text-center" style={{ width: 90 }}>
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      value={currentQty}
+                                      onChange={(e) => {
+                                        const val = Math.max(1, parseInt(e.target.value) || 1);
+                                        setEncomendasQuantities(prev => ({ ...prev, [itemRowKey]: val }));
+                                      }}
+                                      className="w-12 bg-white border-2 border-[#141414] px-1 py-0.5 text-xs font-mono text-center rounded-none focus:outline-none focus:ring-1 focus:ring-[#141414]"
+                                    />
+</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-gray-500 font-mono px-1">
+                        <span>← Use a barra de rolagem horizontal →</span>
+                        <span>{encomendasWithOffers.filter(e => e.selecionada && e.temOfertas).length} encomendas selecionadas</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Botões de Ação */}
+                  {encomendasWithOffers.length > 0 && !isSearchingEncomendas && (
+<div className="flex justify-end gap-2 pt-1.5 border-t border-gray-200">
+                       <button
+                         onClick={() => {
+                           setIsEncomendasImportOpen(false);
+                           setEncomendasList([]);
+                           setEncomendasWithOffers([]);
+                           setEncomendasAddedKeys(new Set());
+                         }}
+                         className="px-3 py-1.5 bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 text-[9px] font-bold uppercase transition-colors"
+                       >
+                         Cancelar
+                       </button>
+                       <button
+                         onClick={handleConfirmImportEncomendas}
+                         disabled={encomendasWithOffers.filter(e => e.selecionada && e.temOfertas && e.ofertaSelecionada).length === 0}
+                         className="px-4 py-1.5 bg-violet-700 hover:bg-violet-800 text-white text-[9px] font-bold uppercase transition-colors flex items-center gap-1.5 border border-violet-800 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                       >
+                         <Check className="w-3.5 h-3.5" />
+                         <span>Importar Selecionados</span>
+                       </button>
+                     </div>
                   )}
                 </div>
               </div>
