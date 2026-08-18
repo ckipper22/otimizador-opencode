@@ -40,6 +40,7 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 | `docs/testing.md` | Massa de testes, endpoints, scripts de diagnóstico | Ao validar alterações ou debugar |
 | `API_TREE_SMARTPED.md` | Árvore de endpoints da SmartPed | Ao integrar novos endpoints |
 | `API_TREE_TRIER.md` | Árvore de endpoints do ERP Trier | Ao integrar novos endpoints Trier |
+| `docs/encomendas-integration.md` | API Encomendas: auth, endpoints, fluxo completo | Ao integrar ou debugar encomendas |
 
 ---
 
