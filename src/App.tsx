@@ -302,6 +302,7 @@ export default function App() {
 
   // Encomendas Import State
   const [isEncomendasImportOpen, setIsEncomendasImportOpen] = useState<boolean>(false);
+  const [manualAddFromEncomendas, setManualAddFromEncomendas] = useState<string | null>(null);
   const [encomendasList, setEncomendasList] = useState<any[]>([]);
   const [encomendasWithOffers, setEncomendasWithOffers] = useState<any[]>([]);
   const [isSearchingEncomendas, setIsSearchingEncomendas] = useState<boolean>(false);
@@ -445,145 +446,34 @@ export default function App() {
         return;
       }
 
-      // 2. Para cada encomenda, buscar ofertas na SmartPed
+      // 2. Buscar ofertas para TODAS as encomendas em PARALELO (batch) - evita timeout
       setIsSearchingEncomendas(true);
-      const results: any[] = [];
+      setEncomendasSearchLogs(prev => [...prev, `[BATCH] Buscando ofertas para ${encomendas.length} encomenda(s) em paralelo...`]);
 
-      for (const enc of encomendas) {
-        const ean = enc.codigoBarras || enc.ean;
-        const descricao = enc.item || enc.descricao || "";
-        const quantidade = enc.quantidade || 1;
-        const idEncomenda = enc.id;
-        const cliente = enc.cliente || "";
-        const telefone = enc.telefone || "";
-        const observacoes = enc.observacoes || "";
-        const fornecedorSugerido = enc.fornecedor || "";
-        const dataPrevisao = enc.dataPrevisao || "";
-        const dataHora = enc.data ? new Date(enc.data).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : "";
+      const batchResp = await fetch("/api/encomendas/buscar-ofertas-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          encomendas,
+          token: config.token,
+          cnpj: config.cnpj,
+          useTestUrl: config.useTestUrl,
+          simulationMode: config.simulationMode,
+          margemMinima: config.margemMinima
+        })
+      });
 
-        setEncomendasSearchLogs(prev => [...prev, `[BUSCA] ${descricao.substring(0, 40)}... (Qtd: ${quantidade})`]);
-
-        try {
-          let ofertas: any[] = [];
-          let logs: string[] = [];
-
-          if (ean && /^\d+$/.test(String(ean).trim())) {
-            // Tem EAN - busca robusta: Condicoes/Ean + Condicoes/Molecula em paralelo (igual otimização)
-            setEncomendasSearchLogs(prev => [...prev, `  -> Busca robusta por EAN: ${ean} (Ean + Molecula)`]);
-            const searchResp = await fetch("/api/search-products", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                query: ean,
-                token: config.token,
-                cnpj: config.cnpj,
-                useTestUrl: config.useTestUrl,
-                simulationMode: config.simulationMode,
-                permitirSemEstoque: false,
-                // tipos: config.tipos,  // REMOVIDO: para encomendas não filtrar por tipo - queremos o produto exato
-                margemMinima: config.margemMinima,
-                onlyExactEan: false,  // Busca completa com substitutos
-                skipMolecula: false   // Chama Molecula para trazer substitutos/genéricos
-              })
-            });
-
-            if (searchResp.ok) {
-              const searchData = await searchResp.json();
-              ofertas = searchData.items || [];
-              logs = searchData.logs || [];
-            }
-          } else {
-            // Sem EAN - busca por descrição completa: Produtos/Buscar -> EANs -> Condicoes/Ean + Molecula
-            setEncomendasSearchLogs(prev => [...prev, `  -> Busca por descrição: "${descricao}" (Busca + Ean + Molecula)`]);
-            const searchResp = await fetch("/api/search-products", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                query: descricao,
-                token: config.token,
-                cnpj: config.cnpj,
-                useTestUrl: config.useTestUrl,
-                simulationMode: config.simulationMode,
-                permitirSemEstoque: false,
-                // tipos: config.tipos,  // REMOVIDO: para encomendas não filtrar por tipo
-                margemMinima: config.margemMinima,
-                skipMolecula: false  // Busca completa com Molecula
-              })
-            });
-
-            if (searchResp.ok) {
-              const searchData = await searchResp.json();
-              ofertas = searchData.items || [];
-              logs = searchData.logs || [];
-            }
-          }
-
-          // Filtrar apenas ofertas com estoque
-          const ofertasComEstoque = ofertas.filter((o: any) => {
-            const est = o.estoque !== undefined ? o.estoque : (o.Estoque !== undefined ? o.Estoque : 9999);
-            return est > 0;
-          });
-
-          // Ordenar: mesmo EAN primeiro (maior prioridade), depois por preço líquido ascendente
-          const originalEanClean = (ean || "").replace(/^0+/, "");
-          ofertasComEstoque.sort((a: any, b: any) => {
-            const aEan = (a.ean || a.Ean || "").replace(/^0+/, "");
-            const bEan = (b.ean || b.Ean || "").replace(/^0+/, "");
-            const aIsSame = aEan === originalEanClean;
-            const bIsSame = bEan === originalEanClean;
-            if (aIsSame && !bIsSame) return -1;
-            if (!aIsSame && bIsSame) return 1;
-            const aPrice = Number(a.pliquidoUni || a.pliquido || a.precoLiquido || a.preco || a.Preco || 0);
-            const bPrice = Number(b.pliquidoUni || b.pliquido || b.precoLiquido || b.preco || b.Preco || 0);
-            return aPrice - bPrice;
-          });
-
-          results.push({
-            encomenda: enc,
-            idEncomenda,
-            ean,
-            descricao,
-            quantidade,
-            cliente,
-            telefone,
-            observacoes,
-            fornecedorSugerido,
-            dataPrevisao,
-            dataHora,
-            ofertas: ofertasComEstoque,
-            logs,
-            temOfertas: ofertasComEstoque.length > 0,
-            selecionada: ofertasComEstoque.length > 0,
-            ofertaSelecionada: ofertasComEstoque.length > 0 ? ofertasComEstoque[0] : null,
-            qtdSelecionada: quantidade
-          });
-
-          setEncomendasSearchLogs(prev => [...prev, `  -> ${ofertasComEstoque.length} oferta(s) com estoque encontrada(s)`]);
-
-        } catch (err: any) {
-          results.push({
-            encomenda: enc,
-            idEncomenda,
-            ean,
-            descricao,
-            quantidade,
-            cliente,
-            telefone,
-            observacoes,
-            fornecedorSugerido,
-            dataPrevisao,
-            dataHora,
-            ofertas: [],
-            logs: [],
-            temOfertas: false,
-            selecionada: false,
-            ofertaSelecionada: null,
-            qtdSelecionada: quantidade,
-            erro: err.message
-          });
-          setEncomendasSearchLogs(prev => [...prev, `  -> ERRO: ${err.message}`]);
-        }
+      const batchData = await batchResp.json();
+      if (!batchResp.ok) {
+        throw new Error(batchData.error || `Erro ${batchResp.status} na busca batch`);
       }
+
+      // Adicionar logs do batch
+      if (batchData.logs) {
+        setEncomendasSearchLogs(prev => [...prev, ...batchData.logs]);
+      }
+
+      const results = batchData.results || [];
 
       setEncomendasWithOffers(results);
       setEncomendasSearchLogs(prev => [...prev, `[CONCLUÍDO] Busca finalizada para todas as encomendas.`]);
@@ -1197,9 +1087,9 @@ export default function App() {
 
             {/* Version / Build Info */}
             <div className="text-[9px] font-mono text-gray-500 bg-gray-100 border border-gray-200 px-2 py-1 flex items-center gap-2 select-text">
-              <span>v: {typeof __BUILD_INFO__ !== 'undefined' ? __BUILD_INFO__.commit : 'dev'}</span>
+              <span>{typeof __BUILD_INFO__ !== 'undefined' ? __BUILD_INFO__.version : 'dev'}</span>
               <span className="text-gray-400">|</span>
-              <span>{typeof __BUILD_INFO__ !== 'undefined' ? __BUILD_INFO__.timestamp : new Date().toISOString().slice(0,19).replace('T',' ')}</span>
+              <span>{typeof __BUILD_INFO__ !== 'undefined' ? __BUILD_INFO__.commit : ''}</span>
             </div>
 
             {/* Parâmetros do Otimizador Trigger */}
@@ -2614,7 +2504,7 @@ export default function App() {
                       </p>
                     )}
                   </div>
-                  <button onClick={() => { setIsManualAddModalOpen(false); setManualQuery(""); setManualAddOriginItem(null); }} className="text-[#E4E3E0]/70 hover:text-white transition-colors cursor-pointer">
+                   <button onClick={() => { setIsManualAddModalOpen(false); setManualQuery(""); setManualAddOriginItem(null); if (manualAddFromEncomendas) { setEncomendasAddedKeys(prev => new Set([...prev, manualAddFromEncomendas])); setManualAddFromEncomendas(null); setIsEncomendasImportOpen(true); } }} className="text-[#E4E3E0]/70 hover:text-white transition-colors cursor-pointer">
                     <XCircle className="w-6 h-6" />
                   </button>
                 </div>
@@ -3323,6 +3213,7 @@ export default function App() {
                                         <button
                                           onClick={() => {
                                             setManualAddOriginItem({ ean: item.ean || "", descricao: item.descricao, laboratorio: "" });
+                                            setManualAddFromEncomendas(itemRowKey);
                                             setIsManualAddModalOpen(true);
                                             setIsEncomendasImportOpen(false);
                                           }}

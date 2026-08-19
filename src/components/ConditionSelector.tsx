@@ -256,18 +256,6 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
 
   const currentIndex = alternatives.findIndex(isCurrentAlt);
 
-  // Log diagnóstico quando currentIndex === -1 (nenhum match encontrado)
-  useEffect(() => {
-    if (alternatives.length > 0 && currentIndex === -1) {
-      const ean = item.isRupturaSubstitution ? item.novoEan : item.originalEan;
-      console.log(`[CONDITION-SELECTOR] ⚠️ NENHUM MATCH | EAN(item)=${item.novoEan} | dist(item)=${item.distribuidora} | preco(item)=${item.novoPreco}`);
-      alternatives.slice(0, 3).forEach((alt, i) => {
-        const g = getAlt(alt);
-        console.log(`[CONDITION-SELECTOR]   alt[${i}]: ean=${g.ean} | dist=${g.distribuidora} | preco=${g.preco} | eanMatch=${cleanEanLocal(g.ean) === cleanEanLocal(item.novoEan)}`);
-      });
-    }
-  }, [currentIndex, alternatives, item.novoEan, item.distribuidora, item.novoPreco]);
-
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const idx = parseInt(e.target.value, 10);
     const selected = alternatives[idx];

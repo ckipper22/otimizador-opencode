@@ -1,5 +1,38 @@
 # Diretrizes Gerais de Operação do Sistema
 
+> **ANTES DE QUALQUER COISA: Leia a seção "CEGUEIRA ANTIGA" abaixo. São bugs já resolvidos que se repetem quando não consultados.**
+
+---
+
+## CEGUEIRA ANTIGA — BUGS JÁ RESOLVIDOS, NÃO TENTAR CORRIGIR NOVAMENTE
+
+| # | Bug | Causa Raiz | Correção Já Aplicada | Onde Verificar |
+|---|-----|-----------|----------------------|----------------|
+| 1 | **Deploy apaga variáveis de ambiente** | `--set-env-vars` SUBSTITUI todas as variáveis | Usar `--env-vars-file cloud-env.yaml` com TODAS as 12 variáveis | `cloud-env.yaml`, LLM_CONTEXT.md #34 |
+| 2 | **Servidor sobe na porta 3000 em vez de 8080 no Cloud Run** | Cloud Run não seta `NODE_ENV=production` | `cloud-env.yaml` deve conter `NODE_ENV: "production"` | `server/config.ts:16` |
+| 3 | **Encomendas retornam "Sem ofertas"** | Batch endpoint fazia `push(...items)` em vez de `push(...item.Condicoes[])` | Extrair `Condicoes[]` e `Substitutos[]` de dentro de cada `item` | `server.ts` batch endpoint ~linhas 327-397 |
+| 4 | **`Condicoes/Ean` sozinho retorna QtdMin=0** | QtdMin vem do `Condicoes/Molecula` | Chamar AMBOS em `Promise.all` sempre | AGENTS.md #12, regra obrigatória |
+| 5 | **Cache morre a cada restart do Cloud Run** | Cache L1 (Map) é perdido | Cache L2 (Turso) persiste. Nunca assumir "em memória" | AGENTS.md #13 |
+| 6 | **PMC não aparece / aparece errado** | Case-sensitivity SmartPed (`PMC`/`pmc`/`Pmc`) | Usar fallback: `offer.PMC \|\| offer.pmc` | AGENTS.md #28, server.ts extractPmc |
+| 7 | **`Condicoes/Ean` exige `AceitaOntem: 1`** | Sem ele, promoções do dia anterior são omitidas | Sempre incluir `AceitaOntem: 1` | AGENTS.md #12 |
+| 8 | **Deduplicação por preço (ERRADO)** | Chave deve ser `${Ean}_${CodDist}_${Condicao}_${Prazo}` SEM preço | Manter menor preço líquido | AGENTS.md #16, #20 |
+| 9 | **`better-sqlite3` causa SIGSEGV no Cloud Run** | gVisor não suporta mmaps | Usar Turso em produção, better-sqlite3 só local | AGENTS.md #15 |
+| 10 | **Campo `dists[]` da SmartPed ignorado** | `NomeDist` não vem no objeto `Condicoes[]` individual | Extrair de `Retorno.dists[]` via match por `CodDist` | API_TREE_SMARTPED.md #123, #253 |
+| 11 | **Itens manuais perdidos** | Salvos só em localStorage | Persistir em localStorage + Turso | AGENTS.md #21 |
+| 12 | **Encomendas "Não autorizado"** | Deploy substituiu variáveis de integração | Usar `--env-vars-file` com TODAS as variáveis | LLM_CONTEXT.md #34 |
+| 13 | **Encomendas preço R$ 0.00** | Backend retorna PascalCase (NomeDist, Pliquido), frontend espera lowercase (distribuidora, precoLiquido) | Normalizar campos antes de retornar no batch endpoint | server.ts batch endpoint, App.tsx linhas 3165-3206 |
+| 14 | **REGRESSÃO: "Não Encontrados" como substituto** | Motor de trocas volta a permitir ofertas não-reais | Verificar `findBestSubstitute` em `swap-engine.ts` — `return false` para `!isRealOffer` | LLM_CONTEXT.md #35 |
+| 15 | **REGRESSÃO: CodDist em vez de NomeDist** | `resolveDistName()` ou mapeamento `dists[]` não aplicado nos endpoints | Verificar extração de `Retorno.dists[]` via `CodDist` match | LLM_CONTEXT.md #36 |
+| 16 | **Ruptura falso (mesmo EAN como substituto)** | `parseSmartPedEstoque` retorna 0 incorreto OU motor reinjeta mesmo-EAN | Verificar parsing de estoque + filtro de substitutos | LLM_CONTEXT.md #37 |
+| 17 | **Itens imaginários no JSON de envio** | Fornecedor externo (codDist=9999) tem `CodProduto: ""` → SmartPed recebe "0" | Revisar Blindagem 1 para codDist=9999 + `parseInt(codDist)\|\|2` edge case | LLM_CONTEXT.md #40 |
+| 18 | **Blindagem bloqueia ruptura legítima** | `originalCodDist===0` bloqueia substitutos válidos (codDist>0) | Permitir ruptura quando `parsedCodDist > 0` mesmo com `originalCodDistNum === 0` | LLM_CONTEXT.md #41 |
+| 19 | **Mojibake impedia filtro de "Não Encontrados"** | Defaults hardcoded tinham `"NÃ£o Encontrados"` (encoding Latin-1), comparações usavam UTF-8 (`"não encontrados"`) — nunca casavam | Usar `isNotFoundName()` (helper centralizado) em TODAS as checagens. **NUNCA** fazer `dist.includes("NÃO ENCONTRADOS")` inline | server.ts `isNotFoundName()`, LLM_CONTEXT.md #42 |
+
+**SE O PROBLEMA PARECE NOVO, VERIFIQUE ESTA TABELA ANTES DE INVESTIGAR.**
+Se estiver aqui, a correção já existe. Não reinvente a roda.
+
+---
+
 Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 
 1. **CONSULTA OBRIGATÓRIA (FONTE DA VERDADE):** Antes de propor, escrever ou alterar qualquer linha de código, consulte o arquivo de contexto principal do projeto (`LLM_CONTEXT.md`). Respeite estritamente a arquitetura definida, a stack tecnológica, os pontos sensíveis e as restrições arquiteturais listadas nele.
@@ -32,11 +65,32 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 22. **ITENS CONFIRMADOS - CACHE TURSO + API:** O endpoint `/api/itens-confirmados-do-dia` deve consultar Turso primeiro (histórico) e depois API SmartPed (tempo real). Combinar resultados evitando duplicatas. Salvar no Turso apenas itens com Status === 3 (faturados).
 23. **PURGE AUTOMÁTICA 6 MESES:** Dados permanentes (`orders`, `order_items`, `faturados`, `itens_confirmados`, `itens_manuais`) têm purge automática após 6 meses. Nunca confiar em crescimento infinito do banco.
 24. **DEPLOY APENAS COM AUTORIZAÇÃO:** Nunca fazer deploy sem confirmação explícita do usuário. Sempre perguntar antes de executar `gcloud run deploy`.
-25. **BUSCA POR TIPO DE ITEM - REGRAS DISTINTAS:** Na otimização (`/api/optimize`), o comportamento de busca varia por tipo:
-    - **Genéricos (TipoItem "G"):** Busca COMPLETA mesmo sem ruptura — inclui RUPTURA-REGEX (busca por descrição via `Produtos/Buscar`), TARGET-EAN-PRE, e dropdown com TODOS os EANs equivalentes.
-    - **Éticos/Referência/Similares (R, E, O, S) sem ruptura:** Busca do MESMO PRODUTO — inclui apenas TARGET-EAN-PRE. Dropdown filtra para EANs do mesmo produto (mesmo EAN ou EAN diferente com mesma descrição na SmartPed).
-    - **Qualquer item em ruptura:** Busca COMPLETA — RUPTURA-REGEX + Ferramentinhas fallback + tipos relaxados + todos EANs no dropdown.
-    - A decisão é: `isGeneric` (TipoItem="G") + `originalHasStock` (tem estoque>0). Ver seção 4.20 de `docs/business-rules.md`.
+25. **CLASSIFICAÇÃO DE PRODUTOS — FONTE ÚNICA: FERRAMENTINHAS `grupo`:** A classificação do produto vem do campo `grupo` retornado pelo endpoint `/api/produtos/similares/{ean}` da Ferramentinhas. **NÃO usar** TipoItem da SmartPed como fonte primária (às vezes vem vazio ou incorreto). Valores do campo `grupo`:
+    - **"Genérico"** → Busca subs (só genéricos). Ruptura → pode similar, NÃO referência.
+    - **"Similar"** → Sem subs. Ruptura → qualquer coisa com estoque.
+    - **"Referência"** → Sem subs. Ruptura → qualquer coisa com estoque.
+    - **"Perfumaria"** / **"Correlatos"** → **Nunca buscar subs.**
+    - **Sem grupo / vazio** → Tratar como "Referência" (fallback seguro).
+    - SmartPed TipoItem é **fallback** quando Ferramentinhas não tem o produto. Valores SmartPed: `"G"=Genérico`, `"M"=Marca/Ref`, `"S"=Similar`, `"O"=Outros`, `"P"=Perfumaria`.
+    - **REGEX complementar SEMPRE:** `Condicoes/Molecula` como base + `Produtos/Buscar` (RUPTURA-REGEX) como complemento para achar produtos que o Molecula não trouxe. Merge + deduplicação.
+
+26. **COMPORTAMENTO POR TIPO + STATUS:**
+
+    | Tipo | Com Estoque | Ruptura |
+    |------|-------------|---------|
+    | Genérico | Só genéricos como sub | REGEX + similar OK. NÃO referência |
+    | Referência | Nada | Qualquer coisa com estoque |
+    | Similar | Nada | Qualquer coisa com estoque |
+    | Perfumaria | Nada | Nada |
+    | Sem classificação | Nada | Qualquer coisa com estoque |
+
+27. **ALINHAMENTO FRONTEND/BACKEND — OBRIGATÓRIO:** Sempre que alterar backend (`server.ts`, `server/*.ts`), verificar se o frontend (`App.tsx`, componentes) usa os mesmos campos/nomes. E vice-versa. Se o backend retornar campo novo, o frontend precisa ler. Se o frontend esperar campo que o backend não retorna, o preço vira R$ 0.00.
+
+28. **NOMENCLATURA PADRONIZADA — NÃO PERDER NOMES:**
+    - Backend: `distribuidora`, `codDist`, `precoLiquido`, `preco`, `estoque`, `condicao`, `prazo`, `ean`, `descricao`, `laboratorio` (tudo lowercase)
+    - SmartPed API: `NomeDist`, `CodDist`, `Pliquido`, `Preco`, `Estoque`, `Condicao`, `Prazo`, `Ean`, `Descricao` (PascalCase)
+    - Ferramentinhas: `nom_produto`, `nom_laborat`, `vlr_custopersonalizado`, `vlr_venda_final`, `qtd_estoque`, `cod_dcb`, `grupo`, `classificacao`
+    - **NUNCA misturar.** O backend normaliza de PascalCase (SmartPed) pra lowercase antes de retornar ao frontend.
 26. **PESQUISA EXTERNA ANTES DE DEBUGAR:** Quando um bug não tem causa óbvia no código (ex: funciona local mas não no Cloud), SEMPRE pesquisar em fonts externas (GitHub issues, StackOverflow, docs oficiais da plataforma, forums) antes de propor soluções. Evitar "inventar" soluções sem evidência externa. Registrar descobertas em `LLM_CONTEXT.md` (seção 4.21 ou similar).
 
 27. **MODAL ENCOMENDAS — PADRÃO IGUAL AO MODAL "+" (ADIÇÃO MANUAL):** O modal de importar encomendas deve seguir exatamente o padrão do modal de adição manual (botão "+"):
@@ -51,5 +105,20 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 
 28. **PMC — APENAS SE API RETORNA, SEM FALLBACK:** PMC (Preço Máximo ao Consumidor) só aparece se a SmartPed retornar o campo. **NUNCA** calcular fallback `preco * 1.4`. Backend (`server.ts` `/api/search-products`) não calcula PMC — repassa `PMC` direto do JSON SmartPed. Frontend (`App.tsx`) normaliza `offer.PMC || offer.pmc` (case-sensitivity). Visual: fonte 11px bold, texto rosa, fundo rosa transparente (`bg-pink-100/60`). Campo `originalPmc`/`novoPmc` nas linhas do relatório vem do `useOptimizationResult.activeReport` via spread `...item`.
 29. **CASE-SENSITIVITY SMARTPED:** A API SmartPed retorna campos com maiúsculas/minúsculas inconsistentes (`PMC`/`pmc`, `Pmc`, `VlrPmc`). Sempre usar fallback: `field || field_lowercase || field_PascalCase`. Verificar em: `/api/search-products` (backend), `App.tsx` (frontend), `useManualSearch.ts` (normalização).
+30. **CONTRATO DE CAMPOS: BACKEND → FRONTEND:** O backend normaliza os campos da SmartPed antes de retornar ao frontend. **Campos obrigatórios no retorno de qualquer endpoint de busca:**
+    - `distribuidora` (não `NomeDist`), `codDist` (não `CodDist`)
+    - `precoLiquido` (não `Pliquido`), `preco` (não `Preco`)
+    - `estoque` (não `Estoque`), `condicao` (não `Condicao`), `prazo` (não `Prazo`)
+    - `ean` (não `Ean`), `descricao`, `laboratorio`
+    - Frontend (App.tsx, ConditionSelector, SwapsTable) SEMPRE usa lowercase. Se o backend retornar PascalCase, o preço aparece R$ 0.00.
+31. **VALIDAÇÃO DE NOMES DE DISTRIBUIDORA — SEMPRE USAR `isNotFoundName()`:** Nunca fazer checagem inline como `dist.includes("NÃO ENCONTRADOS")` ou `dist.startsWith("DISTRIBUIDOR")`. SEMPRE usar o helper `isNotFoundName(name)` (server.ts, linha ~68) que trata automaticamente: UTF-8, mojibake (`nÃ£`), sem acento, "Sem Estoque" e "Distribuidor*". O mojibake ocorre porque o arquivo fonte pode ter encoding Latin-1 misturado com UTF-8.
+
+32. **MEMORY BANK — AUTO-ATUALIZAÇÃO OBRIGATÓRIA:** Sempre que o usuário digitar o gatilho EXATO `[SAVE]`, o agente tem a OBRIGAÇÃO ABSOLUTA de interromper a análise e invocar imediatamente a ferramenta `write` ou `edit` para resumir e atualizar o arquivo `memoryBank/activeContext.md`. É EXPRESSAMENTE PROIBIDO gerar a frase de confirmação "Estado salvo com sucesso" ANTES que o log do sistema confirme que a gravação física no HD foi concluída. Ler `memoryBank/` no início de cada sessão para retomar contexto.
+
+33. **PROIBIDO MATAR OU INICIAR PROCESSOS `npm run dev` / `node`:** É OBRIGAÇÃO DO USUÁRIO iniciar e finalizar o servidor de desenvolvimento. O agente NUNCA deve executar `Stop-Process`, `kill`, `Get-Process | Stop-Process`, `npm run dev`, `npm run start` ou qualquer comando que mate ou inicie processos node. O agente pode ler logs de arquivos e sugerir comandos ao usuário, mas NUNCA executá-los. Exceção: o agente PODE matar processos APENAS se o usuário pedir explicitamente.
+
+34. **LOGS EM ARQUIVO PARA DEBUG:** Quando o usuário pedir para ver logs da otimização, o agente deve configurar gravação de logs em arquivo (ex: `debug-logs/optimize-*.log`) via `fs.appendFileSync` no endpoint relevante. Assim o agente pode ler o arquivo com a ferramenta `Read` sem precisar acessar o terminal do usuário.
 
 *Sempre se comunique em português.*
+
+*Fuso horário do usuário: America/Sao_Paulo (UTC-3) — Panambi, RS. Sempre que mencionar horários, usar esse fuso.*

@@ -183,18 +183,27 @@ Quando o usuÃ¡rio clica no Ã­cone de lixeira (excluir), o cÃ³digo interno 
 - `DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string>` — cache em memória inicializado com 40+ distribuidoras conhecidas no startup
 - `loadDistribuidoresFromAPI()` — chamado no startup; consome `/api/Condicoes/Distribuidores` e popula o cache
 - `enrichDistribuidoresFromPayload(payload)` — extrai `payload.Retorno.dists[]` de **qualquer** resposta SmartPed e atualiza o cache em tempo real
-- `resolveDistName(obj, codDist)` — resolver centralizado (linha ~40):
+- `resolveDistName(obj, codDist)` — resolver centralizado (linha ~68):
   ```typescript
+  // Helper: detecta "Não Encontrados" em qualquer encoding (UTF-8, mojibake, sem acento)
+  function isNotFoundName(name) {
+    const n = String(name).trim().toLowerCase();
+    return !n || n.includes("não encontrado") || n.includes("nao encontrado") || n.includes("nÃ£") || n.includes("sem estoque") || n.startsWith("distribuidor");
+  }
+
+  // Cadeia de fallback com proteção mojibake
   return (
-    obj?.NomeDist || obj?.nomeDist ||           // Maioria dos endpoints
-    obj?.NomeDistribuidora ||                   // Condicoes/Ofertas
-    obj?.Nome_Dpe ||                            // Condicoes/Sugestoes
-    obj?.Nome ||                                // Condicoes/Distribuidores
-    (code && DISTRIBUIDORAS_DYNAMIC_CACHE[code]) ||  // Cache dinâmico (primário)
-    (code && DISTRIBUIDORAS_MAP[code]) ||       // Mapa estático (fallback final)
-    (code ? `Distribuidor ${code}` : "Distribuidor")
+    (ok(obj?.NomeDist) ? obj.NomeDist : undefined) ||
+    (ok(obj?.nomeDist) ? obj.nomeDist : undefined) ||
+    (ok(obj?.NomeDistribuidora) ? obj.NomeDistribuidora : undefined) ||
+    (ok(obj?.Nome_Dpe) ? obj.Nome_Dpe : undefined) ||
+    (ok(obj?.Nome) ? obj.Nome : undefined) ||
+    DISTRIBUIDORAS_DYNAMIC_CACHE[code] ||   // Cache dinâmico (primário)
+    DISTRIBUIDORAS_MAP[code] ||              // Mapa estático (fallback final)
+    `Distribuidor ${code}`
   );
   ```
+- **`isNotFoundName()` é a ÚNICA forma de checar nomes inválidos.** Nunca fazer `dist.includes("NÃO ENCONTRADOS")` inline — ver AGENTS.md #31.
 - **Substituídos 8+ pontos** de parsing manual por `resolveDistName()` (linhas ~895, 1211, 1741, 2124, 2168, 4242, 4746, 4819, 4875)
 - **Erro crítico corrigido:** Linha 2124 lia `melhor.NomeDist` direto do objeto bruto do `findBestSubstitute` (que não tem esse campo). Corrigido para `resolveDistName(melhor, codDist)`.
 
@@ -439,9 +448,37 @@ O sistema aplica o mesmo fluxo de busca da ruptura para encontrar todos os fabri
    - EAN do melhor substituto escolhido
    - EANs de `combinedSubstitutos` com **mesma descriÃ§Ã£o** do original (mesmo produto, cÃ³digo de barras diferente na SmartPed)
 
+**Perfumaria (TipoItem "P") — SEM Busca de Substitutos:**
+A API SmartPed retorna `Substitutos: []` e `Molecula: ""` para itens com `TipoItem="P"`. O sistema NÃO deve:
+- Chamar `Produtos/Buscar` para buscar substitutos de perfumaria
+- Rodar RUPTURA-REGEX para itens perfumaria
+- Adicionar alternativas manuais para perfumaria
+
+O comportamento correto é: buscar APENAS `Condicoes/Ean` (preço/estoque do próprio EAN). Não há o que otimizar em termos de troca para perfumaria.
+
+> **Referência:** `API_TREE_SMARTPED.md` seção 2 (Condicoes/Molecula) — Tabela de Valores de TipoItem
+
+#### 4.20.3.1 Fonte de Classificação — Ferramentinhas `grupo`
+
+A classificação do produto vem do campo `grupo` da Ferramentinhas (`/api/produtos/similares/{ean}`). **NÃO usar** TipoItem da SmartPed como fonte primária.
+
+| `grupo` Ferramentinhas | Comportamento |
+|------------------------|---------------|
+| `"Genérico"` | Busca subs (só genéricos). Ruptura → pode similar, NÃO referência |
+| `"Similar"` | Sem subs. Ruptura → qualquer coisa com estoque |
+| `"Referência"` | Sem subs. Ruptura → qualquer coisa com estoque |
+| `"Perfumaria"` / `"Correlatos"` | Nunca buscar subs |
+| Sem grupo / vazio | Tratar como "Referência" (fallback seguro) |
+
+**Fallback:** Se Ferramentinhas não tem o produto (404), usar TipoItem da SmartPed:
+- `"G"` = Genérico, `"M"` = Marca/Ref, `"S"` = Similar, `"O"` = Outros, `"P"` = Perfumaria
+
+**REGEX complementar (SEMPRE):** `Condicoes/Molecula` como base + `Produtos/Buscar` (RUPTURA-REGEX) como complemento para achar produtos que o Molecula não trouxe. Merge + deduplicação por `${Ean}_${CodDist}_${Condicao}_${Prazo}`.
+
 **Resultado:**
-- GenÃ©ricos: ConditionSelector mostra **todas** as distribuidoras de todos os fabricantes genÃ©ricos encontrados
-- Ã‰ticos/Similares: ConditionSelector mostra distribuidoras do mesmo produto (EAN original + EANs com mesma descriÃ§ao)
+- Genéricos: ConditionSelector mostra **todas** as distribuidoras de todos os fabricantes genéricos encontrados
+- Éticos/Similares: ConditionSelector mostra distribuidoras do mesmo produto (EAN original + EANs com mesma descrição)
+- **Perfumaria: ConditionSelector mostra apenas ofertas do próprio EAN (sem substitutos)**
 
 #### 4.20.4. Caminho COM Ruptura (`originalHasStock = false`)
 

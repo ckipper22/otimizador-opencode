@@ -7,10 +7,17 @@ import {execSync} from 'child_process';
 function getBuildInfo() {
   try {
     const commit = execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim();
-    const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
-    return { commit, timestamp };
+    // Versão: vYYYY-MM-DD-HHmm no fuso horário de Panambi (UTC-3)
+    const now = new Date();
+    const panambi = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+    const version = `v${panambi.getUTCFullYear()}-${String(panambi.getUTCMonth() + 1).padStart(2, '0')}-${String(panambi.getUTCDate()).padStart(2, '0')}-${String(panambi.getUTCHours()).padStart(2, '0')}${String(panambi.getUTCMinutes()).padStart(2, '0')}`;
+    const timestamp = now.toISOString().slice(0, 19).replace('T', ' ');
+    return { commit, version, timestamp };
   } catch {
-    return { commit: 'unknown', timestamp: new Date().toISOString().slice(0, 19).replace('T', ' ') };
+    const now = new Date();
+    const panambi = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+    const version = `v${panambi.getUTCFullYear()}-${String(panambi.getUTCMonth() + 1).padStart(2, '0')}-${String(panambi.getUTCDate()).padStart(2, '0')}-${String(panambi.getUTCHours()).padStart(2, '0')}${String(panambi.getUTCMinutes()).padStart(2, '0')}`;
+    return { commit: 'unknown', version, timestamp: now.toISOString().slice(0, 19).replace('T', ' ') };
   }
 }
 

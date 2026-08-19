@@ -127,19 +127,19 @@ gcloud run deploy smartped-cli \
 Configure as variáveis de ambiente necessárias para a aplicação:
 
 ```bash
-gcloud run services update smartped \
-  --region us-central1 \
-  --set-env-vars "NODE_ENV=production" \
-  --set-env-vars "SMARTPED_TOKEN=seu_token_aqui" \
-  --set-env-vars "SMARTPED_CNPJ=00000000000000" \
-  --set-env-vars "SMARTPED_API_URL=https://api.smartped.com.br"
+# Gerar versão com data/hora de Panambi (UTC-3) e atualizar cloud-env.yaml
+$panambiTime = (Get-Date).ToUniversalTime().AddHours(-3)
+$version = "v" + $panambiTime.ToString("yyyy-MM-dd-HHmm")
+(Get-Content cloud-env.yaml) -replace 'APP_VERSION: ".*"', "APP_VERSION: `"$version`"" | Set-Content cloud-env.yaml
+Write-Host "Versao: $version"
+
+# Deploy
+gcloud run deploy smartped-cli --source . --region us-east1 --allow-unauthenticated --port 8080 --memory 1Gi --env-vars-file cloud-env.yaml
 ```
 
-Ou configure via Console:
-1. Acesse https://console.cloud.google.com/run
-2. Clique no serviço `smartped`
-3. Vá em **Editar e criar nova revisão**
-4. Na seção **Variáveis de ambiente**, adicione as variáveis
+**⚠️ NUNCA usar `--set-env-vars`** — ele SUBSTITUI todas as variáveis, apagando as que não foram listadas. Sempre usar `--env-vars-file cloud-env.yaml` que contém TODAS as variáveis.
+
+**Versionamento:** Formato `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). A versão aparece: (1) no header do app, (2) no `/api/health`, (3) no `cloud-env.yaml` (env var `APP_VERSION`).
 
 ---
 
@@ -191,7 +191,7 @@ gcloud run revisions list --service smartped --region us-central1
 ### Atualizar variáveis de ambiente
 
 ```bash
-gcloud run services update smartped --region us-central1 --set-env-vars "KEY=value"
+gcloud run services update smartped --region us-central1 --env-vars-file cloud-env.yaml
 ```
 
 ### Remover serviço

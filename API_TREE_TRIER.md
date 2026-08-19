@@ -91,6 +91,17 @@ est_maximo > estoque_maximo > maximo
 - A busca textual por similaridade usa `getMoleculeBase()` + intersecao de palavras-chave
 - Filtro de estoque ativo na UI: `estoque > 0` OU `minimo > 0`
 
+**Campos de Classificação (adicionados em 2026-08-19):**
+
+| Campo | Tipo | Exemplo | Descrição |
+|-------|------|---------|-----------|
+| `classificacao` | string | `"Genérico"`, `"Similar"`, `"Sem classificação"` | Classificação do produto no Trier |
+| `grupo` | string | `"Genérico"`, `"Similar"`, `"Referência"` | Grupo do produto (MAIS CONFIÁVEL que `classificacao`) |
+
+> **REGRA:** Usar `grupo` como fonte primária de classificação. `classificacao` às vezes vem "Sem classificação" mas `grupo` funciona sempre.
+
+> **Validação (2026-08-19):** Testado com 6 EANs. `grupo` retornou valores corretos para TODOS os produtos cadastrados. EANs não cadastrados retornam 404.
+
 ---
 
 ### 2. Vendas Detalhadas por EAN

@@ -12,6 +12,28 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 
 **Perfil de Uso:** B2B interno (compradores de drogarias).
 
+**Fuso horário do usuário:** America/Sao_Paulo (UTC-3) — Panambi, RS.
+
+---
+
+## 1.1. BUGS JÁ RESOLVIDOS — NÃO TENTAR CORRIGIR NOVAMENTE
+
+> **Leia esta tabela ANTES de qualquer investigação.** Se o problema parecer familiar, a correção já existe.
+
+| Bug | Sintoma | Correção | Arquivo |
+|-----|---------|----------|---------|
+| Deploy apaga env vars | Variáveis Some/not authorized/401 | `--env-vars-file cloud-env.yaml` (NUNCA `--set-env-vars`) | DEPLOY.md |
+| Porta 3000 no Cloud | Server starts on 3000, Cloud expects 8080 | `NODE_ENV: "production"` no cloud-env.yaml | server/config.ts:16 |
+| Encomendas "Sem ofertas" | `ofertas:[]` para EANs válidos | Extrair `item.Condicoes[]` (não `item` direto) | server.ts batch endpoint |
+| QtdMin sempre 0 | Só chamava `Condicoes/Ean` | Chamar AMBOS `Ean` + `Molecula` em `Promise.all` | AGENTS.md #12 |
+| Cache morre no restart | Acha que L1 sumiu | L2 (Turso) persiste. Ler L1→L2, escrever em ambos | AGENTS.md #13 |
+| PMC ausente/errado | `PMC: 0` ou `undefined` | `offer.PMC \|\| offer.pmc` (case-sensitivity) | AGENTS.md #28 |
+| SIGSEGV no Cloud | better-sqlite3 crash | Turso em produção, better-sqlite3 só local | AGENTS.md #15 |
+| NomeDist ausente | Dropdown sem nomes | Extrair de `Retorno.dists[]` via `CodDist` match | API_TREE_SMARTPED.md |
+| Dedup por preço errado | Ofertas duplicadas na UI | Chave: `${Ean}_${CodDist}_${Condicao}_${Prazo}` (sem preço) | AGENTS.md #16 |
+| Encomendas preço R$ 0.00 | Backend retorna PascalCase (NomeDist, Pliquido), frontend espera lowercase | Normalizar antes de retornar no batch endpoint | server.ts, App.tsx:3165 |
+| Mojibake impedia filtro de "Não Encontrados" | Defaults hardcoded tinham `"NÃ£o Encontrados"` (Latin-1), comparações usavam UTF-8 — nunca casavam | Usar `isNotFoundName()` (helper centralizado) em TODAS as checagens. **NUNCA** fazer `dist.includes("NÃO ENCONTRADOS")` inline | server.ts `isNotFoundName()`, AGENTS.md #19, #31 |
+
 ---
 
 ## 2. Stack Tecnológica
@@ -52,6 +74,10 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 4. Ambos endpoints SmartPed (`Condicoes/Ean` + `Condicoes/Molecula`) em paralelo.
 5. Turso em Cloud Run (fallback better-sqlite3 local).
 6. Deduplicação por `${Ean}_${CodDist}_${Condicao}_${Prazo}` (sem preço).
+7. **TipoItem "P" = Perfumaria** — API retorna `Substitutos: []` e `Molecula: ""`. Não buscar substitutos para perfumaria. Ver `API_TREE_SMARTPED.md` seção 2.
+8. **Classificação vem da Ferramentinhas** (`grupo`), NÃO da SmartPed. Ver AGENTS.md #25.
+9. **REGEX sempre como complemento** — Molecula como base + Produtos/Buscar pra enriquecer. Ver AGENTS.md #25.
+10. **ALINHAMENTO FRONTEND/BACKEND** — sempre que alterar um lado, confirmar no outro. Ver AGENTS.md #27.
 
 ---
 
@@ -324,6 +350,60 @@ O cache de 5min para condições comerciais é um "bônus" — o valor real do T
     - **Deploy:** `smartped-cli-00046-q6q` + `00047-c4j` (Cloud Run)
     - **Status:** RESOLVIDO
 
+35. **REGRESSÃO — "Não Encontrados" como substituto escolhido (2026-08-18):**
+    - **Problema:** EAN 7897595635792 (ROSUVASTATINA) aparece com `★ Atual: [Não Encontrados] R$ 11,02 | FIXA`.
+    - **Causa raiz:** `findBestSubstitute` em `swap-engine.ts` **está correto** (rejeita não-reais com `return false`). Porém, a cadeia de fallback do `alternatives` (server.ts:2825-2829) cai em `rawSubstitutosForAlternatives` ou `substitutos` quando `finalAlternatives` está vazio. Esses arrays vêm de `allAlternativesForRupture` (server.ts:1696) que pode conter "Não Encontrados" de `mappedSimilares` (CodDist=0).
+    - **Correção:** Filtrar ofertas não-reais do `allAlternativesForRupture` e da cadeia de fallback do `alternatives` via `isNotFoundName()`.
+    - **Status:** RESOLVIDO (bug #42)
+
+36. **REGRESSÃO — CodDist aparecendo em vez de NomeDist (2026-08-18):**
+    - **Problema:** Dropdown mostra código do fornecedor (ex: `12345`) em vez do nome (ex: `GCMEDICAMENTOS`).
+    - **Causa raiz:** `resolveDistName()` (server.ts:68-81) usa `DISTRIBUIDORAS_DYNAMIC_CACHE` populado apenas com dados do **sandbox** no startup. O código antigo (commit `8763c6f`) fazia `distsMapLocal[d.CodDist] = d.NomeDist` inline a cada resposta da API via `Retorno.dists[]`. O commit `363cb98` (busca por tipo) abandonou esse padrão — `allAlternativesForRupture` (server.ts:1630) e `itemAlternatives` (server.ts:1836) usam `s.NomeDist || s.nomeDist || "Distribuidor"` mas `NomeDist` **não vem** nos objetos individuais de substitutos SmartPed (vem em `Retorno.dists[]`, não no `Substitutos[]`).
+    - **Correção:** Restaurado `DISTRIBUIDORAS_MAP` como fallback em `resolveDistName()` + `allAlternativesForRupture` e `itemAlternatives` agora usam `resolveDistName()`.
+    - **Status:** RESOLVIDO (bug #42)
+
+37. **Ruptura falso — mesmo EAN como substituto de si mesmo (2026-08-18):**
+    - **Problema:** TANDERALGIN 15CP (EAN 7893454714479) mostra "🔴 RUPTURA" mas o substituto tem o **mesmo EAN** e mesma descrição. Preço unitário idêntico (R$ 6,15).
+    - **Causa raiz:** `isRupturaSubstitution = !originalHasStock && finalResult` (server.ts:2774). Se `condicoesOriginal` fica vazio porque o filtro `cleanEan(s.Ean) === cleanEan(item.ean)` (server.ts:1900) não casa (zeros à esquerda, formatação diferente), `originalHasStock = false`. Motor encontra substituto com mesmo EAN (outro CodDist) → `isRupturaSubstitution = true` indevidamente.
+    - **Correção:** `isRupturaSubstitution` agora inclui `&& novoEan !== cleanEan(item.ean)` — mesmo EAN = não ruptura.
+    - **Status:** RESOLVIDO (bug #42)
+
+38. **UX — Dropdown não separa "Mesmo Produto" vs "Genéricos/Similares" (2026-08-18):**
+    - **Problema:** Modal de busca manual (botão "+") e ConditionSelector não separaram ofertas do mesmo produto de genéricos/similares. Regra #27 do AGENTS.md define `<optgroup>` mas não está funcionando na prática.
+    - **Status:** **PENDENTE** — UX improvement.
+
+38. **UX — Dropdown não separa "Mesmo Produto" vs "Genéricos/Similares" (2026-08-18):**
+    - **Problema:** Modal de busca manual (botão "+") e ConditionSelector não separaram ofertas do mesmo produto de genéricos/similares. Regra #27 do AGENTS.md define `<optgroup>` mas não está funcionando na prática.
+    - **Status:** **PENDENTE** — UX improvedment.
+
+39. **Performance — Tela lenta durante SICF + encomendas simultâneos (2026-08-18):**
+    - **Problema:** Processar SICF (otimização em lote) e importar encomendas ao mesmo tempo causa lentidão. Muitas chamadas simultâneas à API SmartPed.
+    - **Causa provável:** Batch de 40 EANs + chamadas extras (RUPTURA-REGEX, TARGET-EAN-PRE) + encomendas = requests concorrentes pesados.
+    - **Status:** **PENDENTE** — performance improvement.
+
+40. **Itens imaginários no JSON de envio — Fornecedor externo (codDist=9999) (2026-08-18):**
+    - **Problema:** Itens de fornecedor externo (codDist=9999, "Pedido via WhatsApp") são criados com `CodProduto: ""` e `CodProdutoDist: ""` (server.ts:2536-2550). Blindagem 1 pula para `codDist===9999` (server.ts:3138). SmartPed recebe `CodProduto: "0"` e `CodProdutoDist: "0"`.
+    - **Additional risk:** `parseInt(it.codDist) || 2` (server.ts:3227) silenciosamente remapeia codDist=0 para distribuidor 2 (Pan/Santa). Blindagem deveria bloquear, mas edge cases existem.
+    - **Status:** RESOLVIDO (bug #42) — codDist=9999 bloqueado na Blindagem.
+
+41. **Blindagem bloqueia ruptura legítima (2026-08-18):**
+    - **Problema:** `originalCodDistNum === 0` (server.ts:3123) bloqueia substitutos de ruptura cujo original não tinha ofertas (codDist=0). Substituto tem codDist>0 válido mas é barrado porque o original era "Não Encontrados".
+    - **Correção:** Blindagem 4 permite ruptura quando `parsedCodDist > 0` (substituto válido) mesmo que `originalCodDistNum === 0` (original sem oferta).
+    - **Status:** RESOLVIDO (bug #42)
+
+42. **Mojibake impedia filtro de "Não Encontrados" — dropdown vazio + badge errado (2026-08-18):**
+    - **Problema:** Defaults hardcoded tinham `"NÃ£o Encontrados"` (encoding Latin-1/Windows-1252), mas todas as comparações usavam UTF-8 correto (`"não encontrados"`) — nunca casavam. Resultado: badge mostrava `[NÃ£o Encontrados]` e dropdown ficava vazio.
+    - **Causa raiz:** Arquivo fonte misturado Latin-1/UTF-8. "NÃ£o Encontrados" são bytes UTF-8 (C3 A3 6F) interpretados como Latin-1.
+    - **Correções:**
+      1. Helper `isNotFoundName(name)` — detecta UTF-8, mojibake (`nÃ£`), sem acento, "Sem Estoque", "Distribuidor*"
+      2. `resolveDistName()` usa `isNotFoundName` → pula nomes inválidos → cai no cache/mapa correto
+      3. 5 defaults hardcoded corrigidos de `"NÃ£o Encontrados"` para `"Não Encontrados"`
+      4. 6 filtros migrados para `isNotFoundName()` (alternativas SUCESSO/MANTER, allAlternativesForRupture, condicoesEnriched x2, filteredReport)
+      5. Blindagem 4 migrou para `isNotFoundName()`
+      6. Fallback badge `bestOriginalDist` usa `isNotFoundName()`
+    - **Regra:** AGENTS.md #31 — "NUNCA fazer checagem inline, SEMPRE usar `isNotFoundName()`"
+    - **Status:** RESOLVIDO
+
 ---
 
 ## 4.21. Sync de Preços no Cloud — Status Atual
@@ -484,7 +564,9 @@ $tursoToken = ($envFile | Select-String "TURSO_AUTH_TOKEN=").ToString().Split("=
 ### Produção (URL fixa)
 **URL:** https://smartped-cli-887122622666.us-east1.run.app
 
-**Versão atual (deploy 2026-08-18):** `smartped-cli-00047-c4j`
+**Sistema de Versão:** Formato `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). Gerado em build time (`vite.config.ts`) e passado como env var `APP_VERSION` no deploy. Visível no header do app, no `/api/health`, e no `cloud-env.yaml`.
+
+**Versão atual:** `v2026-08-18-1830`
 
 **Estado do deploy:**
 - `runPriceSync` desativado (código comentado)

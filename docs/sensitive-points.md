@@ -9,6 +9,7 @@
 4.  **Motor de troca (`findBestSubstitute` em `server/swap-engine.ts`):** Retorna objeto `melhor` **sem** `NomeDist` — apenas `CodDist`. A resposta final enviada ao frontend (linha ~2124 em server.ts) **deve** chamar `resolveDistName(melhor, codDist)` antes de serializar. Ler `melhor.NomeDist` direto resulta em "Distribuidor 503".
 5.  **Validação de equivalência (`validateSwapEquivalence` em `swap-validation.ts`):** Regex de apresentação (linha ~195) deve incluir `CPR` | `CP` | `COMP` | `CAPS` | `CAP`... Omissão de `CPR` faz ofertas válidas ("30CPR") serem rejeitadas silenciosamente.
 6.  **Filtro de EAN no dropdown de ruptura (server.ts:1995-2001):** Em ruptura (`!originalHasStock`), **não filtrar** alternativas por EAN. O filtro `allowedEans = [originalEan, novoEan]` só se aplica quando tem estoque. Remover isso quebra o ConditionSelector (não mostra NeoSul, CervoSul etc.).
+7.  **Encoding/Mojibake em nomes de distribuidora:** O código-fonte pode ter strings com encoding Latin-1/Windows-1252 misturado com UTF-8. Ex: `"NÃ£o Encontrados"` é o mojibake de `"Não Encontrados"` (bytes UTF-8 C3 A3 6F interpretados como Latin-1). **NUNCA** fazer checagem inline como `dist.includes("NÃO ENCONTRADOS")`. SEMPRE usar `isNotFoundName(name)` que trata automaticamente: UTF-8, mojibake, sem acento, "Sem Estoque" e "Distribuidor*". Ver AGENTS.md #31.
 
 ### 5.1. Deploy Cloud Run (Estado Atual - 2026-08-15)
 *   **Serviço Ativo:** `smartped-cli` no projeto GCP `gen-lang-client-0702342051`, região `us-east1`.

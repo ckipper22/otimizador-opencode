@@ -245,12 +245,32 @@ POST /api/Condicoes/Molecula
 - **Linha 4972, 5002, 5025** - Busca profunda de substitutos (5 consultas paralelas)
 - **Linha 5947** - Diagnostico EAN
 
+**Tabela de Valores de `TipoItem` (retornado por `Condicoes/Molecula`):**
+
+| TipoItem | Categoria | Suffixo Molecula | Tem Substitutos? | Exemplo |
+|----------|-----------|------------------|-------------------|---------|
+| `"G"` | Genérico | `_G` | SIM | LOSARTANA, AMOXICILINA, OMEPRAZOL |
+| `"M"` | Marca/Ref/Ético | `_M` | Depende | DONAREN, REPOFLOR, PURAN T4, DORFLEX |
+| `"S"` | Similar | `_S` | Depende | ROSUCOR, SODIX, BUTACID, VICK 44E |
+| `"O"` | Outros (catch-all) | `_O` | Depende | PARACETAMOL 750MG, DONEPEZILA |
+| `"P"` | **Perfumaria** | (vazio) | **NAO — `Substitutos: []` sempre vazio** | SHAMPOO SEDA, DESODORANTE, ESMALTE |
+
+> **REGRA CRITICA:** Produtos com `TipoItem="P"` (Perfumaria/Cosmeticos) retornam `Substitutos: []` e `Molecula: ""` vazio da API SmartPed. **Nao adicione substitutos manualmente** para esses itens — a propria API ja retorna vazio. Qualquer busca extra para perfumaria e desperdicio de chamadas de API.
+
+> **NOTA SOBRE "O":** O TipoItem `"O"` e um catch-all que a SmartPed usa para produtos que nao se encaixam em G, M, S ou P. Pode incluir referencia, similar, fitoterapico, suplemento. **Use o campo `grupo` da Ferramentinhas como fonte primaria de classificação** (ver AGENTS.md regra #25).
+
+**Validacao empirica (137 EANs testados):**
+- TipoItem e suffixo Molecula sao **100% consistentes** quando ambos existem (zero inconsistencias)
+- 46% dos itens (64/137) retornam TipoItem vazio — sao nao-medicamentos (perfumaria, conveniencia, equipamentos)
+- Genéricos comprimidos podem ter `Molecula` vazio — usar `TipoItem` como fallback
+
 **Notas:**
-- `Substitutos` contem equivalentes de mesma molecula (genericos, similares, eticos)
+- `Substitutos` contem equivalentes de mesma molecula (genericos, similares, eticos). **Para Perfumaria (`TipoItem="P"`), sempre vazio.**
 - `Condicoes` do proprio EAN original tambem vem no retorno
 - Comportamento de achatamento: filhos (`Condicoes`) herdam `Ean`, `Descricao`, `Laboratorio` do pai (`ItemPedido`)
 - Retorno pode vir como `itens` (lowercase) ou `Itens` (PascalCase) - checar ambos
 - **Resposta inclui array `dists[]` (ou `Dists[]`) na raiz de `Retorno`** (igual a Condicoes/Ean). Fonte para `enrichDistribuidoresFromPayload`. `NomeDist` **não vem** no objeto `Substitutos[]` individual.
+- **`TipoItem` vem no objeto `itens[]`** (nivel do ItemPedido), NOS substitutosindividualmente, e nos itemspai. Campo util para decidir se busca substitutos.
 
 ---
 

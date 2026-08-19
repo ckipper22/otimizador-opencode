@@ -115,7 +115,9 @@ export function findBestSubstitute(
       if (!aReal && bReal) return 1;
       return getUnitCost(a) - getUnitCost(b);
     });
-    melhorOriginal = candidatosOriginais[0];
+    // Sempre filtrar para ofertas reais — nunca escolher "Não Encontrados" como original
+    const originaisReais = candidatosOriginais.filter(c => isRealOffer(c));
+    melhorOriginal = originaisReais.length > 0 ? originaisReais[0] : null;
   }
 
   const originalTemEstoqueReal = (substitutos || []).some(s => {
@@ -216,11 +218,14 @@ export function findBestSubstitute(
         if (!aReal && bReal) return 1;
         return getUnitCost(a) - getUnitCost(b);
       });
-      const melhorG = substitutosGenericos[0];
-      const maxAllowedPrice = precoOriginal * 1.10;
-      if (getUnitCost(melhorG) <= maxAllowedPrice) {
-        const economia = precoOriginal - getUnitCost(melhorG);
-        return { melhor: melhorG, economia, isFallback: true };
+      const genericosReais = substitutosGenericos.filter(s => isRealOffer(s));
+      const melhorG = genericosReais.length > 0 ? genericosReais[0] : null;
+      if (melhorG) {
+        const maxAllowedPrice = precoOriginal * 1.10;
+        if (getUnitCost(melhorG) <= maxAllowedPrice) {
+          const economia = precoOriginal - getUnitCost(melhorG);
+          return { melhor: melhorG, economia, isFallback: true };
+        }
       }
     }
   }

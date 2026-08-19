@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { runEngineSelfTests } from "./backend-tests";
 import { validateSwapEquivalence } from "./swap-validation";
@@ -65,17 +66,24 @@ const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   624: "SMARTDISTRIBUIDORA"
 };
 
+function isNotFoundName(name: any): boolean {
+  if (!name) return false;
+  const n = String(name).trim().toLowerCase();
+  return !n || n.includes("não encontrado") || n.includes("nao encontrado") || n.includes("nÃ£") || n.includes("sem estoque") || n.startsWith("distribuidor");
+}
+
 function resolveDistName(obj: any, codDist?: number): string {
-  // Conversão segura para garantir indexação numérica no Record
   const code = codDist !== undefined ? Number(codDist) : Number(obj?.CodDist || obj?.codDist || 0);
-  
+  const ok = (v: any) => v && !isNotFoundName(v);
+
   return (
-    obj?.NomeDist ||
-    obj?.nomeDist ||
-    obj?.NomeDistribuidora ||
-    obj?.Nome_Dpe ||
-    obj?.Nome ||
+    (ok(obj?.NomeDist) ? obj.NomeDist : undefined) ||
+    (ok(obj?.nomeDist) ? obj.nomeDist : undefined) ||
+    (ok(obj?.NomeDistribuidora) ? obj.NomeDistribuidora : undefined) ||
+    (ok(obj?.Nome_Dpe) ? obj.Nome_Dpe : undefined) ||
+    (ok(obj?.Nome) ? obj.Nome : undefined) ||
     (code && DISTRIBUIDORAS_DYNAMIC_CACHE[code] ? DISTRIBUIDORAS_DYNAMIC_CACHE[code] : undefined) ||
+    (code && DISTRIBUIDORAS_MAP[code] ? DISTRIBUIDORAS_MAP[code] : undefined) ||
     (code ? `Distribuidor ${code}` : "Distribuidor")
   );
 }
@@ -154,7 +162,7 @@ startDbCachePurge();
 
 // API Health Check
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({ status: "ok", version: process.env.APP_VERSION || "dev", timestamp: new Date().toISOString() });
 });
 
 // Endpoint para salvar item manual no Turso
@@ -275,11 +283,270 @@ app.post("/api/integracao/encomendas/confirmar-pedido", async (req, res) => {
   }
 });
 
+// ===== ENCOMENDAS: Busca batch de ofertas para múltiplas encomendas =====
+app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
+  const logs: string[] = [];
+  const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[ENCOMENDAS-BATCH] ${m}`); };
+  try {
+    const { encomendas, token, cnpj, useTestUrl = true, simulationMode = false, margemMinima = 0 } = req.body;
+
+    if (!encomendas || !Array.isArray(encomendas) || encomendas.length === 0) {
+      return res.json({ results: [], logs: ["Nenhuma encomenda fornecida."] });
+    }
+
+    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
+    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
+    const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+    const baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+
+    log(`Iniciando busca batch para ${encomendas.length} encomendas...`);
+
+    // Processa todas as encomendas em paralelo
+    const results = await Promise.all(encomendas.map(async (enc: any, idx: number) => {
+      const ean = enc.codigoBarras || enc.ean;
+      const descricao = enc.item || enc.descricao || "";
+      const quantidade = enc.quantidade || 1;
+      const idEncomenda = enc.id;
+      const cliente = enc.cliente || "";
+      const telefone = enc.telefone || "";
+      const observacoes = enc.observacoes || "";
+      const fornecedorSugerido = enc.fornecedor || "";
+      const dataPrevisao = enc.dataPrevisao || "";
+      const dataHora = enc.data ? new Date(enc.data).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : "";
+
+      try {
+        let ofertas: any[] = [];
+        let searchLogs: string[] = [];
+
+        if (ean && /^\d+$/.test(String(ean).trim())) {
+          // Tem EAN - busca Condicoes/Ean + Condicoes/Molecula
+          log(`[${idx}] Busca por EAN: ${ean} (${descricao.substring(0, 40)})`);
+          const [eanRes, molRes] = await Promise.all([
+            fetch(`${baseUrl}/api/Condicoes/Ean`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Ean: ean, AceitaOntem: 1 } })
+            }),
+            fetch(`${baseUrl}/api/Condicoes/Molecula`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Ean: ean, ConsideraTipo: 1 } })
+            })
+          ]);
+
+          if (eanRes.ok) {
+            const data = await eanRes.json();
+            const retorno = data.Retorno || data.retorno;
+            const items = retorno?.itens || retorno?.Itens || data.itens || data.Itens || [];
+            const dists = retorno?.dists || retorno?.Dists || data.dists || data.Dists || [];
+            for (const item of items) {
+              const condicoes = item.Condicoes || item.condicoes || [];
+              for (const cond of condicoes) {
+                if (!cond.NomeDist && !cond.nomeDist) {
+                  const distInfo = dists.find((d: any) => String(d.CodDist || d.codDist) === String(cond.CodDist || cond.codDist));
+                  if (distInfo) cond.NomeDist = distInfo.NomeDist || distInfo.nomeDist || distInfo.Nome || distInfo.nome;
+                }
+              }
+              ofertas.push(...condicoes);
+            }
+          }
+          if (molRes.ok) {
+            const data = await molRes.json();
+            const retorno = data.Retorno || data.retorno;
+            const items = retorno?.itens || retorno?.Itens || data.itens || data.Itens || [];
+            const dists = retorno?.dists || retorno?.Dists || data.dists || data.Dists || [];
+            for (const item of items) {
+              const subs = item.Substitutos || item.substitutos || [];
+              const conds = item.Condicoes || item.condicoes || [];
+              for (const sub of subs) {
+                if (!sub.NomeDist && !sub.nomeDist) {
+                  const distInfo = dists.find((d: any) => String(d.CodDist || d.codDist) === String(sub.CodDist || sub.codDist));
+                  if (distInfo) sub.NomeDist = distInfo.NomeDist || distInfo.nomeDist || distInfo.Nome || distInfo.nome;
+                }
+              }
+              ofertas.push(...subs, ...conds);
+            }
+          }
+        } else {
+          // Sem EAN - busca por descrição via Produtos/Buscar
+          log(`[${idx}] Busca por descrição: "${descricao.substring(0, 40)}..."`);
+          const searchRes = await fetch(`${baseUrl}/api/Produtos/Buscar`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Texto: descricao } })
+          });
+
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            const produtos = searchData.Retorno?.produtos || searchData.retorno?.produtos || searchData.produtos || [];
+            // Para cada produto encontrado, busca condições
+            const eans = [...new Set(produtos.map((p: any) => p.Ean || p.ean).filter(Boolean))];
+            
+            for (const foundEan of eans) {
+              const [eanRes, molRes] = await Promise.all([
+                fetch(`${baseUrl}/api/Condicoes/Ean`, {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Ean: foundEan, AceitaOntem: 1 } })
+                }),
+                fetch(`${baseUrl}/api/Condicoes/Molecula`, {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Ean: foundEan, ConsideraTipo: 1 } })
+                })
+              ]);
+
+              if (eanRes.ok) {
+                const data = await eanRes.json();
+                const retorno = data.Retorno || data.retorno;
+                const items = retorno?.itens || retorno?.Itens || data.itens || data.Itens || [];
+                const distsEan = retorno?.dists || retorno?.Dists || data.dists || data.Dists || [];
+                for (const item of items) {
+                  const condicoes = item.Condicoes || item.condicoes || [];
+                  for (const cond of condicoes) {
+                    if (!cond.NomeDist && !cond.nomeDist) {
+                      const distInfo = distsEan.find((d: any) => String(d.CodDist || d.codDist) === String(cond.CodDist || cond.codDist));
+                      if (distInfo) cond.NomeDist = distInfo.NomeDist || distInfo.nomeDist || distInfo.Nome || distInfo.nome;
+                    }
+                  }
+                  ofertas.push(...condicoes);
+                }
+              }
+              if (molRes.ok) {
+                const data = await molRes.json();
+                const retorno = data.Retorno || data.retorno;
+                const items = retorno?.itens || retorno?.Itens || data.itens || data.Itens || [];
+                const distsMol = retorno?.dists || retorno?.Dists || data.dists || data.Dists || [];
+                for (const item of items) {
+                  const subs = item.Substitutos || item.substitutos || [];
+                  const conds = item.Condicoes || item.condicoes || [];
+                  for (const sub of subs) {
+                    if (!sub.NomeDist && !sub.nomeDist) {
+                      const distInfo = distsMol.find((d: any) => String(d.CodDist || d.codDist) === String(sub.CodDist || sub.codDist));
+                      if (distInfo) sub.NomeDist = distInfo.NomeDist || distInfo.nomeDist || distInfo.Nome || distInfo.nome;
+                    }
+                  }
+                  ofertas.push(...subs, ...conds);
+                }
+              }
+            }
+          }
+        }
+
+        // Filtrar apenas ofertas reais com estoque
+        const ofertasReais = ofertas.filter((o: any) => {
+          const distName = String(o.NomeDist || o.nomeDist || o.distribuidora || "").trim().toLowerCase();
+          const distId = Number(o.CodDist || o.codDist || 0);
+          const est = o.Estoque !== undefined ? o.Estoque : (o.estoque !== undefined ? o.estoque : 9999);
+          return distId > 0 && distName !== "" && distName !== "nao encontrados" && distName !== "não encontrados" && est > 0;
+        });
+
+        // Deduplicar por EAN+CodDist+Condicao+Prazo
+        const seen = new Set();
+        const ofertasDedup = ofertasReais.filter((o: any) => {
+          const key = `${(o.Ean||o.ean||"")}_${o.CodDist||o.codDist||0}_${o.Condicao||o.condicao||""}_${o.Prazo||o.prazo||""}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        // Ordenar: mesmo EAN primeiro, depois preço
+        const originalEanClean = (ean || "").replace(/^0+/, "");
+        ofertasDedup.sort((a: any, b: any) => {
+          const aEan = (a.Ean||a.ean||"").replace(/^0+/, "");
+          const bEan = (b.Ean||b.ean||"").replace(/^0+/, "");
+          const aIsSame = aEan === originalEanClean;
+          const bIsSame = bEan === originalEanClean;
+          if (aIsSame && !bIsSame) return -1;
+          if (!aIsSame && bIsSame) return 1;
+          const aPrice = Number(a.PliquidoUni||a.pliquidoUni||a.Pliquido||a.pliquido||a.Preco||a.preco||0);
+          const bPrice = Number(b.PliquidoUni||b.pliquidoUni||b.Pliquido||b.pliquido||b.Preco||b.preco||0);
+          return aPrice - bPrice;
+        });
+
+        const ofertasNormalizadas = ofertasDedup.map((o: any) => ({
+          ...o,
+          distribuidora: o.NomeDist || o.nomeDist || o.distribuidora || "",
+          codDist: o.CodDist || o.codDist || 0,
+          precoLiquido: o.PliquidoUni || o.pliquidoUni || o.Pliquido || o.pliquido || o.precoLiquido || 0,
+          preco: o.Preco || o.preco || 0,
+          estoque: o.Estoque !== undefined ? o.Estoque : (o.estoque !== undefined ? o.estoque : 0),
+          condicao: o.Condicao || o.condicao || "FIXA",
+          prazo: o.Prazo !== undefined ? o.Prazo : (o.prazo !== undefined ? o.prazo : 0),
+          ean: o.Ean || o.ean || "",
+        }));
+
+        return {
+          encomenda: enc,
+          idEncomenda,
+          ean,
+          descricao,
+          quantidade,
+          cliente,
+          telefone,
+          observacoes,
+          fornecedorSugerido,
+          dataPrevisao,
+          dataHora,
+          ofertas: ofertasNormalizadas,
+          logs: searchLogs,
+          temOfertas: ofertasNormalizadas.length > 0,
+          selecionada: ofertasNormalizadas.length > 0,
+          ofertaSelecionada: ofertasNormalizadas.length > 0 ? ofertasNormalizadas[0] : null,
+          qtdSelecionada: quantidade
+        };
+
+      } catch (err: any) {
+        log(`[${idx}] ERRO: ${err.message}`);
+        return {
+          encomenda: enc,
+          idEncomenda,
+          ean,
+          descricao,
+          quantidade,
+          cliente,
+          telefone,
+          observacoes,
+          fornecedorSugerido,
+          dataPrevisao,
+          dataHora,
+          ofertas: [],
+          logs: [],
+          temOfertas: false,
+          selecionada: false,
+          ofertaSelecionada: null,
+          qtdSelecionada: quantidade,
+          erro: err.message
+        };
+      }
+    }));
+
+    log(`Busca batch concluída. ${results.filter(r => r.temOfertas).length}/${results.length} com ofertas.`);
+    res.json({ results, logs });
+
+  } catch (err: any) {
+    console.error("Erro batch encomendas:", err);
+    res.status(500).json({ error: err.message, logs });
+  }
+});
+
 // ===== SYNC PRODUTOS (async + timeout + cache) =====
 function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 10000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
+async function fetchWithRetry(url: string, options: RequestInit, timeoutMs = 15000, maxRetries = 1): Promise<Response> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fetchWithTimeout(url, options, timeoutMs);
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        console.log(`[RETRY] Tentativa ${attempt + 1} falhou para ${url}: ${err.message}. Retry em 2s...`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  }
+  throw lastError;
 }
 
 const SYNC_STATE = { running: false, logs: [] as string[], totalSync: 0, totalPrincipios: 0, totalLancamentos: 0, totalSugestoes: 0 };
@@ -447,8 +714,8 @@ function checkAndRunPriceSync() {
     if (token) {
       console.log("[AUTO PRICE-SYNC] Iniciando sync automatico de precos as 10h...");
       runPriceSync(token, cnpj);
-    }
-  }
+            }
+          }
 }
 setInterval(checkAndRunPriceSync, 60 * 1000);
 */
@@ -736,7 +1003,7 @@ app.post("/api/optimize", async (req, res) => {
         try {
           const startTime = Date.now();
           
-          const pMolecula = fetch(`${baseUrl.replace(/\/$/, "")}/${endpointPath.replace(/^\//, "")}`, {
+          const pMolecula = fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/${endpointPath.replace(/^\//, "")}`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -747,9 +1014,9 @@ app.post("/api/optimize", async (req, res) => {
               Token: actualToken,
               parametros: { CnpjCLi: apiCnpj, Ean: batch.join(","), ConsideraTipo: 1 }
             })
-          });
+          }, 15000, 1);
 
-          const pEan = fetch(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`, {
+          const pEan = fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -760,7 +1027,7 @@ app.post("/api/optimize", async (req, res) => {
               Token: actualToken,
               parametros: { CnpjCLi: apiCnpj, Ean: batch.join(","), AceitaOntem: 1 }
             })
-          });
+          }, 15000, 1);
 
           const [responseMolecula, responseEan] = await Promise.all([pMolecula, pEan]);
           const duration = Date.now() - startTime;
@@ -1019,7 +1286,7 @@ app.post("/api/optimize", async (req, res) => {
             // 1. Descobrir o DCB se temos o EAN
             let dcbDescoberto = "";
             try {
-              const dcbRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${origEan}`);
+              const dcbRes = await fetchWithRetry(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${origEan}`, {}, 15000, 1);
               if (dcbRes.ok) {
                 const dcbData = await dcbRes.json();
                 const pList = dcbData.produtos || dcbData.items || [];
@@ -1106,14 +1373,14 @@ app.post("/api/optimize", async (req, res) => {
             // 3. Rota Produtos/Buscar com descricaoComDosagem
             if (hasComDosagemQuery) {
               apiPromises.push(
-                fetch(`${baseUrl.replace(/\/$/, "")}/api/Produtos/Buscar`, {
+                fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/api/Produtos/Buscar`, {
                   method: "POST",
                   headers: responseHeaders,
                   body: JSON.stringify({
                     Token: actualToken,
                     parametros: { CnpjCLi: apiCnpj, Texto: descricaoComDosagem }
                   })
-                }).then(r => r.ok ? r.json() : null).catch(() => null)
+                }, 15000, 1).then(r => r.ok ? r.json() : null).catch(() => null)
               );
             } else {
               apiPromises.push(Promise.resolve(null));
@@ -1271,6 +1538,9 @@ app.post("/api/optimize", async (req, res) => {
     let itemsTreatedCount = 0;
     let itemsSwappedCount = 0;
 
+    // Conjunto de EANs já consultados via API neste request (deduplicação cross-item no RUPTURA-REGEX)
+    const queriedEanSet = new Set<string>();
+
     for (const item of parsedItems) {
       const origEan = cleanEan(item.ean);
       const localEquivs = getLocalEquivalents(origEan, item.descricao);
@@ -1328,7 +1598,7 @@ app.post("/api/optimize", async (req, res) => {
                 Pliquido: cost,
                 PliquidoUni: cost,
                 Estoque: condEstoque,
-                NomeDist: resp.ItemPedido.NomeDist || resp.ItemPedido.nomeDist || "NÃ£o Encontrados",
+                NomeDist: resp.ItemPedido.NomeDist || resp.ItemPedido.nomeDist || "Não Encontrados",
                 CodDist: resp.ItemPedido.CodDist !== undefined ? resp.ItemPedido.CodDist : (resp.ItemPedido.codDist !== undefined ? resp.ItemPedido.codDist : 0),
                 Condicao: resp.ItemPedido.Condicao || resp.ItemPedido.condicao || "FIXA",
                 Prazo: resp.ItemPedido.Prazo !== undefined ? resp.ItemPedido.Prazo : (resp.ItemPedido.prazo || 7)
@@ -1339,7 +1609,9 @@ app.post("/api/optimize", async (req, res) => {
       });
 
       if (!mainItemPedido) {
-        mainItemPedido = { Ean: origEan, Descricao: item.descricao, Laboratorio: item.laboratorio, Pliquido: item.precoOriginal };
+        const descUpper = item.descricao.toUpperCase();
+        const inferredTipo = (descUpper.includes("(G)") || descUpper.includes("GENERICO") || descUpper.includes("GENÉRICO")) ? "G" : "S";
+        mainItemPedido = { Ean: origEan, Descricao: item.descricao, Laboratorio: item.laboratorio, Pliquido: item.precoOriginal, TipoItem: inferredTipo };
       }
 
       // LOG BRUTO via logs array (sem escrita em arquivo)
@@ -1376,14 +1648,15 @@ app.post("/api/optimize", async (req, res) => {
         const altEan = cleanEan(s.Ean || s.ean || "") || cleanEan(item.ean);
         let altDesc = s.Descricao || s.DescricaoProduto_Idi || s.descricao || "";
         let resolvedLab = s.Laboratorio || s.laboratorio || "";
+        const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
         return {
           ean: altEan,
           descricao: altDesc || item.descricao,
           laboratorio: resolvedLab || item.laboratorio || "GENÉRICO",
           preco: unitPrice,
           condicao: s.Condicao || s.condicao || "FIXA",
-          distribuidora: s.NomeDist || s.nomeDist || "Distribuidor",
-          codDist: s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0),
+          distribuidora: resolveDistName(s, codDist),
+          codDist: codDist,
           prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7),
           qtdMin: s.QtdMin !== undefined ? s.QtdMin : (s.qtdMin !== undefined ? s.qtdMin : 0),
           estoque: s.Estoque !== undefined ? s.Estoque : (s.estoque || 0),
@@ -1391,22 +1664,18 @@ app.post("/api/optimize", async (req, res) => {
           codProduto: cleanCodProduto(s.CodProduto || s.codProduto || "", s.CodProdutoDist || s.codProdutoDist || "")
         };
       }).filter((alt: any) => {
-        const dist = String(alt.distribuidora || "").toUpperCase().trim();
-        if (!dist || dist.includes("NÃO ENCONTRADOS") || dist.includes("NAO ENCONTRADOS") || dist.includes("SEM ESTOQUE") || dist === "DISTRIBUIDOR") return false;
+        if (isNotFoundName(alt.distribuidora)) return false;
         if (alt.codDist !== undefined && disabledDistSet.has(Number(alt.codDist))) return false;
         return alt.estoque > 0;
       }).sort((a: any, b: any) => a.preco - b.preco);
 
       // Enriquecer allAlternativesForRupture com estoque REAL do stockMap
-      // Itens cujo EAN+CodDist não está no stockMap recebem estoque 0 (estoque fictício de catálogo é descartado)
       if (stockMapByEanDist.size > 0) {
         for (const alt of allAlternativesForRupture) {
           const key = `${alt.ean}_${alt.codDist}`;
           const realStock = stockMapByEanDist.get(key);
           if (realStock !== undefined) {
             alt.estoque = realStock;
-          } else {
-            alt.estoque = 0;
           }
         }
       }
@@ -1422,6 +1691,25 @@ app.post("/api/optimize", async (req, res) => {
       const deduplicatedAlternativesForRupture = Array.from(uniqueRuptureMap.values());
 
       logs.push(`[DEBUG-ALTS] EAN ${item.ean} | allAlternativesForRupture: ${allAlternativesForRupture.length} brutos → ${deduplicatedAlternativesForRupture.length} deduplicados`);
+
+      // DEBUG: Logar mainItemPedido e primeiros substitutos para debug de EQUIV-FILTER
+      if (combinedSubstitutos.length > 3) {
+        const mip = mainItemPedido || {};
+        const mipTipo = String(mip.TipoItem || mip.tipoItem || "").trim().toUpperCase();
+        const isRef = ["REFERENCIA","REFERÊNCIA","ETICO","ÉTICO","R","E"].includes(mipTipo);
+        logs.push(`[EQUIV-DEBUG] EAN ${item.ean} | mainItemPedido: Ean=${mip.Ean||mip.ean||"?"} Desc="${(mip.Descricao||mip.descricao||"?").substring(0,60)}" Tipo=${mipTipo||"??"} isRef=${isRef} Lab="${(mip.Laboratorio||mip.laboratorio||"?").substring(0,30)}"`);
+        let passCount = 0;
+        for (let i = 0; i < Math.min(5, combinedSubstitutos.length); i++) {
+          const s = combinedSubstitutos[i];
+          const sEan = cleanEan(s.Ean || s.ean || "");
+          const sDesc = (s.Descricao || s.descricao || "?").substring(0, 60);
+          const sTipo = s.TipoItem || s.tipoItem || "?";
+          const passa = validateSwapEquivalence(mainItemPedido, s);
+          if (passa) passCount++;
+          logs.push(`[EQUIV-DEBUG]   sub[${i}] EAN=${sEan} Desc="${sDesc}" Tipo=${sTipo} → ${passa ? "PASSA" : "BLOQUEADO"}`);
+        }
+        logs.push(`[EQUIV-DEBUG] Resultado: ${passCount}/${Math.min(5, combinedSubstitutos.length)} dos primeiros passaram`);
+      }
 
       // Filtrar estritamente combinedSubstitutos com o Hard Block de equivalÃªncia
       const preFilterCount = combinedSubstitutos.length;
@@ -1448,7 +1736,7 @@ app.post("/api/optimize", async (req, res) => {
             Pliquido: price,
             PliquidoUni: price,
             TipoItem: s.TipoItem || s.tipoItem || (s.nom_produto && (s.nom_produto.toUpperCase().includes("(G)") || s.nom_produto.toUpperCase().includes("GENERICO") || s.nom_produto.toUpperCase().includes("GENÃ‰RICO")) ? "G" : "S"),
-            NomeDist: s.NomeDist || s.nomeDist || s.nom_distribuidora || "NÃ£o Encontrados",
+            NomeDist: s.NomeDist || s.nomeDist || s.nom_distribuidora || "Não Encontrados",
             CodDist: s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0),
             Condicao: s.Condicao || s.condicao || "FIXA",
             Prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7)
@@ -1513,9 +1801,6 @@ app.post("/api/optimize", async (req, res) => {
           if (mappedEstoque !== undefined) {
             return { ...c, Estoque: mappedEstoque };
           }
-          if (mappedEstoque === undefined && stockMapByEanDist.size > 0) {
-            return { ...c, Estoque: 0 };
-          }
           return c;
         });
 
@@ -1524,17 +1809,8 @@ app.post("/api/optimize", async (req, res) => {
             const est = s.Estoque !== undefined ? s.Estoque : (s.estoque || 0);
             if (getUnitCost(s) <= 0) return false;
             if (est <= 0) return false;
-            // Filtrar distribuidoras inválidas
-            const distName = String(resolveDistName(s)).toUpperCase().trim();
-            if (
-              !distName ||
-              distName.includes("NÃO ENCONTRADOS") ||
-              distName.includes("NAO ENCONTRADOS") ||
-              distName.includes("NÃO ENCONTRADO") ||
-              distName.includes("NAO ENCONTRADO") ||
-              distName.includes("SEM ESTOQUE") ||
-              distName === "DISTRIBUIDOR"
-            ) {
+            const distName = resolveDistName(s);
+            if (isNotFoundName(distName)) {
               return false;
             }
             return validateSwapEquivalence(itemPedido, s);
@@ -1588,7 +1864,7 @@ app.post("/api/optimize", async (req, res) => {
               preco: unitPrice,
               pmc: unitPmc,
               condicao: condicao,
-              distribuidora: s.NomeDist || s.nomeDist || "Distribuidor",
+              distribuidora: resolveDistName(s, codDist),
               codDist: codDist,
               prazo: prazo,
               qtdMin: s.QtdMin !== undefined ? s.QtdMin : (s.qtdMin !== undefined ? s.qtdMin : 0),
@@ -1806,11 +2082,11 @@ app.post("/api/optimize", async (req, res) => {
               
               logs.push(`[${!originalHasStock ? 'RUPTURA' : 'GENÉRICO'}-REGEX] Chamando Produtos/Buscar com texto="${searchPattern}"`);
               
-              const descResp = await fetch(`${baseUrl.replace(/\/$/, "")}/api/Produtos/Buscar`, {
+              const descResp = await fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/api/Produtos/Buscar`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0" },
                 body: descSearchBody
-              }).then(r => r.ok ? r.json() : null).catch(() => null);
+              }, 15000, 1).then(r => r.ok ? r.json() : null).catch(() => null);
               
               const descProdutos = descResp?.Retorno || descResp?.retorno || [];
               logs.push(`[RUPTURA-REGEX] Produtos/Buscar retornou ${descProdutos.length} produtos`);
@@ -1864,15 +2140,20 @@ app.post("/api/optimize", async (req, res) => {
                   }
                 }
                 
-                // PASSO 2: Chamar API apenas para EANs ausentes do cache
-                const eansNotInCache = descEans.filter(ean => !cachedPrices.has(ean));
+                // PASSO 2: Chamar API apenas para EANs ausentes do cache E ainda não consultados neste request
+                const eansNotInCache = descEans.filter(ean => !cachedPrices.has(ean) && !queriedEanSet.has(ean));
+                const dedupSkipped = descEans.filter(ean => !cachedPrices.has(ean) && queriedEanSet.has(ean)).length;
+                if (dedupSkipped > 0) console.log(`[RUPTURA-REGEX] Dedup: ${dedupSkipped} EANs já consultados neste request — pulando`);
                 console.log(`[RUPTURA-REGEX] Cache: ${cachedPrices.size}/${descEans.length} EANs | Novos do cache: ${addedFromCache} | API chamada: ${eansNotInCache.length}`);
                 
                 if (eansNotInCache.length > 0) {
+                  // Marcar EANs como consultados para evitar duplicação cross-item
+                  for (const ean of eansNotInCache) queriedEanSet.add(ean);
+                  
                   const descSearchPromises = eansNotInCache.map(descEan => {
                     const headers = { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0" };
                     const eanBody = JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Ean: descEan, AceitaOntem: 1 } });
-                    return fetch(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`, { method: "POST", headers, body: eanBody })
+                    return fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`, { method: "POST", headers, body: eanBody }, 15000, 1)
                       .then(r => r.ok ? r.json() : null)
                       .catch(() => null);
                   });
@@ -1996,7 +2277,6 @@ let condicoesEnriched = condicoes.map((c: any) => {
             const key = `${cEan}_${cCodDist}`;
             const mappedEstoque = stockMapByEanDist.get(key);
             if (mappedEstoque !== undefined) return { ...c, Estoque: mappedEstoque };
-            if (mappedEstoque === undefined && stockMapByEanDist.size > 0 && cEan !== origEan) return { ...c, Estoque: 0 };
             return c;
           });
         }
@@ -2055,7 +2335,7 @@ let condicoesEnriched = condicoes.map((c: any) => {
                 Pliquido: price,
                 PliquidoUni: price,
                 TipoItem: "G",
-                NomeDist: s.NomeDist || s.nomeDist || "NÃ£o Encontrados",
+                NomeDist: s.NomeDist || s.nomeDist || "Não Encontrados",
                 CodDist: s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0),
                 Condicao: s.Condicao || s.condicao || "FIXA",
                 Prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7)
@@ -2095,7 +2375,7 @@ let condicoesEnriched = condicoes.map((c: any) => {
         }
 
           // Computar a melhor opÃ§Ã£o original mesmo se encontrarmos um substituto, para o caso do usuÃ¡rio clicar em "Manter original"
-          let bestOriginalDist = "NÃ£o Encontrados";
+          let bestOriginalDist = "Não Encontrados";
           let bestOriginalCodDist = 0;
           let bestOriginalEstoque = 0;
           let bestOriginalCondicao = "FIXA";
@@ -2176,6 +2456,26 @@ let condicoesEnriched = condicoes.map((c: any) => {
 
             if (getUnitCost(ref) > 0) {
               bestOriginalNovoPreco = getUnitCost(ref);
+            }
+          }
+
+          // Se nenhuma condição original foi encontrada, preencher bestOriginalDist do primeiro substituto válido
+          // Evita badge "★ Atual: [Não Encontrados]" quando o item tem substitutos reais
+          if (isNotFoundName(bestOriginalDist) && substitutos.length > 0) {
+            const firstValidSub = substitutos.find((s: any) => {
+              const est = parseSmartPedEstoque(s.Estoque !== undefined ? s.Estoque : (s.estoque || 0), getUnitCost(s) > 0);
+              return est > 0 && (s.CodDist || s.codDist || 0) > 0;
+            });
+            if (firstValidSub) {
+              const subCodDist = firstValidSub.CodDist !== undefined ? firstValidSub.CodDist : (firstValidSub.codDist !== undefined ? firstValidSub.codDist : 0);
+              bestOriginalDist = resolveDistName(firstValidSub, subCodDist);
+              bestOriginalCodDist = subCodDist;
+              bestOriginalEstoque = firstValidSub.Estoque !== undefined ? firstValidSub.Estoque : 0;
+              bestOriginalCondicao = firstValidSub.Condicao || firstValidSub.condicao || "FIXA";
+              bestOriginalCodProdutoDist = firstValidSub.CodProdutoDist || firstValidSub.codProdutoDist || "";
+              bestOriginalPrazo = firstValidSub.Prazo !== undefined ? firstValidSub.Prazo : (firstValidSub.prazo || 7);
+              bestOriginalCodProduto = cleanCodProduto(firstValidSub.CodProduto || firstValidSub.codProduto || "", firstValidSub.CodProdutoDist || firstValidSub.codProdutoDist || "");
+              bestOriginalNovoPreco = getUnitCost(firstValidSub);
             }
           }
 
@@ -2384,8 +2684,7 @@ let condicoesEnriched = condicoes.map((c: any) => {
                 const cEst = parseSmartPedEstoque(c.Estoque !== undefined ? c.Estoque : (c.estoque || 0), cPreco > 0);
                 const cDist = c.NomeDist || c.nomeDist || DISTRIBUIDORAS_MAP[cCodDist] || `Distribuidor ${cCodDist}`;
                 if (cPreco <= 0 || cEst <= 0) continue;
-                const distUpper = String(cDist).toUpperCase().trim();
-                if (distUpper && (distUpper.includes("NÃO ENCONTRADOS") || distUpper.includes("NAO ENCONTRADOS") || distUpper.includes("SEM ESTOQUE") || distUpper === "DISTRIBUIDOR")) continue;
+                if (isNotFoundName(cDist)) continue;
                 if (cCodDist && disabledDistSet.has(Number(cCodDist))) continue;
                 const key = `${cEan}_${cCodDist}_${cCond}_${cPrazo}`;
                 if (existingKeys.has(key)) continue;
@@ -2526,7 +2825,7 @@ let condicoesEnriched = condicoes.map((c: any) => {
             item.descricao
           );
 
-          const isRupturaSubstitution = !originalHasStock && finalResult;
+          const isRupturaSubstitution = !originalHasStock && finalResult && novoEan !== cleanEan(item.ean);
           logs.push(`[RUPTURA-DEBUG] EAN ${item.ean} | originalHasStock=${originalHasStock} | finalResult=${!!finalResult} | isRupturaSubstitution=${isRupturaSubstitution} | novoEan=${novoEan} | precoNovo=${precoNovo}`);
 
           report.push({
@@ -2579,8 +2878,12 @@ let condicoesEnriched = condicoes.map((c: any) => {
             motivoAlerta: alertResult.motivoAlerta,
             alternatives: (() => {
               const chosen = finalAlternatives.length > 0 ? finalAlternatives : (rawSubstitutosForAlternatives.length > 0 ? rawSubstitutosForAlternatives : (substitutos.length > 0 ? substitutos : []));
-              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO SUCESSO | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${chosen.length} alternativas`);
-              return chosen;
+              const filtered = chosen.filter((a: any) => {
+                const d = a.distribuidora || a.NomeDist || a.nomeDist || "";
+                return !isNotFoundName(d) && (a.codDist || 0) > 0;
+              });
+              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO SUCESSO | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${filtered.length} alternativas (de ${chosen.length})`);
+              return filtered.length > 0 ? filtered : chosen;
             })()
           });
         } else {
@@ -2718,8 +3021,12 @@ let condicoesEnriched = condicoes.map((c: any) => {
             motivoAlerta: alertResult.motivoAlerta,
             alternatives: (() => {
               const chosen = finalAlternatives.length > 0 ? finalAlternatives : (rawSubstitutosForAlternatives.length > 0 ? rawSubstitutosForAlternatives : (substitutos.length > 0 ? substitutos : []));
-              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO MANTER ORIGINAL | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${chosen.length} alternativas`);
-              return chosen;
+              const filtered = chosen.filter((a: any) => {
+                const d = a.distribuidora || a.NomeDist || a.nomeDist || "";
+                return !isNotFoundName(d) && (a.codDist || 0) > 0;
+              });
+              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO MANTER ORIGINAL | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${filtered.length} alternativas (de ${chosen.length})`);
+              return filtered.length > 0 ? filtered : chosen;
             })()
           });
         }
@@ -2781,16 +3088,28 @@ let condicoesEnriched = condicoes.map((c: any) => {
     logs.push(`[SUCESSO] Itens Otimizados com Economia: ${itemsSwappedCount} de ${parsedItems.length}`);
     logs.push(`[SUCESSO] Economia Estimada Total: R$ ${totalSavings.toFixed(2)}`);
 
-    // Filtrar itens sem estoque real na SmartPed ("NÃ£o Encontrados" / estoque 0)
+    // Filtrar itens sem estoque real na SmartPed ("Não Encontrados" / estoque 0)
     const filteredReport = report.filter((item: any) => {
-      const dist = String(item.distribuidora || "").toLowerCase();
       const estoque = Number(item.estoque !== undefined ? item.estoque : 0);
-      const isNotFound = !item.distribuidora || dist.includes("nÃ£o encontrado") || dist.includes("nao encontrado") || dist.includes("sem estoque");
-      return !isNotFound && estoque > 0;
+      const dist = item.distribuidora || "";
+      const passa = !isNotFoundName(dist) && estoque > 0;
+      if (!passa) {
+        logs.push(`[FILTRO-REMOVIDO] EAN=${item.originalEan || item.novoEan} | dist="${dist}" | estoque=${estoque} | motivo=${isNotFoundName(dist) ? "dist-invalida" : "estoque-zero"}`);
+      }
+      return passa;
     });
     if (filteredReport.length < report.length) {
       logs.push(`[FILTRO ESTOQUE] Removidos ${report.length - filteredReport.length} itens sem estoque real na SmartPed.`);
     }
+
+    // Salvar logs em arquivo para debug (facilita leitura pelo agente)
+    try {
+      const logDir = "debug-logs";
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+      const logFile = `${logDir}/optimize-${Date.now()}.log`;
+      fs.writeFileSync(logFile, logs.join("\n"), "utf-8");
+      logs.push(`[LOG-SALVO] ${logFile}`);
+    } catch (e) { /* ignore */ }
 
     res.json({
       optimizedFileContent,
@@ -2872,13 +3191,13 @@ app.post("/api/faturar", async (req, res) => {
       const originalCodDistNum = typeof item.originalCodDist === "number" ? item.originalCodDist : (item.originalCodDist !== undefined && item.originalCodDist !== null ? parseInt(String(item.originalCodDist), 10) : NaN);
       const distNameLower = String(item.distribuidora || "").toLowerCase();
 
-      // Blindagem 4 (Regra de Ouro 2): Itens sem distribuidora ou "NÃ£o Encontrados"/"Sem Estoque" ou com codDist === 0 ou originalCodDist === 0 ou invÃ¡lidos
+      // Blindagem 4 (Regra de Ouro 2): Itens sem distribuidora ou "Não Encontrados"/"Sem Estoque" ou com codDist === 0 ou inválidos
+      // Exceção: ruptura legítima — substitute válido (codDist>0) quando original não tinha ofertas (originalCodDist=0)
+      const isLegitimaRuptura = parsedCodDist > 0 && (originalCodDistNum === 0 || isNaN(originalCodDistNum));
       if (
-        parsedCodDist === 0 || 
-        originalCodDistNum === 0 || 
-        isNaN(parsedCodDist) ||
-        distNameLower.includes("nÃ£o encontrado") || 
-        distNameLower.includes("sem estoque") ||
+        (parsedCodDist === 0 || isNaN(parsedCodDist)) ||
+        (!isLegitimaRuptura && originalCodDistNum === 0) ||
+        isNotFoundName(item.distribuidora) ||
         distNameLower.trim() === ""
       ) {
         logs.push(`[BLINDAGEM] Item bloqueado (Filtro Distribuidora/Estoque): ${item.novaDescricao || item.originalDescricao} (${item.novoEan || item.originalEan}) possui codDist/originalCodDist zerado ou invÃ¡lido (codDist: ${rawCodDist}, originalCodDist: ${item.originalCodDist}) ou distribuidora "${item.distribuidora || ''}". Ignorando faturamento.`);
@@ -2890,7 +3209,12 @@ app.post("/api/faturar", async (req, res) => {
       const codProdutoStr = String(item.codProduto || "").trim();
 
       // Blindagem 1: Swaps para distribuidores reais devem ter IDs de produto vÃ¡lidos (nÃ£o '0' ou vazio ou null ou undefined ou strings "null"/"undefined")
-      if (isSwapped && codDistNum !== 9999) {
+      // Fornecedor externo (codDist=9999) nÃ£o pode ser faturado via SmartPed — bloquear
+      if (codDistNum === 9999) {
+        logs.push(`[BLINDAGEM] Item bloqueado (Fornecedor Externo): ${item.novaDescricao || item.originalDescricao} (${item.novoEan || item.originalEan}) possui codDist=9999 (Pedido via WhatsApp). Faturamento via SmartPed nÃ£o disponÃ­vel para fornecedores externos.`);
+        continue;
+      }
+      if (isSwapped) {
         const isProdDistInvalid = !codProdDistStr || 
                                   codProdDistStr === "0" || 
                                   codProdDistStr.toLowerCase() === "null" || 
@@ -3968,7 +4292,8 @@ app.post("/api/distribuidores", async (req, res) => {
 
 app.post("/api/search-products", async (req, res) => {
   const logs: string[] = [];
-  const log = (msg: string) => { logs.push(msg); console.log(`[SEARCH] ${msg}`); };
+  const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[SEARCH] ${m}`); };
   try {
     const {
       query,
@@ -4815,7 +5140,8 @@ app.post("/api/search-products", async (req, res) => {
 app.post("/api/smartped-find-substitutes", async (req, res) => {
   const { ean, descricao, token, cnpj, useTestUrl = true, cortesRecentes = {} } = req.body;
   const logs: string[] = [];
-  const log = (msg: string) => { logs.push(msg); console.log(`[SUBSTITUTES] ${msg}`); };
+  const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[SUBSTITUTES] ${m}`); };
   
   try {
     const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
