@@ -119,6 +119,31 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 
 34. **LOGS EM ARQUIVO PARA DEBUG:** Quando o usuário pedir para ver logs da otimização, o agente deve configurar gravação de logs em arquivo (ex: `debug-logs/optimize-*.log`) via `fs.appendFileSync` no endpoint relevante. Assim o agente pode ler o arquivo com a ferramenta `Read` sem precisar acessar o terminal do usuário.
 
+35. **CODPRODDIST OBRIGATÓRIO PARA FATURAMENTO:** Sempre que o motor escolher um substituto, verificar se `CodProdutoDist` existe. Se vazio após retry, descartar candidato e re-rodar motor com candidatos restantes (`server.ts:2669-2696`). O `CodProdutoDist` vem EXCLUSIVAMENTE do endpoint `Condicoes/Ean` — `Condicoes/Molecula` NÃO retorna esse campo.
+
+36. **DROPDOWN NÃO MOSTRA ITENS SEM CODPRODDIST:** O ConditionSelector (dropdown de alternativas) NUNCA deve mostrar alternativas com `codProdutoDist` vazio — filtrar antes de renderizar (`server.ts:2048`, `server.ts:2579`). Itens sem código falhariam no faturamento.
+
+---
+
+## DEPENDÊNCIAS CRUZADAS — AO MUDAR UM PONTO, VERIFIQUE OS OUTROS
+
+> **REGRA:** Quando alterar qualquer função/regra abaixo, verifique TODOS os pontos listados na coluna "Impacta". Falhar nisso causa bugs silenciosos.
+
+| # | Função/Regra | Arquivo | Impacta (verificar ao alterar) |
+|---|-------------|---------|-------------------------------|
+| 1 | `resolveCategoria()` | `server/parsers.ts` | `server.ts` mappedSimilares (linha ~1734), mappedSimilares fallback (linha ~2340), ` TipoItem` no swap-engine |
+| 2 | `resolveDistName()` | `server.ts:75` | Todas as linhas que usam `distribuidora` no relatório, `DISTRIBUIDORAS_DYNAMIC_CACHE`, `DISTRIBUIDORAS_MAP` |
+| 3 | `fetchSimilarGenericsBatch()` | `server/smartped-api.ts` | `server.ts` optimize flow (linha ~830), fallback ruptura (linha ~2330) |
+| 4 | `codProdutoDist` mapping | `server.ts` (alternatives linha ~1665, ~1719, faturamento linha ~3323) | Blindagem 1 (linha ~3233), payload SmartPed (linha ~3324) |
+| 5 | ` TipoItem` classification | `server/parsers.ts` + `AGENTS.md #25` | `server.ts` isGeneric (linha ~1911), `tiposAceitos` (linha ~754), `RUPTURA-REGEX` check (linha ~2053), swap-engine filtros |
+| 6 | `isNotFoundName()` | `server.ts:68` | TODAS as filtragens de distribuidora, `resolveDistName`, `allAlternativesForRupture`, blindagem |
+| 7 | `disabledDistSet` | `server.ts:750` | batch encomendas, optimize flow (linha ~1777, ~1795, ~2268), `todasCondicoesOriginal` (linha ~2404) |
+| 8 | `cleanCodProduto()` | `server/parsers.ts` | `server.ts` todas as linhas que setam `codProduto` (linhas ~2302, ~2456, ~2720, ~2886, etc.) |
+| 9 | `validateSwapEquivalence()` | `swap-validation.ts` | `server.ts` filtered substitutos (linha ~1775), `allAlternativesForRupture` filter, `finalAlternatives` |
+| 10 | `parseSmartPedEstoque()` | `server/parsers.ts` | `server.ts` `originalHasStock` (linha ~1934), `findBestSubstitute`, filtros de estoque |
+
+**COMO USAR:** Antes de alterar qualquer função, busque no código por todos os pontos listados na coluna "Impacta" e verifique se a alteração é compatível.
+
 *Sempre se comunique em português.*
 
 *Fuso horário do usuário: America/Sao_Paulo (UTC-3) — Panambi, RS. Sempre que mencionar horários, usar esse fuso.*

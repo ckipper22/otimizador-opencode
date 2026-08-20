@@ -459,7 +459,8 @@ export default function App() {
           cnpj: config.cnpj,
           useTestUrl: config.useTestUrl,
           simulationMode: config.simulationMode,
-          margemMinima: config.margemMinima
+          margemMinima: config.margemMinima,
+          disabledDistributors: Array.from(disabledDistributors)
         })
       });
 

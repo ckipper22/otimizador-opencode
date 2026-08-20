@@ -87,3 +87,43 @@ export async function fetchSimilarGenerics(ean: string): Promise<any[]> {
     return [];
   }
 }
+
+export async function fetchSimilarGenericsBatch(eans: string[]): Promise<Record<string, any[]>> {
+  const result: Record<string, any[]> = {};
+  const MAX_BATCH = 40;
+
+  const uniqueEans = Array.from(new Set(eans.filter(e => e && e.trim()))).map(e => cleanEan(e)).filter(Boolean);
+  if (uniqueEans.length === 0) return result;
+
+  for (let i = 0; i < uniqueEans.length; i += MAX_BATCH) {
+    const lote = uniqueEans.slice(i, i + MAX_BATCH);
+    try {
+      const response = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eans: lote }),
+        signal: AbortSignal.timeout(30000)
+      });
+      if (!response.ok) {
+        console.error(`Batch similares falhou: HTTP ${response.status}`);
+        continue;
+      }
+      const data = await response.json();
+      for (const ean of lote) {
+        const eanData = data[ean];
+        if (eanData && eanData.success && eanData.encontrou) {
+          result[ean] = eanData.produtos || [];
+        } else {
+          result[ean] = [];
+        }
+      }
+    } catch (error) {
+      console.error(`Erro no batch de similares (lote ${i}-${i + lote.length}):`, error);
+      for (const ean of lote) {
+        result[ean] = [];
+      }
+    }
+  }
+
+  return result;
+}

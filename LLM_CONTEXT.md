@@ -78,6 +78,8 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 8. **Classificação vem da Ferramentinhas** (`grupo`), NÃO da SmartPed. Ver AGENTS.md #25.
 9. **REGEX sempre como complemento** — Molecula como base + Produtos/Buscar pra enriquecer. Ver AGENTS.md #25.
 10. **ALINHAMENTO FRONTEND/BACKEND** — sempre que alterar um lado, confirmar no outro. Ver AGENTS.md #27.
+11. **`resolveCategoria()`** — função normalizadora em `server/parsers.ts`. Fonte: Ferramentinhas `grupo` > SmartPed TipoItem > suffixo Molecula > descrição. Usar em vez de lógica espalhada.
+12. **DEPENDÊNCIAS CRUZADAS** — antes de alterar qualquer função, consultar tabela em AGENTS.md (seção "DEPENDÊNCIAS CRUZADAS"). Cada função lista todos os pontos que precisam ser verificados.
 
 ---
 
@@ -403,6 +405,60 @@ O cache de 5min para condições comerciais é um "bônus" — o valor real do T
       6. Fallback badge `bestOriginalDist` usa `isNotFoundName()`
     - **Regra:** AGENTS.md #31 — "NUNCA fazer checagem inline, SEMPRE usar `isNotFoundName()`"
     - **Status:** RESOLVIDO
+
+---
+
+## 4.3. Sessão 2026-08-20 — Correções de CodProdutoDist e Filtros de Dropdown
+
+### Contexto
+Otimização de lote grandes (~100+ EANs) revelou problemas com `CodProdutoDist` (código do produto dentro da distribuidora). Itens eram escolhidos pelo motor de trocas mas tinham `CodProdutoDist: EMPTY` → faturamento falhava.
+
+### Bugs Corrigidos nesta Sessão
+
+#### 43. RETRY-CODPRODDIST não descartava candidatos inválidos (2026-08-20)
+- **Problema:** Quando o motor escolhia um substituto com `CodProdutoDist` vazio, o RETRY tentava até 17 vezes buscar o código via `Condicoes/Ean`, mas **nunca descartava** o candidato. Resultado: item aparecia como "escolhido" mas não podia ser faturado.
+- **Causa raiz:** SmartPed API retorna distribuidoras em `Condicoes` de EANs diferentes — o `CodDist` (ex: 81=CervoSul) aparece com o EAN errado na resposta. Quando consulta direto, a distribuidora não tem aquele EAN → `CodProdutoDist`永远 vazio.
+- **Evidência:**
+  - EAN 7898060139920 (CICLOBENZAPRINA) + CodDist=81 (CervoSul): `Condicoes/Ean` retorna CodDist=624, 59, 503 — NÃO 81
+  - CervoSul não tem EAN 7898060139920 no catálogo (confirmado pelo usuário no SmartPed)
+  - Retry 17× sem sucesso mas candidato continuava sendo usado
+- **Correção (`server.ts:2669-2696`):** Se RETRY falha:
+  1. Remove candidato falho da lista
+  2. Re-rodar `findBestSubstitute` com candidatos restantes
+  3. Novo escolhido com `CodProdutoDist` válido → usa ele
+  4. Se nenhum válido → `finalResult = null` (sem troca para este item)
+- **Arquivos:** `server.ts:2630` (`let m` em vez de `const m`), `server.ts:2669-2696`
+- **Status:** RESOLVIDO
+
+#### 44. Dropdown mostrava opções com CodProdutoDist vazio (2026-08-20)
+- **Problema:** ConditionSelector listava alternativas que tinham `CodProdutoDist: EMPTY`. Se o usuário selecionasse uma delas, o faturamento falharia.
+- **Causa raiz:** `itemAlternatives` era construído a partir de `condicoesEnriched` + `substitutos` sem verificar se `CodProdutoDist` existia.
+- **Evidência:** EAN 7896658048692 tinha 14 alternativas sem código, EAN 7895296449281 tinha 16.
+- **Correção (`server.ts:2045-2055` e `server.ts:2576-2586`):** Filtro `.filter(alt => alt.codProdutoDist)` após `.map()` em AMBOS os pontos onde `itemAlternatives` é construído (construção inicial + rebuild pós-TARGET-EAN-API).
+- **Arquivos:** `server.ts:2048` (filtro 1), `server.ts:2579` (filtro 2)
+- **Status:** RESOLVIDO
+
+### Fluxo de Diagnóstico (reutilizável)
+1. Ler log: `$log | Select-String "CodProdutoDist:EMPTY"` → lista itens afetados
+2. Para cada item, verificar RETRY: `$log | Select-String "RETRY-CODPRODDIST.*EAN=xxx"`
+3. Verificar se RE-RUN descartou: `$log | Select-String "Re-run motor"`
+4. Verificar dropdown: `$log | Select-String "semCodProdutoDist"` → itens com alternativas inválidas
+5. **Teste direto na API:** Criar script `test-codprodutodist.ts` para chamar `Condicoes/Ean` e verificar quais CodDist retornam para um EAN específico
+
+### Pontos de Verificação ao Alterar
+| Função/Ponto | Arquivo:Linhas | O que verifica |
+|-------------|---------------|----------------|
+| RETRY-CODPRODDIST | `server.ts:2638-2712` | Busca CodProdutoDist via Condicoes/Ean. Se falhar, descarta candidato |
+| RE-RUN motor | `server.ts:2671-2696` | Re-rodar findBestSubstitute excluindo candidato falho |
+| Filtro itemAlternatives (1) | `server.ts:2048` | Remove opções sem codProdutoDist do dropdown |
+| Filtro itemAlternatives (2) | `server.ts:2579` | Remove opções sem codProdutoDist no rebuild |
+| findBestSubstitute | `server/swap-engine.ts` | Motor de trocas — escolhe melhor candidato |
+| CodProdutoDist mapping | `server.ts:2399` | Extrai CodProdutoDist de Condicoes (RUPTURA-REGEX) |
+| ENRICH-CODPRODDIST | `server.ts:2474-2506` | Enriquece codProdutoDist de fontes combinadas |
+
+### Regra Derivada
+- **AGENTS.md #28 (atualizar):** "Sempre que o motor escolher um substituto, verificar se `CodProdutoDist` existe. Se vazio após retry, descartar candidato e re-rodar motor."
+- **AGENTS.md #29 (novo):** "Dropdown (ConditionSelector) NUNCA deve mostrar alternativas com `codProdutoDist` vazio — filtrar antes de renderizar."
 
 ---
 

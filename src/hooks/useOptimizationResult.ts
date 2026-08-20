@@ -347,6 +347,13 @@ export function useOptimizationResult({
   };
 
   const handleSelectCondition = (codInterno: string, selectedAlt: any) => {
+    console.log(`[HANDLE-SELECT] codInterno=${codInterno} | EAN=${selectedAlt.ean} | dist=${selectedAlt.distribuidora} | codDist=${selectedAlt.codDist} | codProdutoDist="${selectedAlt.codProdutoDist}" | codProduto="${selectedAlt.codProduto}" | preco=${selectedAlt.preco}`);
+    // Grava em arquivo para diagnóstico (eu leio via Read)
+    fetch("/api/debug-selection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ codInterno, ean: selectedAlt.ean, dist: selectedAlt.distribuidora, codDist: selectedAlt.codDist, codProdutoDist: selectedAlt.codProdutoDist, codProduto: selectedAlt.codProduto, preco: selectedAlt.preco })
+    }).catch(() => {});
     setResult((prev: any) => {
       if (!prev) return null;
       return {

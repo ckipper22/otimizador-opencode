@@ -1,43 +1,23 @@
-# Contexto Ativo — Sessão 2026-08-19
+# Active Context
 
-## Estado Atual
+## Date: 2026-08-20
 
-**Última atualização:** 2026-08-19 (Panambi/UTC-3)
+## Current Task: Fix codProdutoDist empty in faturamento payload
 
-## O Que Foi Feito Nesta Sessão
+### Root cause (DEFINITIVE)
+O `ENRICH-POST-BATCH` só buscava `Condicoes/Ean` para EANs **originais** do SICF. Quando o motor de troca escolhe um substituto com EAN **diferente**, o `combinedCondicoes` tem as condições do EAN original, não do substituto. O enriquecimento tenta casar `cEan === sEan` — mas `cEan` é o EAN original e `sEan` é o EAN do substituto — **nunca casa**.
 
-### Melhorias de Performance
-1. **`fetchWithRetry`** — nova função `server.ts:536` que combina timeout (AbortController 15s) + retry (1 tentativa extra, delay 2s)
-2. **Chamadas batch otimizadas** — `Condicoes/Ean` + `Condicoes/Molecula` no loop de 40 EANs usam `fetchWithRetry(url, opts, 15000, 1)`
-3. **RUPTURA-REGEX** — `Condicoes/Ean` por EAN individual + `Produtos/Buscar` por descrição usam `fetchWithRetry`
-4. **Fallback principios ativos** — chamada Ferramentinhas `similares/{ean}` atualizada
-5. **Deduplicação EANs** — `queriedEanSet` evita chamadas duplicadas cross-item no RUPTURA-REGEX
+### Fix applied (2 changes)
+1. **`ENRICH-POST-BATCH-SUBS` (server.ts ~line 1300)**: Nova segunda passada que coleta todos EANs únicos de `apiResponses[*].Substitutos` que não têm `apiResponses[subEan]` e busca `Condicoes/Ean` para eles em batch (grupos de 10). Isso popula `apiResponses[subEan].Condicoes` com `CodProdutoDist`.
 
-### Análise de Log (optimize-1787114343885.log)
-- 137 itens SICF, 212 EANs expandidos
-- 6 batches API, todos 200 OK (retry não foi necessário)
-- 119 buscas RUPTURA-REGEX concluídas
-- 94 itens FILTRO-REMOVIDO (dist-invalida / estoque-zero)
+2. **Bloco de enriquecimento (server.ts ~line 1770 e ~line 2463)**: Agora busca em **2 fontes**:
+   - Fonte 1: `combinedCondicoes` (EANs originais/equivalentes)
+   - Fonte 2: `apiResponses[sEan].Condicoes` (EANs de substitutos, populados pelo ENRICH-POST-BATCH-SUBS)
 
-### Problema Identificado: LOSARTANA dropdown vazio
-- EAN 7896714208565 entrou em fallback (sem estoque no batch)
-- Produtos/Buscar retornou 26 ofertas
-- **EQUIV-FILTER** (`validateSwapEquivalence`) removeu 25 de 26 substitutos
-- SUBS-FILTER removeu o último restante
-- Resultado: `finalAlternatives=0`, dropdown vazio
-- `condicoesEnriched=0` mesmo com ofertas reais
+### Resultado esperado
+- Substitutos com EAN diferente do original agora terão `CodProdutoDist` preenchido
+- O ENRICH-POST-BATCH-SUBS adiciona chamadas API extras (grupos de 10) para EANs de substitutos
+- Compile OK (tsc --noEmit passou sem erros)
 
-**Próximo passo:** Investigar `swap-validation.ts` (raiz do projeto) para entender por que `validateSwapEquivalence` filtra tão agressivamente
-
-## Pendências
-
-- **Investigar `validateSwapEquivalence`** — EQUIV-FILTER remove 25/26 substitutos LOSARTANA
-- **Bug #38:** UX dropdown não separa "Mesmo Produto" vs "Genéricos/Similares"
-- **Bug #39:** Performance SICF + encomendas simultâneos
-- **Deploy:** Timeout/retry pendente de deploy
-
-## Ambiente
-
-- `npm run dev` (porta 3000) — local
-- Cloud Run: `smartped-cli-887122622666.us-east1.run.app`
-- Versão: `v2026-08-18-1830` | Branch: `master`
+### Próximo passo
+- Testar com payload real para verificar se os 5 itens problemáticos agora têm `codProdutoDist`

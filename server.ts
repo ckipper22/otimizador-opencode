@@ -9,8 +9,8 @@ import { CONFIG, PORT } from "./server/config";
 import { cacheKey, getFromCache, setInCache, MINIMOS_GLOBAL_CACHE, updateMinimosCache, getMinimoFromCache, DYNAMIC_EANS_CACHE, FATURAMENTO_ITEMS_CACHE, SIMULATED_CHECKS, startCachePurgeInterval } from "./server/cache";
 import { rateLimitMiddleware, startRateLimitPurge } from "./server/rate-limiter";
 import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatabaseRecord, loadEanDatabase } from "./server/ean-utils";
-import { fetchEanDescriptions, fetchSimilarGenerics } from "./server/smartped-api";
-import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords } from "./server/parsers";
+import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
+import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
 
 const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
@@ -289,7 +289,8 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
   const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[ENCOMENDAS-BATCH] ${m}`); };
   try {
-    const { encomendas, token, cnpj, useTestUrl = true, simulationMode = false, margemMinima = 0 } = req.body;
+    const { encomendas, token, cnpj, useTestUrl = true, simulationMode = false, margemMinima = 0, disabledDistributors = [] } = req.body;
+    const disabledDistSetEncomendas = new Set(disabledDistributors.map(Number));
 
     if (!encomendas || !Array.isArray(encomendas) || encomendas.length === 0) {
       return res.json({ results: [], logs: ["Nenhuma encomenda fornecida."] });
@@ -429,12 +430,16 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
           }
         }
 
-        // Filtrar apenas ofertas reais com estoque
+        // Filtrar apenas ofertas reais com estoque, EAN correto E distribuidoras habilitadas
+        const eanLimpo = (ean || "").replace(/^0+/, "");
         const ofertasReais = ofertas.filter((o: any) => {
           const distName = String(o.NomeDist || o.nomeDist || o.distribuidora || "").trim().toLowerCase();
           const distId = Number(o.CodDist || o.codDist || 0);
           const est = o.Estoque !== undefined ? o.Estoque : (o.estoque !== undefined ? o.estoque : 9999);
-          return distId > 0 && distName !== "" && distName !== "nao encontrados" && distName !== "não encontrados" && est > 0;
+          const ofertaEan = String(o.Ean || o.ean || "").replace(/^0+/, "");
+          const eanCorreto = !eanLimpo || ofertaEan === eanLimpo;
+          const distHabilitada = !disabledDistSetEncomendas.has(distId);
+          return distId > 0 && distName !== "" && distName !== "nao encontrados" && distName !== "não encontrados" && est > 0 && eanCorreto && distHabilitada;
         });
 
         // Deduplicar por EAN+CodDist+Condicao+Prazo
@@ -825,23 +830,20 @@ app.post("/api/optimize", async (req, res) => {
     const uniqueEans = Array.from(new Set(parsedItems.map(item => item.ean)));
     logs.push(`[PROCESSAMENTO] Total de EANs Ãºnicos para consulta: ${uniqueEans.length}`);
 
-    // PrÃ©-carregar similares de mercado de forma concorrente para todos os EANs Ãºnicos
-    logs.push(`[PROCESSAMENTO] PrÃ©-carregando dicionÃ¡rio dinÃ¢mico de similares de mercado para ${uniqueEans.length} EANs...`);
+    // PrÃ©-carregar similares de mercado via BATCH (uma sÃ³ chamada pra todos os EANs)
+    logs.push(`[PROCESSAMENTO] PrÃ©-carregando dicionÃ¡rio dinÃ¢mico de similares de mercado para ${uniqueEans.length} EANs (batch)...`);
     const marketSimilarMap: Record<string, any[]> = {};
     try {
       const startTimeSimilar = Date.now();
-      const similarPromises = uniqueEans.map(async (ean) => {
-        try {
-          const res = await fetchSimilarGenerics(ean);
-          marketSimilarMap[ean] = res || [];
-        } catch (err) {
-          marketSimilarMap[ean] = [];
-        }
-      });
-      await Promise.all(similarPromises);
-      logs.push(`[PROCESSAMENTO] Sucesso! Similares de mercado carregados concorrentemente em ${Date.now() - startTimeSimilar}ms.`);
+      const batchResult = await fetchSimilarGenericsBatch(uniqueEans);
+      for (const ean of uniqueEans) {
+        const eanClean = cleanEan(ean);
+        marketSimilarMap[eanClean] = batchResult[eanClean] || [];
+      }
+      const totalSimilares = Object.values(marketSimilarMap).reduce((sum, arr) => sum + arr.length, 0);
+      logs.push(`[PROCESSAMENTO] Sucesso! Similares de mercado carregados via batch em ${Date.now() - startTimeSimilar}ms. ${uniqueEans.length} EANs, ${totalSimilares} produtos encontrados.`);
     } catch (err: any) {
-      logs.push(`[AVISO] Falha ao prÃ©-carregar produtos similares de mercado: ${err.message}`);
+      logs.push(`[AVISO] Falha ao prÃ©-carregar produtos similares de mercado via batch: ${err.message}`);
     }
 
     // Gerar conjunto estendido de EANs a serem cotados (EAN original + equivalentes locais + similares de mercado)
@@ -976,8 +978,9 @@ app.post("/api/optimize", async (req, res) => {
       logs.push(`[API CONEXÃƒO] Token de Acesso: ${actualToken.substring(0, 6)}...`);
 
       // Batch call (SmartPed endpoint CondicoesMolecula handles multiple EANs separated by comma)
-      // Chunk EANs in batches of 40 — COM CACHE L1+L2
-      const batchSize = 40;
+      // Chunk EANs in batches of 10 — COM CACHE L1+L2
+      // Sequencial (CONCURRENCY=1) para evitar rate limit da SmartPed
+      const batchSize = 10;
       const eanMolCacheKey = (ean: string) => cacheKey("Condicoes/Molecula", ean, actualToken, apiCnpj);
       const eanEanCacheKey = (ean: string) => cacheKey("Condicoes/Ean", ean, actualToken, apiCnpj);
 
@@ -1103,11 +1106,11 @@ app.post("/api/optimize", async (req, res) => {
               substitutos.forEach((s: any) => {
                  if (s.CodDist && !s.NomeDist) s.NomeDist = distsMap[s.CodDist];
               });
-              apiResponses[eanResp] = {
-                 ItemPedido: itemPedido,
-                 Substitutos: substitutos,
-                 Condicoes: []
-              };
+               apiResponses[eanResp] = {
+                  ItemPedido: itemPedido,
+                  Substitutos: substitutos,
+                  Condicoes: (apiResponses[eanResp] && apiResponses[eanResp].Condicoes) || []
+               };
             }
           }
 
@@ -1186,13 +1189,13 @@ app.post("/api/optimize", async (req, res) => {
              }
           }
 
-           // Fallback para EANs que nÃ£o obtiveram resposta da API mas que temos no banco simulado local
-          for (const ean of batch) {
-            if (!apiResponses[ean] && MOCK_API_DATABASE[ean]) {
-              logs.push(`[SISTEMA CONTINGÃŠNCIA] Usando dados locais para EAN ${ean} como contingÃªncia de homologaÃ§Ã£o.`);
-              apiResponses[ean] = MOCK_API_DATABASE[ean];
-            }
-          }
+           // Fallback para EANs que nÃ£o obtiveram resposta da API
+           // IMPORTANTE: NUNCA usar dados mock — buscar via API individual se necessário
+           for (const ean of batch) {
+             if (!apiResponses[ean]) {
+               logs.push(`[API] EAN ${ean} sem resposta do batch. Será enriquecido no ENRICH-POST-BATCH.`);
+             }
+           }
 
           // 3. Salvar respostas no cache L1+L2 para reuso futuro
           for (const ean of batch) {
@@ -1202,18 +1205,14 @@ app.post("/api/optimize", async (req, res) => {
           }
         } catch (error: any) {
           console.error("Erro consultando lote da API SmartPed:", error.message);
-          logs.push(`[API ALERTA CRÃTICO] Falha de conexÃ£o: ${error.message}. Ativando contingÃªncia de simulaÃ§Ã£o inteligente local.`);
-          
-          for (const ean of batch) {
-              if (MOCK_API_DATABASE[ean]) {
-                apiResponses[ean] = MOCK_API_DATABASE[ean];
-              }
-            }
+          logs.push(`[API ALERTA CRÃTICO] Falha de conexÃ£o: ${error.message}. EANs serÃ£o enriquecidos no ENRICH-POST-BATCH.`);
         }
       }
 
-      // Executar batches em paralelo com concorrência máxima de 3
-      const CONCURRENCY = 3;
+      // Executar batches SEQUENCIALMENTE (1 por vez) para evitar rate limit da SmartPed
+      // Cada batch: Chamada Molecula + Chamada Ean em paralelo (regra #12 AGENTS.md)
+      const CONCURRENCY = 1;
+      const BATCH_DELAY_MS = 200;
       const totalBatches = Math.ceil(eansSemCache.length / batchSize);
       for (let g = 0; g < totalBatches; g += CONCURRENCY) {
         const group = [];
@@ -1223,6 +1222,9 @@ app.post("/api/optimize", async (req, res) => {
           group.push(processBatch(batch, b + 1, totalBatches));
         }
         await Promise.all(group);
+        if (g + CONCURRENCY < totalBatches) {
+          await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
+        }
       }
     }
 
@@ -1233,6 +1235,141 @@ app.post("/api/optimize", async (req, res) => {
     const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
     const apiCnpj = isSandboxToken ? "11111111111111" : finalCnpj.trim().replace(/\D/g, "");
     let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+
+    // PASSO PÓS-BATCH: Enriquecer EANs que ficaram sem Condicoes ou completamente ausentes
+    // A API SmartPed SEMPRE retorna CodProdutoDist — buscar para TODOS os EANs do pedido
+    {
+      const eansNeedingFetch: string[] = [];
+      for (const item of parsedItems) {
+        const ean = cleanEan(item.ean);
+        if (!ean) continue;
+        const resp = apiResponses[ean];
+        if (!resp) {
+          eansNeedingFetch.push(ean);
+        } else if (!resp.Condicoes || !Array.isArray(resp.Condicoes) || resp.Condicoes.length === 0) {
+          eansNeedingFetch.push(ean);
+        }
+      }
+      if (eansNeedingFetch.length > 0) {
+        logs.push(`[ENRICH-POST-BATCH] ${eansNeedingFetch.length} EANs sem Condicoes ou ausentes. Buscando via Chamada individual Condicoes/Ean...`);
+        const COND_BATCH_SIZE = 10;
+        const COND_DELAY_MS = 300;
+        for (let ci = 0; ci < eansNeedingFetch.length; ci += COND_BATCH_SIZE) {
+          const chunk = eansNeedingFetch.slice(ci, ci + COND_BATCH_SIZE);
+          try {
+            const condBody = JSON.stringify({
+              Token: actualToken,
+              parametros: { CnpjCLi: apiCnpj, Ean: chunk.join(","), AceitaOntem: 1 }
+            });
+            const condResp = await fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0" },
+              body: condBody
+            }, 15000, 1);
+            if (condResp.ok) {
+              const condJson = await condResp.json();
+              const condItens = condJson.Retorno?.itens || condJson.Retorno?.Itens || condJson.itens || condJson.Itens || [];
+              let enriched = 0;
+              for (const entry of condItens) {
+                const conds = entry.Condicoes || entry.condicoes || [];
+                if (conds.length > 0) {
+                  const firstCond = conds[0];
+                  const eanKey = cleanEan(firstCond.Ean || firstCond.ean || entry.CodBarra || "");
+                  if (eanKey) {
+                    if (!apiResponses[eanKey]) {
+                      apiResponses[eanKey] = {
+                        ItemPedido: { Ean: eanKey, Descricao: entry.Descricao || "", Laboratorio: entry.Laboratorio || "", Pliquido: firstCond.Preco || 0 },
+                        Substitutos: [],
+                        Condicoes: conds
+                      };
+                    } else {
+                      apiResponses[eanKey].Condicoes = conds;
+                    }
+                    enriched++;
+                  }
+                }
+              }
+              logs.push(`[ENRICH-POST-BATCH] Lote ${Math.floor(ci / COND_BATCH_SIZE) + 1}: ${enriched}/${chunk.length} EANs enriquecidos com Condicoes`);
+            } else {
+              logs.push(`[ENRICH-POST-BATCH] Lote ${Math.floor(ci / COND_BATCH_SIZE) + 1}: HTTP ${condResp.status}`);
+            }
+          } catch (err: any) {
+            logs.push(`[ENRICH-POST-BATCH] ERRO lote: ${err.message}`);
+          }
+          if (ci + COND_BATCH_SIZE < eansNeedingFetch.length) {
+            await new Promise(r => setTimeout(r, COND_DELAY_MS));
+          }
+        }
+      }
+
+      // PASSO PÓS-BATCH 2: Buscar Condicoes/Ean para EANs de SUBSTITUTOS descobertos pela Molecula
+      // O motor de troca pode escolher substitutos com EAN diferente do original.
+      // Esses EANs precisam ter suas próprias Condicoes para que o enriquecimento de CodProdutoDist funcione.
+      {
+        const subEansToFetch = new Set<string>();
+        for (const eanKey of Object.keys(apiResponses)) {
+          const resp = apiResponses[eanKey];
+          const subs = resp?.Substitutos || [];
+          for (const s of subs) {
+            const sEan = cleanEan(s.Ean || s.ean || "");
+            if (sEan && sEan !== eanKey && !apiResponses[sEan]) {
+              subEansToFetch.add(sEan);
+            }
+          }
+        }
+        if (subEansToFetch.size > 0) {
+          const subEanArr = Array.from(subEansToFetch);
+          logs.push(`[ENRICH-POST-BATCH-SUBS] ${subEanArr.length} EANs de substitutos sem Condicoes. Buscando Condicoes/Ean...`);
+          const COND_BATCH_SIZE = 10;
+          for (let ci = 0; ci < subEanArr.length; ci += COND_BATCH_SIZE) {
+            const chunk = subEanArr.slice(ci, ci + COND_BATCH_SIZE);
+            try {
+              const condBody = JSON.stringify({
+                Token: actualToken,
+                parametros: { CnpjCLi: apiCnpj, Ean: chunk.join(","), AceitaOntem: 1 }
+              });
+              const condResp = await fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0" },
+                body: condBody
+              }, 15000, 1);
+              if (condResp.ok) {
+                const condJson = await condResp.json();
+                const condItens = condJson.Retorno?.itens || condJson.Retorno?.Itens || condJson.itens || condJson.Itens || [];
+                let enriched = 0;
+                for (const entry of condItens) {
+                  const conds = entry.Condicoes || entry.condicoes || [];
+                  if (conds.length > 0) {
+                    const firstCond = conds[0];
+                    const eanKey = cleanEan(firstCond.Ean || firstCond.ean || entry.CodBarra || "");
+                    if (eanKey) {
+                      if (!apiResponses[eanKey]) {
+                        apiResponses[eanKey] = {
+                          ItemPedido: { Ean: eanKey, Descricao: entry.Descricao || "", Laboratorio: entry.Laboratorio || "", Pliquido: firstCond.Preco || 0 },
+                          Substitutos: [],
+                          Condicoes: conds
+                        };
+                      } else {
+                        apiResponses[eanKey].Condicoes = conds;
+                      }
+                      enriched++;
+                    }
+                  }
+                }
+                logs.push(`[ENRICH-POST-BATCH-SUBS] Lote ${Math.floor(ci / COND_BATCH_SIZE) + 1}: ${enriched}/${chunk.length} EANs de substitutos enriquecidos`);
+              } else {
+                logs.push(`[ENRICH-POST-BATCH-SUBS] Lote ${Math.floor(ci / COND_BATCH_SIZE) + 1}: HTTP ${condResp.status}`);
+              }
+            } catch (err: any) {
+              logs.push(`[ENRICH-POST-BATCH-SUBS] ERRO lote: ${err.message}`);
+            }
+            if (ci + COND_BATCH_SIZE < subEanArr.length) {
+              await new Promise(r => setTimeout(r, 300));
+            }
+          }
+        }
+      }
+    }
     if (useTestUrl && customTestUrl) {
       baseUrl = customTestUrl;
     } else if (!useTestUrl && customProductionUrl) {
@@ -1641,6 +1778,35 @@ app.post("/api/optimize", async (req, res) => {
         }
       }
 
+      // Enriquecer combinedSubstitutos com codProdutoDist vindo das Condicoes (Ean endpoint)
+      // Substitutos do Molecula NÃO têm CodProdutoDist — só Condicoes do Ean têm
+      // Busca em 2 fontes: (1) combinedCondicoes (EANs originais) e (2) apiResponses[subEan].Condicoes (EANs dos substitutos)
+      for (const s of combinedSubstitutos) {
+        if (!s.CodProdutoDist && !s.codProdutoDist) {
+          const sEan = cleanEan(s.Ean || s.ean || "");
+          const sCodDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+          if (sEan && sCodDist) {
+            // Fonte 1: combinedCondicoes (dos EANs originais/equivalentes)
+            let match = combinedCondicoes.find((c: any) => {
+              const cEan = cleanEan(c.Ean || c.ean || "");
+              const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+              return cEan === sEan && cCodDist === sCodDist && (c.CodProdutoDist || c.codProdutoDist);
+            });
+            // Fonte 2: apiResponses[sEan].Condicoes (Condicoes/Ean buscadas para EANs de substitutos)
+            if (!match && apiResponses[sEan]?.Condicoes?.length > 0) {
+              match = apiResponses[sEan].Condicoes.find((c: any) => {
+                const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                return cCodDist === sCodDist && (c.CodProdutoDist || c.codProdutoDist);
+              });
+            }
+            if (match) {
+              s.CodProdutoDist = match.CodProdutoDist || match.codProdutoDist;
+              s.codProdutoDist = s.CodProdutoDist;
+            }
+          }
+        }
+      }
+
       // Converter substitutos brutos para formato do ConditionSelector ANTES do filtro de equivalência
       // Isso garante que o dropdown tenha opções mesmo para Referência/Ético/O em caso de ruptura
       const allAlternativesForRupture = combinedSubstitutos.map((s: any) => {
@@ -1728,6 +1894,9 @@ app.post("/api/optimize", async (req, res) => {
          const est = parseInt(String(s.qtd_estoque !== undefined ? s.qtd_estoque : (s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0))), 10) || 0;
          const smartPedPrice = getUnitCost(s);
          const price = smartPedPrice > 0 ? smartPedPrice : parseFloat(String(s.vlr_custopersonalizado !== undefined ? s.vlr_custopersonalizado : (s.vlr_custo !== undefined ? s.vlr_custo : 0)));
+         // Classificacao via resolveCategoria (Ferramentinhas grupo > SmartPed TipoItem > suffixo Molecula > descricao)
+         const categoria: CategoriaProduto = resolveCategoria(s);
+         const tipoMap: Record<CategoriaProduto, string> = { generico: "G", marca: "M", similar: "S", perfumaria: "P", outros: "O" };
          return {
             Ean: s.cod_barra || s.Ean || s.ean || "",
             Descricao: s.nom_produto || s.Descricao || s.descricao || "",
@@ -1735,11 +1904,13 @@ app.post("/api/optimize", async (req, res) => {
             Estoque: est,
             Pliquido: price,
             PliquidoUni: price,
-            TipoItem: s.TipoItem || s.tipoItem || (s.nom_produto && (s.nom_produto.toUpperCase().includes("(G)") || s.nom_produto.toUpperCase().includes("GENERICO") || s.nom_produto.toUpperCase().includes("GENÃ‰RICO")) ? "G" : "S"),
+            TipoItem: s.TipoItem || s.tipoItem || tipoMap[categoria],
             NomeDist: s.NomeDist || s.nomeDist || s.nom_distribuidora || "Não Encontrados",
             CodDist: s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0),
             Condicao: s.Condicao || s.condicao || "FIXA",
-            Prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7)
+            Prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7),
+            grupo: s.grupo || s.classificacao || "",
+            categoria
          };
       }).filter((s: any) => validateSwapEquivalence(mainItemPedido, s));
 
@@ -1793,18 +1964,18 @@ app.post("/api/optimize", async (req, res) => {
         // Enriquecer condicoes com estoque REAL dos substitutos correspondentes (mesmo EAN + CodDist)
         // Condicoes da SmartPed podem trazer Estoque incorreto (disponibilidade do catálogo, não estoque real)
         // Usa stockMapByEanDist já construído anteriormente (a partir de combinedSubstitutos)
-        const condicoesEnriched = condicoes.map((c: any) => {
-          const cEan = cleanEan(c.Ean || c.ean || "");
-          const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
-          const key = `${cEan}_${cCodDist}`;
-          const mappedEstoque = stockMapByEanDist.get(key);
-          if (mappedEstoque !== undefined) {
-            return { ...c, Estoque: mappedEstoque };
-          }
-          return c;
+        let condicoesEnriched = condicoes.map((c: any) => {
+            const cEan = cleanEan(c.Ean || c.ean || "");
+            const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+            const key = `${cEan}_${cCodDist}`;
+            const mappedEstoque = stockMapByEanDist.get(key);
+            if (mappedEstoque !== undefined) {
+              return { ...c, Estoque: mappedEstoque };
+            }
+            return c;
         });
 
-        const itemAlternatives = [...condicoesEnriched, ...substitutos]
+        let itemAlternatives = [...condicoesEnriched, ...substitutos]
           .filter((s: any) => {
             const est = s.Estoque !== undefined ? s.Estoque : (s.estoque || 0);
             if (getUnitCost(s) <= 0) return false;
@@ -1874,6 +2045,13 @@ app.post("/api/optimize", async (req, res) => {
               codProdutoDist: s.CodProdutoDist || s.codProdutoDist || "",
               codProduto: cleanCodProduto(s.CodProduto || s.codProduto || "", s.CodProdutoDist || s.codProdutoDist || "")
             };
+          })
+          .filter((alt: any) => {
+            if (!alt.codProdutoDist) {
+              logs.push(`[FILTRO-CODPRODDIST] Removido do dropdown: EAN=${alt.ean} ${alt.distribuidora} (CodProdutoDist vazio)`);
+              return false;
+            }
+            return true;
           });
 
         const uniqueAltsMap = new Map<string, any>();
@@ -1972,6 +2150,10 @@ app.post("/api/optimize", async (req, res) => {
                 const allItens = [...(cachedResp?.ItemPedido ? [cachedResp.ItemPedido] : []), ...(cachedResp?.Substitutos || [])];
                 for (const item of allItens) {
                   const itemCondicoes = item.Condicoes || item.condicoes || [];
+                  // Adicionar Condicoes ao combinedCondicoes para enriquecimento de CodProdutoDist
+                  if (itemCondicoes.length > 0) {
+                    combinedCondicoes.push(...itemCondicoes);
+                  }
                   for (const c of itemCondicoes) {
                     const cEan = cleanEan(c.Ean || c.ean || targetEan);
                     const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
@@ -1982,7 +2164,7 @@ app.post("/api/optimize", async (req, res) => {
                     const cDist = c.NomeDist || c.nomeDist || DISTRIBUIDORAS_MAP[cCodDist] || `Distribuidor ${cCodDist}`;
                     if (cPreco <= 0 || cEst <= 0) continue;
                     if (cCodDist && disabledDistSet.has(Number(cCodDist))) continue;
-                    combinedSubstitutos.push({ Ean: cEan, Descricao: item.Descricao || item.descricao || "", Laboratorio: item.Laboratorio || item.laboratorio || "", TipoItem: "G", Pliquido: cPreco, PliquidoUni: cPreco, Estoque: cEst, NomeDist: cDist, CodDist: cCodDist, Condicao: cCond, Prazo: cPrazo, QtdMin: c.QtdMin !== undefined ? c.QtdMin : (c.qtdMin !== undefined ? c.qtdMin : 0), CX: c.CX !== undefined ? c.CX : (c.cx || 1) });
+                    combinedSubstitutos.push({ Ean: cEan, Descricao: item.Descricao || item.descricao || "", Laboratorio: item.Laboratorio || item.laboratorio || "", TipoItem: "G", Pliquido: cPreco, PliquidoUni: cPreco, Estoque: cEst, NomeDist: cDist, CodDist: cCodDist, Condicao: cCond, Prazo: cPrazo, QtdMin: c.QtdMin !== undefined ? c.QtdMin : (c.qtdMin !== undefined ? c.qtdMin : 0), CX: c.CX !== undefined ? c.CX : (c.cx || 1), CodProdutoDist: c.CodProdutoDist || c.codProdutoDist || "" });
                   }
                 }
               }
@@ -2011,6 +2193,10 @@ app.post("/api/optimize", async (req, res) => {
             
             for (const item of allItens) {
               const itemCondicoes = item.Condicoes || item.condicoes || [];
+              // Adicionar Condicoes ao combinedCondicoes para que o 2º enriquecimento possa encontrar CodProdutoDist
+              if (itemCondicoes.length > 0) {
+                combinedCondicoes.push(...itemCondicoes);
+              }
               for (const c of itemCondicoes) {
                 const cEan = cleanEan(c.Ean || c.ean || targetEan);
                 const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
@@ -2036,13 +2222,14 @@ app.post("/api/optimize", async (req, res) => {
                   Condicao: cCond,
                   Prazo: cPrazo,
                   QtdMin: c.QtdMin !== undefined ? c.QtdMin : (c.qtdMin !== undefined ? c.qtdMin : 0),
-                  CX: c.CX !== undefined ? c.CX : (c.cx || 1)
+                  CX: c.CX !== undefined ? c.CX : (c.cx || 1),
+                  CodProdutoDist: c.CodProdutoDist || c.codProdutoDist || ""
                 });
               }
             }
           }
           } // fim uncachedTargetEans
-          logs.push(`[TARGET-EAN-PRE] combinedSubstitutos expandido: ${combinedSubstitutos.length} itens`);
+          logs.push(`[TARGET-EAN-PRE] combinedSubstitutos expandido: ${combinedSubstitutos.length} itens | combinedCondicoes: ${combinedCondicoes.length} entradas`);
         } catch (err) {
           logs.push(`[TARGET-EAN-PRE] ERRO: ${err}`);
         }
@@ -2133,7 +2320,8 @@ app.post("/api/optimize", async (req, res) => {
                         Condicao: pc.condicao,
                         Prazo: pc.prazo,
                         QtdMin: pc.qtd_min || 0,
-                        CX: 1
+                        CX: 1,
+                        CodProdutoDist: pc.cod_produto_dist || ""
                       });
                       addedFromCache++;
                     }
@@ -2167,6 +2355,10 @@ app.post("/api/optimize", async (req, res) => {
                     const descItens = descData?.Retorno?.itens || [];
                     for (const di of descItens) {
                       const diCondicoes = di.Condicoes || di.condicoes || [];
+                      // Adicionar Condicoes ao combinedCondicoes para enriquecimento de CodProdutoDist
+                      if (diCondicoes.length > 0) {
+                        combinedCondicoes.push(...diCondicoes);
+                      }
                       for (const dc of diCondicoes) {
                         const dcEan = cleanEan(dc.Ean || dc.ean || '');
                         const dcCodDist = dc.CodDist !== undefined ? dc.CodDist : (dc.codDist !== undefined ? dc.codDist : 0);
@@ -2210,7 +2402,8 @@ app.post("/api/optimize", async (req, res) => {
                             Condicao: dcCond,
                             Prazo: dcPrazo,
                             QtdMin: dc.QtdMin !== undefined ? dc.QtdMin : (dc.qtdMin !== undefined ? dc.qtdMin : 0),
-                            CX: dc.CX !== undefined ? dc.CX : (dc.cx || 1)
+                            CX: dc.CX !== undefined ? dc.CX : (dc.cx || 1),
+                            CodProdutoDist: dc.CodProdutoDist || dc.codProdutoDist || ""
                           });
                           addedFromApi++;
                         }
@@ -2244,6 +2437,11 @@ app.post("/api/optimize", async (req, res) => {
           // Rebuild substitutosRaw e condicoesRaw
           substitutosRaw = combinedSubstitutos;
           condicoesRaw = combinedCondicoes;
+          logs.push(`[DIAG-CONDICOES] EAN ${item.ean} | combinedCondicoes.length=${combinedCondicoes.length} | combinedSubstitutos.length=${combinedSubstitutos.length}`);
+          if (combinedCondicoes.length > 0) {
+            const cppdCount = combinedCondicoes.filter((c: any) => c.CodProdutoDist || c.codProdutoDist).length;
+            logs.push(`[DIAG-CONDICOES]   ${cppdCount} entries with CodProdutoDist out of ${combinedCondicoes.length}`);
+          }
           
           // Rebuild stockMapByEanDist
           stockMapByEanDist.clear();
@@ -2271,7 +2469,7 @@ app.post("/api/optimize", async (req, res) => {
           });
           
           // Rebuild condicoesEnriched
-let condicoesEnriched = condicoes.map((c: any) => {
+condicoesEnriched = condicoes.map((c: any) => {
             const cEan = cleanEan(c.Ean || c.ean || "");
             const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
             const key = `${cEan}_${cCodDist}`;
@@ -2279,6 +2477,128 @@ let condicoesEnriched = condicoes.map((c: any) => {
             if (mappedEstoque !== undefined) return { ...c, Estoque: mappedEstoque };
             return c;
           });
+
+          // Segunda rodada de enriquecimento: substitutos sem codProdutoDist → buscar em combinedCondicoes
+          // (agora com TARGET-EAN-PRE e RUPTURA-REGEX já adicionaram mais Condicoes)
+          // Busca em 2 fontes: (1) combinedCondicoes e (2) apiResponses[sEan].Condicoes
+          {
+            for (const s of substitutos) {
+              if (!s.CodProdutoDist && !s.codProdutoDist) {
+                const sEan = cleanEan(s.Ean || s.ean || "");
+                const sCodDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+                if (sEan && sCodDist) {
+                  // Fonte 1: combinedCondicoes (dos EANs originais/equivalentes + RUPTURA-REGEX)
+                  let match = combinedCondicoes.find((c: any) => {
+                    const cEan = cleanEan(c.Ean || c.ean || "");
+                    const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                    return cEan === sEan && cCodDist === sCodDist && (c.CodProdutoDist || c.codProdutoDist);
+                  });
+                  // Fonte 2: apiResponses[sEan].Condicoes (Condicoes/Ean buscadas para EANs de substitutos)
+                  if (!match && apiResponses[sEan]?.Condicoes?.length > 0) {
+                    match = apiResponses[sEan].Condicoes.find((c: any) => {
+                      const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                      return cCodDist === sCodDist && (c.CodProdutoDist || c.codProdutoDist);
+                    });
+                  }
+                  if (match) {
+                    s.CodProdutoDist = match.CodProdutoDist || match.codProdutoDist;
+                    s.codProdutoDist = s.CodProdutoDist;
+                    logs.push(`[ENRICH-CODPRODDIST] OK: EAN=${sEan} CodDist=${sCodDist} → CodProdutoDist=${s.CodProdutoDist}`);
+                  } else {
+                    logs.push(`[ENRICH-CODPRODDIST] MISS: EAN=${sEan} CodDist=${sCodDist} não encontrado em nenhuma fonte`);
+                  }
+                }
+              }
+            }
+          }
+
+          // Rebuild itemAlternatives e finalAlternatives (dropdown do usuário)
+          itemAlternatives = [...condicoesEnriched, ...substitutos]
+            .filter((s: any) => {
+              const est = s.Estoque !== undefined ? s.Estoque : (s.estoque || 0);
+              if (getUnitCost(s) <= 0) return false;
+              if (est <= 0) return false;
+              const distName = resolveDistName(s);
+              if (isNotFoundName(distName)) return false;
+              return validateSwapEquivalence(itemPedido, s);
+            })
+            .map((s: any) => {
+              const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+              const condicao = s.Condicao || s.condicao || "FIXA";
+              const prazo = s.Prazo !== undefined ? s.Prazo : (s.prazo !== undefined ? s.prazo : 0);
+              const unitPrice = getUnitCost(s);
+              const tablePrice = extractTablePrice(s);
+              const baseForPmc = tablePrice > 0 ? tablePrice : unitPrice;
+              let apiPmc = extractPmc(s);
+              if (!apiPmc && cleanEan(s.Ean || s.ean || "") === cleanEan(item.ean)) {
+                apiPmc = extractPmc(itemPedido);
+              }
+              const unitPmc = apiPmc > 0 ? apiPmc : 0;
+              const altEan = cleanEan(s.Ean || s.ean || "") || cleanEan(item.ean);
+              let altDesc = s.Descricao || s.DescricaoProduto_Idi || s.descricao || s.descricaoProduto_Idi;
+              let resolvedLab = s.Laboratorio || s.laboratorio;
+              if (altEan === origEan) {
+                if (!altDesc) altDesc = originalDesc;
+                if (!resolvedLab) resolvedLab = originalLab;
+              }
+              if (!altDesc || !resolvedLab) {
+                const resolved = findDescAndLabFromApiResponses(altEan);
+                if (resolved) {
+                  if (!altDesc) altDesc = resolved.descricao;
+                  if (!resolvedLab) resolvedLab = resolved.laboratorio;
+                }
+              }
+              if (!altDesc) {
+                const dbRecord = getEanDatabaseRecord(altEan);
+                if (dbRecord && dbRecord.descricao) {
+                  altDesc = dbRecord.descricao;
+                  if (!resolvedLab) resolvedLab = dbRecord.laboratorio;
+                } else if (altEan === cleanEan(item.ean)) {
+                  altDesc = originalDesc;
+                } else {
+                  altDesc = `Medicamento Equivalente (EAN: ${altEan})`;
+                }
+              }
+              return {
+                ean: altEan,
+                descricao: altDesc,
+                laboratorio: resolvedLab || originalLab || "GENÉRICO",
+                preco: unitPrice,
+                pmc: unitPmc,
+                condicao: condicao,
+                distribuidora: resolveDistName(s, codDist),
+                codDist: codDist,
+                prazo: prazo,
+                qtdMin: s.QtdMin !== undefined ? s.QtdMin : (s.qtdMin !== undefined ? s.qtdMin : 0),
+                qtdMax: (s.Combo && s.Combo.QtdMax !== undefined) ? s.Combo.QtdMax : ((s.combo && s.combo.qtdMax !== undefined) ? s.combo.qtdMax : 0),
+                cx: s.CX !== undefined ? s.CX : (s.cx !== undefined ? s.cx : 1),
+                estoque: s.Estoque !== undefined ? s.Estoque : (s.estoque || 0),
+                codProdutoDist: s.CodProdutoDist || s.codProdutoDist || "",
+                codProduto: cleanCodProduto(s.CodProduto || s.codProduto || "", s.CodProdutoDist || s.codProdutoDist || "")
+              };
+            })
+            .filter((alt: any) => {
+              if (!alt.codProdutoDist) {
+                return false;
+              }
+              return true;
+            });
+
+          const uniqueAltsMap2 = new Map<string, any>();
+          itemAlternatives.forEach(alt => {
+            const key = `${alt.ean}_${alt.distribuidora}_${alt.condicao}_${alt.preco.toFixed(2)}_${alt.prazo}`;
+            if (!uniqueAltsMap2.has(key)) {
+              uniqueAltsMap2.set(key, alt);
+            }
+          });
+          finalAlternatives = Array.from(uniqueAltsMap2.values()).sort((a: any, b: any) => {
+            const aReal = isRealOffer(a);
+            const bReal = isRealOffer(b);
+            if (aReal && !bReal) return -1;
+            if (!aReal && bReal) return 1;
+            return a.preco - b.preco;
+          });
+          logs.push(`[REBUILD] EAN ${item.ean} | itemAlternatives: ${itemAlternatives.length} | finalAlternatives: ${finalAlternatives.length}`);
         }
         
         // LOG ANTES DO MOTOR DE TROCA
@@ -2290,6 +2610,18 @@ let condicoesEnriched = condicoes.map((c: any) => {
         logs.push(`[MOTOR-DEBUG] ANTES findBestSubstitute | combinedSubstitutos=${combinedSubstitutos.length} | condicoesEnriched=${condicoesEnriched.length} | substitutos=${substitutos.length} | allCandidates=${allCandidates.length} | candidatesWithStock=${candidatesWithStock.length}`);
         console.log(`[MOTOR-DEBUG] ANTES findBestSubstitute | combinedSubstitutos=${combinedSubstitutos.length} | condicoesEnriched=${condicoesEnriched.length} | substitutos=${substitutos.length} | allCandidates=${allCandidates.length} | candidatesWithStock=${candidatesWithStock.length}`);
         
+        // DIAG: candidatos ANB (CodDist=59) com EAN 7896112126478
+        const metCandidates = allCandidates.filter((c: any) => {
+          const cEan = cleanEan(c.Ean || c.ean || '');
+          const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+          return cEan === '7896112126478' && cCodDist === 59;
+        });
+        metCandidates.forEach((c: any, i: number) => {
+          const cpd = c.CodProdutoDist || c.codProdutoDist || 'EMPTY';
+          const src = (condicoesEnriched.includes(c)) ? 'condicoesEnriched' : 'substitutos';
+          logs.push(`[DIAG-METFORMINA] cand[${i}] fonte=${src} CodProdutoDist=${cpd} preco=${getUnitCost(c)} desc=${(c.Descricao||c.descricao||'').substring(0,30)}`);
+        });
+
         // Listar top 5 candidatos por preço
         const top5 = candidatesWithStock
           .sort((a: any, b: any) => getUnitCost(a) - getUnitCost(b))
@@ -2308,13 +2640,90 @@ let condicoesEnriched = condicoes.map((c: any) => {
         
         // LOG DEPOIS DO MOTOR DE TROCA
         if (finalResult) {
-          const m = finalResult.melhor;
+          let m = finalResult.melhor;
           const eanEscolhido = cleanEan(m.Ean || m.ean || '');
           const descEscolhido = (m.Descricao || m.descricao || '').substring(0, 40);
           const distEscolhido = m.NomeDist || m.nomeDist || '';
           const precoEscolhido = getUnitCost(m);
-          logs.push(`[MOTOR-DEBUG] DEPOIS findBestSubstitute | ESCOLHIDO: EAN:${eanEscolhido} "${descEscolhido}" | dist:${distEscolhido} | preco:${precoEscolhido} | economia:${finalResult.economia?.toFixed(2)}`);
-          console.log(`[MOTOR-DEBUG] DEPOIS findBestSubstitute | ESCOLHIDO: EAN:${eanEscolhido} "${descEscolhido}" | dist:${distEscolhido} | preco:${precoEscolhido} | economia:${finalResult.economia?.toFixed(2)}`);
+          logs.push(`[MOTOR-DEBUG] DEPOIS findBestSubstitute | ESCOLHIDO: EAN:${eanEscolhido} "${descEscolhido}" | dist:${distEscolhido} | preco:${precoEscolhido} | economia:${finalResult.economia?.toFixed(2)} | CodProdutoDist:${m.CodProdutoDist || m.codProdutoDist || 'EMPTY'}`);
+          console.log(`[MOTOR-DEBUG] DEPOIS findBestSubstitute | ESCOLHIDO: EAN:${eanEscolhido} "${descEscolhido}" | dist:${distEscolhido} | preco:${precoEscolhido} | economia:${finalResult.economia?.toFixed(2)} | CodProdutoDist:${m.CodProdutoDist || m.codProdutoDist || 'EMPTY'}`);
+
+          // FORÇAR BUSCA: Se CodProdutoDist vazio, buscar Condicoes/Ean novamente para EAN+CodDist
+          if (!m.CodProdutoDist && !m.codProdutoDist) {
+            const retryEan = cleanEan(m.Ean || m.ean || "");
+            const retryCodDist = m.CodDist !== undefined ? m.CodDist : (m.codDist !== undefined ? m.codDist : 0);
+            if (retryEan && retryCodDist) {
+              logs.push(`[RETRY-CODPRODDIST] CodProdutoDist vazio para EAN=${retryEan} CodDist=${retryCodDist}. Buscando Condicoes/Ean novamente...`);
+              try {
+                const retryHeaders = { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0" };
+                const retryBody = JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Ean: retryEan, AceitaOntem: 1 } });
+                const retryResp = await fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`, {
+                  method: "POST",
+                  headers: retryHeaders,
+                  body: retryBody
+                }, 15000, 1);
+                if (retryResp.ok) {
+                  const retryJson = await retryResp.json();
+                  const retryItens = retryJson.Retorno?.itens || retryJson.Retorno?.Itens || retryJson.itens || retryJson.Itens || [];
+                  for (const entry of retryItens) {
+                    const conds = entry.Condicoes || entry.condicoes || [];
+                    for (const c of conds) {
+                      const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                      const cCpd = c.CodProdutoDist || c.codProdutoDist || "";
+                      if (cCodDist === retryCodDist && cCpd) {
+                        m.CodProdutoDist = cCpd;
+                        m.codProdutoDist = cCpd;
+                        logs.push(`[RETRY-CODPRODDIST] OK: EAN=${retryEan} CodDist=${retryCodDist} → CodProdutoDist=${cCpd}`);
+                        break;
+                      }
+                    }
+                    if (m.CodProdutoDist || m.codProdutoDist) break;
+                  }
+                  if (!m.CodProdutoDist && !m.codProdutoDist) {
+                    logs.push(`[RETRY-CODPRODDIST] MISS: EAN=${retryEan} CodDist=${retryCodDist} — CodProdutoDist ainda vazio após retry`);
+                    // DISCARD: Re-run motor excluding the failed candidate
+                    const failedEan = retryEan;
+                    const failedCodDist = retryCodDist;
+                    const remainingCandidates = [...condicoesEnriched, ...substitutos].filter((c: any) => {
+                      const cEan = cleanEan(c.Ean || c.ean || '');
+                      const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                      return !(cEan === failedEan && cCodDist === failedCodDist);
+                    });
+                    logs.push(`[RETRY-CODPRODDIST] Re-run motor: ${remainingCandidates.length} candidatos restantes (excluído EAN=${failedEan} CodDist=${failedCodDist})`);
+                    const retryResult = findBestSubstitute(itemPedido, remainingCandidates, margemMinima, tiposAceitos, exigirEstoque, item.precoOriginal, effectiveOriginalHasStock, isGeneric, cortesRecentes);
+                    if (retryResult) {
+                      const rm = retryResult.melhor;
+                      const rCpd = rm.CodProdutoDist || rm.codProdutoDist;
+                      if (rCpd) {
+                        finalResult = retryResult;
+                        m = rm;
+                        logs.push(`[RETRY-CODPRODDIST] RE-RUN OK: ${rm.NomeDist || rm.nomeDist} EAN=${cleanEan(rm.Ean || rm.ean || '')} CodProdutoDist=${rCpd}`);
+                      } else {
+                        finalResult = null;
+                        logs.push(`[RETRY-CODPRODDIST] RE-RUN also empty CodProdutoDist — Descartando substituto para este item`);
+                      }
+                    } else {
+                      finalResult = null;
+                      logs.push(`[RETRY-CODPRODDIST] RE-RUN: nenhum substituto restante`);
+                    }
+                  }
+                  // Atualizar apiResponses com as novas condições para reuso
+                  if (!apiResponses[retryEan]) {
+                    apiResponses[retryEan] = { ItemPedido: { Ean: retryEan }, Substitutos: [], Condicoes: [] };
+                  }
+                  for (const entry of retryItens) {
+                    const conds = entry.Condicoes || entry.condicoes || [];
+                    if (conds.length > 0) {
+                      const existingConds = apiResponses[retryEan].Condicoes || [];
+                      apiResponses[retryEan].Condicoes = [...existingConds, ...conds];
+                    }
+                  }
+                }
+              } catch (retryErr: any) {
+                logs.push(`[RETRY-CODPRODDIST] ERRO: ${retryErr.message}`);
+              }
+            }
+          }
         } else {
           logs.push(`[MOTOR-DEBUG] DEPOIS findBestSubstitute | NENHUM substituto encontrado`);
           console.log(`[MOTOR-DEBUG] DEPOIS findBestSubstitute | NENHUM substituto encontrado`);
@@ -2322,24 +2731,29 @@ let condicoesEnriched = condicoes.map((c: any) => {
 
         if (!finalResult && !originalHasStock) {
           logs.push(`[ALERTA] Medicamento ${item.ean} sem estoque suficiente (${requestedQty}). Buscando alternativas similares...`);
-          const similares = await fetchSimilarGenerics(item.ean);
-           const mappedSimilares = similares.map((s: any) => {
-              const est = parseInt(String(s.qtd_estoque !== undefined ? s.qtd_estoque : (s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0))), 10) || 0;
-              const smartPedPrice = getUnitCost(s);
-              const price = smartPedPrice > 0 ? smartPedPrice : parseFloat(String(s.vlr_custopersonalizado !== undefined ? s.vlr_custopersonalizado : (s.vlr_custo !== undefined ? s.vlr_custo : 0)));
-              return {
-                Ean: s.cod_barra || s.Ean || s.ean || "",
-                Descricao: s.nom_produto || s.Descricao || s.descricao || "",
-                Laboratorio: s.nom_laborat || s.Laboratorio || s.laboratorio || "",
-                Estoque: est,
-                Pliquido: price,
-                PliquidoUni: price,
-                TipoItem: "G",
-                NomeDist: s.NomeDist || s.nomeDist || "Não Encontrados",
-                CodDist: s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0),
-                Condicao: s.Condicao || s.condicao || "FIXA",
-                Prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7)
-             };
+           const similares = await fetchSimilarGenerics(item.ean);
+            const mappedSimilares = similares.map((s: any) => {
+               const est = parseInt(String(s.qtd_estoque !== undefined ? s.qtd_estoque : (s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0))), 10) || 0;
+               const smartPedPrice = getUnitCost(s);
+               const price = smartPedPrice > 0 ? smartPedPrice : parseFloat(String(s.vlr_custopersonalizado !== undefined ? s.vlr_custopersonalizado : (s.vlr_custo !== undefined ? s.vlr_custo : 0)));
+               // Classificacao via resolveCategoria
+               const categoria: CategoriaProduto = resolveCategoria(s);
+               const tipoMap: Record<CategoriaProduto, string> = { generico: "G", marca: "M", similar: "S", perfumaria: "P", outros: "O" };
+               return {
+                 Ean: s.cod_barra || s.Ean || s.ean || "",
+                 Descricao: s.nom_produto || s.Descricao || s.descricao || "",
+                 Laboratorio: s.nom_laborat || s.Laboratorio || s.laboratorio || "",
+                 Estoque: est,
+                 Pliquido: price,
+                 PliquidoUni: price,
+                 TipoItem: s.TipoItem || s.tipoItem || tipoMap[categoria],
+                 NomeDist: s.NomeDist || s.nomeDist || "Não Encontrados",
+                 CodDist: s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0),
+                 Condicao: s.Condicao || s.condicao || "FIXA",
+                 Prazo: s.Prazo !== undefined ? s.Prazo : (s.prazo || 7),
+                 grupo: s.grupo || s.classificacao || "",
+                 categoria
+              };
           });
           let candidatos = mappedSimilares.filter(s => {
              const sEan = cleanEan(s.Ean);
@@ -2397,6 +2811,10 @@ let condicoesEnriched = condicoes.map((c: any) => {
             const distNameClean = normalizeDistName(s.NomeDist || s.nomeDist || s.distribuidora || "");
             const blockedDistsForEan = cortesRecentes[sEan] || [];
             if (blockedDistsForEan.includes(distNameClean)) {
+              return false;
+            }
+            const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+            if (disabledDistSet.has(Number(codDist))) {
               return false;
             }
             return true;
@@ -2878,11 +3296,66 @@ let condicoesEnriched = condicoes.map((c: any) => {
             motivoAlerta: alertResult.motivoAlerta,
             alternatives: (() => {
               const chosen = finalAlternatives.length > 0 ? finalAlternatives : (rawSubstitutosForAlternatives.length > 0 ? rawSubstitutosForAlternatives : (substitutos.length > 0 ? substitutos : []));
+              // ENRICH-ALL-ALTS: Construir mapa global Ean_CodDist → CodProdutoDist a partir de TODAS as fontes
+              const codProdutoDistMap = new Map<string, string>();
+              // Fonte 1: combinedCondicoes (Condicoes/Ean dos EANs originais/equivalentes)
+              for (const c of combinedCondicoes) {
+                const cEan = cleanEan(c.Ean || c.ean || "");
+                const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                const cppd = c.CodProdutoDist || c.codProdutoDist || "";
+                if (cEan && cCodDist && cppd) codProdutoDistMap.set(`${cEan}_${cCodDist}`, cppd);
+              }
+              // Fonte 1b: condicoesEnriched (condicoes originais com estoque enriquecido, já têm CodProdutoDist)
+              for (const c of condicoesEnriched) {
+                const cEan = cleanEan(c.Ean || c.ean || "");
+                const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                const cppd = c.CodProdutoDist || c.codProdutoDist || "";
+                if (cEan && cCodDist && cppd) codProdutoDistMap.set(`${cEan}_${cCodDist}`, cppd);
+              }
+              // Fonte 1c: substitutos (já enriquecidos via combinedCondicoes + apiResponses em etapa anterior)
+              for (const s of substitutos) {
+                const sEan = cleanEan(s.Ean || s.ean || "");
+                const sCodDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+                const cppd = s.CodProdutoDist || s.codProdutoDist || "";
+                if (sEan && sCodDist && cppd) codProdutoDistMap.set(`${sEan}_${sCodDist}`, cppd);
+              }
+              // Fonte 2: Todas as Condicoes de apiResponses (batch + TARGET-EAN-PRE + TARGET-EAN-API)
+              for (const respEan of Object.keys(apiResponses)) {
+                const resp = apiResponses[respEan];
+                const condicoesResp = resp?.Condicoes || resp?.ItemPedido?.Condicoes || [];
+                for (const c of condicoesResp) {
+                  const cEan = cleanEan(c.Ean || c.ean || respEan);
+                  const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                  const cppd = c.CodProdutoDist || c.codProdutoDist || "";
+                  if (cEan && cCodDist && cppd) codProdutoDistMap.set(`${cEan}_${cCodDist}`, cppd);
+                }
+                // Substitutos do batch também têm CodProdutoDist enriquecido
+                const subsResp = resp?.Substitutos || [];
+                for (const s of subsResp) {
+                  const sEan = cleanEan(s.Ean || s.ean || "");
+                  const sCodDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+                  const cppd = s.CodProdutoDist || s.codProdutoDist || "";
+                  if (sEan && sCodDist && cppd) codProdutoDistMap.set(`${sEan}_${sCodDist}`, cppd);
+                }
+              }
+              // Enriquecer cada alternativa com codProdutoDist do mapa
+              for (const a of chosen) {
+                if (!a.codProdutoDist) {
+                  const aEan = cleanEan(a.ean || "");
+                  const key = `${aEan}_${a.codDist || 0}`;
+                  const found = codProdutoDistMap.get(key);
+                  if (found) {
+                    a.codProdutoDist = found;
+                    if (!a.codProduto) a.codProduto = found;
+                  }
+                }
+              }
               const filtered = chosen.filter((a: any) => {
                 const d = a.distribuidora || a.NomeDist || a.nomeDist || "";
                 return !isNotFoundName(d) && (a.codDist || 0) > 0;
               });
-              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO SUCESSO | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${filtered.length} alternativas (de ${chosen.length})`);
+              const cppdMissing = chosen.filter((a: any) => !a.codProdutoDist).length;
+              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO SUCESSO | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${filtered.length} alternativas (de ${chosen.length}) | semCodProdutoDist=${cppdMissing}`);
               return filtered.length > 0 ? filtered : chosen;
             })()
           });
@@ -3021,11 +3494,60 @@ let condicoesEnriched = condicoes.map((c: any) => {
             motivoAlerta: alertResult.motivoAlerta,
             alternatives: (() => {
               const chosen = finalAlternatives.length > 0 ? finalAlternatives : (rawSubstitutosForAlternatives.length > 0 ? rawSubstitutosForAlternatives : (substitutos.length > 0 ? substitutos : []));
+              // ENRICH-ALL-ALTS: Construir mapa global Ean_CodDist → CodProdutoDist a partir de TODAS as fontes
+              const codProdutoDistMap = new Map<string, string>();
+              for (const c of combinedCondicoes) {
+                const cEan = cleanEan(c.Ean || c.ean || "");
+                const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                const cppd = c.CodProdutoDist || c.codProdutoDist || "";
+                if (cEan && cCodDist && cppd) codProdutoDistMap.set(`${cEan}_${cCodDist}`, cppd);
+              }
+              for (const c of condicoesEnriched) {
+                const cEan = cleanEan(c.Ean || c.ean || "");
+                const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                const cppd = c.CodProdutoDist || c.codProdutoDist || "";
+                if (cEan && cCodDist && cppd) codProdutoDistMap.set(`${cEan}_${cCodDist}`, cppd);
+              }
+              for (const s of substitutos) {
+                const sEan = cleanEan(s.Ean || s.ean || "");
+                const sCodDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+                const cppd = s.CodProdutoDist || s.codProdutoDist || "";
+                if (sEan && sCodDist && cppd) codProdutoDistMap.set(`${sEan}_${sCodDist}`, cppd);
+              }
+              for (const respEan of Object.keys(apiResponses)) {
+                const resp = apiResponses[respEan];
+                const condicoesResp = resp?.Condicoes || resp?.ItemPedido?.Condicoes || [];
+                for (const c of condicoesResp) {
+                  const cEan = cleanEan(c.Ean || c.ean || respEan);
+                  const cCodDist = c.CodDist !== undefined ? c.CodDist : (c.codDist !== undefined ? c.codDist : 0);
+                  const cppd = c.CodProdutoDist || c.codProdutoDist || "";
+                  if (cEan && cCodDist && cppd) codProdutoDistMap.set(`${cEan}_${cCodDist}`, cppd);
+                }
+                const subsResp = resp?.Substitutos || [];
+                for (const s of subsResp) {
+                  const sEan = cleanEan(s.Ean || s.ean || "");
+                  const sCodDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+                  const cppd = s.CodProdutoDist || s.codProdutoDist || "";
+                  if (sEan && sCodDist && cppd) codProdutoDistMap.set(`${sEan}_${sCodDist}`, cppd);
+                }
+              }
+              for (const a of chosen) {
+                if (!a.codProdutoDist) {
+                  const aEan = cleanEan(a.ean || "");
+                  const key = `${aEan}_${a.codDist || 0}`;
+                  const found = codProdutoDistMap.get(key);
+                  if (found) {
+                    a.codProdutoDist = found;
+                    if (!a.codProduto) a.codProduto = found;
+                  }
+                }
+              }
               const filtered = chosen.filter((a: any) => {
                 const d = a.distribuidora || a.NomeDist || a.nomeDist || "";
                 return !isNotFoundName(d) && (a.codDist || 0) > 0;
               });
-              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO MANTER ORIGINAL | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${filtered.length} alternativas (de ${chosen.length})`);
+              const cppdMissing = chosen.filter((a: any) => !a.codProdutoDist).length;
+              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO MANTER ORIGINAL | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${filtered.length} alternativas (de ${chosen.length}) | semCodProdutoDist=${cppdMissing}`);
               return filtered.length > 0 ? filtered : chosen;
             })()
           });
@@ -3302,15 +3824,29 @@ app.post("/api/faturar", async (req, res) => {
       logs.push(`[API CONEXÃƒO] Registrando faturamento na API SmartPed: ${endpointEnvio}...`);
 
       // Mapeamento dos itens para a estrutura oficial da SmartPed (api/Pedido/Envio)
-      const apiItens = validatedItems.map((it: any) => ({
-        CodDist: typeof it.codDist === "number" ? it.codDist : parseInt(it.codDist) || 2,
-        Condicao: it.condicao || "FIXA",
-        CodProdutoDist: String(it.codProdutoDist || "0"),
-        CodProduto: String(it.codProduto || "0"),
-        Prazo: typeof it.prazo === "number" ? it.prazo : parseInt(it.prazo) || 7,
-        Ean: String(it.novoEan || it.originalEan),
-        Quant: typeof it.qtd === "number" ? it.qtd : parseFloat(it.qtd) || 1
-      }));
+      // Para itens com codProdutoDist vazio (rupturas/similares), buscar nas alternatives
+      const apiItens = validatedItems.map((it: any) => {
+        let codProdDist = String(it.codProdutoDist || "").trim();
+        let codProd = String(it.codProduto || "").trim();
+        // Se codProdutoDist vazio e tem alternatives, copiar do substituto escolhido
+        if ((!codProdDist || codProdDist === "0") && it.alternatives && it.alternatives.length > 0) {
+          const altMatch = it.alternatives.find((a: any) => a.codProdutoDist && String(a.codProdutoDist).trim() !== "" && String(a.codProdutoDist).trim() !== "0");
+          if (altMatch) {
+            codProdDist = String(altMatch.codProdutoDist || "").trim();
+            codProd = String(altMatch.codProduto || altMatch.codProdutoDist || "").trim();
+            logs.push(`[BLINDAGEM] codProdutoDist recuperado do alternativo: ${it.novaDescricao || it.originalDescricao} → codProdutoDist=${codProdDist}`);
+          }
+        }
+        return {
+          CodDist: typeof it.codDist === "number" ? it.codDist : parseInt(it.codDist) || 2,
+          Condicao: it.condicao || "FIXA",
+          CodProdutoDist: codProdDist || "0",
+          CodProduto: codProd || "0",
+          Prazo: typeof it.prazo === "number" ? it.prazo : parseInt(it.prazo) || 7,
+          Ean: String(it.novoEan || it.originalEan),
+          Quant: typeof it.qtd === "number" ? it.qtd : parseFloat(it.qtd) || 1
+        };
+      });
 
       const apiPayload = {
         Token: actualToken,
@@ -6253,6 +6789,22 @@ app.post("/api/diagnostico-ean", async (req, res) => {
     });
   }
 });
+
+// Debug endpoint: grava seleções de ConditionSelector em arquivo para diagnóstico
+app.post("/api/debug-selection", (req, res) => {
+  try {
+    const { codInterno, ean, dist, codDist, codProdutoDist, codProduto, preco, timestamp } = req.body || {};
+    const logLine = `[${new Date().toISOString()}] codInterno=${codInterno} | EAN=${ean} | dist=${dist} | codDist=${codDist} | codProdutoDist="${codProdutoDist}" | codProduto="${codProduto}" | preco=${preco}\n`;
+    const fs = require("fs");
+    const logDir = path.join(process.cwd(), "debug-logs");
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(path.join(logDir, "selection.log"), logLine);
+    res.json({ ok: true });
+  } catch (err) {
+    res.json({ ok: false });
+  }
+});
+
 if (process.env.SKIP_SERVER_LISTEN !== "true") {
   if (process.env.NODE_ENV !== "production") {
     createViteServer({

@@ -436,3 +436,36 @@ export function getCleanSearchWords(desc: string): string[] {
 
   return cleanWords;
 }
+
+export type CategoriaProduto = "generico" | "marca" | "similar" | "perfumaria" | "outros";
+
+export function resolveCategoria(item: any): CategoriaProduto {
+  if (!item) return "outros";
+
+  // 1. FONTE PRIMARIA: Ferramentinhas "grupo" (mais confiavel, 100% nos testes)
+  const grupo = (item.grupo || item.classificacao || "").toLowerCase();
+  if (grupo.includes("generico")) return "generico";
+  if (grupo.includes("similar")) return "similar";
+  if (grupo.includes("referencia") || grupo.includes("marca")) return "marca";
+  if (grupo.includes("perfumaria") || grupo.includes("correlatos")) return "perfumaria";
+
+  // 2. FALLBACK: SmartPed TipoItem (as vezes vazio, 46% dos casos)
+  const tipo = (item.TipoItem || item.tipoItem || "").toUpperCase();
+  if (tipo === "G") return "generico";
+  if (tipo === "M") return "marca";
+  if (tipo === "S") return "similar";
+  if (tipo === "P") return "perfumaria";
+
+  // 3. FALLBACK 2: Sufixo Molecula (ex: "LOSARTANA_50MG 30 CP_G")
+  const mol = (item.Molecula || item.molecula || "").toUpperCase();
+  if (mol.endsWith("_G")) return "generico";
+  if (mol.endsWith("_M")) return "marca";
+  if (mol.endsWith("_S")) return "similar";
+  if (mol.endsWith("_O")) return "outros";
+
+  // 4. FALLBACK 3: Descricao (genéricos comprimidos podem ter Molecula vazio)
+  const desc = (item.Descricao || item.descricao || "").toUpperCase();
+  if (desc.includes(" GEN ") || desc.includes("GENERICO") || desc.includes("GENÉRICO")) return "generico";
+
+  return "outros";
+}
