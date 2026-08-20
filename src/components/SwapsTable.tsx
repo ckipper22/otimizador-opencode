@@ -587,6 +587,18 @@ export default function SwapsTable({
                             )}
                             <span className="mx-1">|</span> Lab: <span className="truncate max-w-[120px] ml-1 px-1.5 py-0.5 bg-gray-200 text-gray-800 font-bold rounded-sm uppercase tracking-wider">{item.isRupturaSubstitution ? (item.novoLaboratorio || "GENÉRICO") : (item.originalLaboratorio || "GENÉRICO")}</span> <span className="mx-1">|</span> Unit: {formatCurrency(item.isRupturaSubstitution ? item.novoPreco : item.originalPreco)}
                           </div>
+                          {item.isRupturaSubstitution && item.originalRupturaEan && (
+                            <div className="mt-1.5 p-2 bg-yellow-50 border border-yellow-400 rounded-sm">
+                              <div className="flex items-center gap-1 text-[10px] font-black text-yellow-800 mb-1">
+                                <AlertTriangle className="w-3 h-3 text-yellow-600" />
+                                PRODUTO ORIGINAL EM FALTA:
+                              </div>
+                              <div className="text-[10px] text-yellow-900 font-bold">{item.originalRupturaDescricao}</div>
+                              <div className="text-[9px] text-yellow-700 font-mono mt-0.5">
+                                EAN: {item.originalRupturaEan} | Lab: {item.originalRupturaLaboratorio} | Preço: R$ {item.originalRupturaPreco?.toFixed(2)}
+                              </div>
+                            </div>
+                          )}
                           <ObservationBell ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} origem={item.origem} />
                         </div>
                       </td>

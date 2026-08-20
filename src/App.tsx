@@ -3024,6 +3024,14 @@ export default function App() {
                     </div>
                   )}
 
+                  {!isSearchingEncomendas && !encomendasSearchError && encomendasWithOffers.length === 0 && encomendasList.length === 0 && (
+                    <div className="p-6 bg-violet-50 border-2 border-violet-200 text-center">
+                      <Package className="w-10 h-10 text-violet-300 mx-auto mb-2" />
+                      <p className="text-sm font-bold text-violet-800">Nenhuma encomenda pendente</p>
+                      <p className="text-[11px] text-violet-600 mt-1">Não há encomendas com status "Pendente" no momento.</p>
+                    </div>
+                  )}
+
                   {/* Tabela de Encomendas - Estilo Manual Add Modal */}
                   {encomendasWithOffers.length > 0 && !isSearchingEncomendas && (
                     <div className="bg-white border-2 border-[#141414] shadow-[3px_3px_0px_0px_rgba(20,20,20,1)] flex-1 min-h-0 flex flex-col">
