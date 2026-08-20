@@ -24,12 +24,16 @@ function getBuildInfo() {
 
 const buildInfo = getBuildInfo();
 
-// Write version to file for server to read at runtime
-fs.writeFileSync('dist/version.txt', buildInfo.version);
+const versionPlugin = {
+  name: 'version-file',
+  closeBundle() {
+    fs.writeFileSync('dist/version.txt', buildInfo.version);
+  }
+};
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), versionPlugin],
     define: {
       __BUILD_INFO__: JSON.stringify(buildInfo),
     },
