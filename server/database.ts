@@ -54,6 +54,20 @@ function runMigrations(d: any) {
   try {
     d.exec(`ALTER TABLE itens_manuais ADD COLUMN id_encomenda TEXT;`);
   } catch {}
+  try {
+    // Migração: adicionar colunas 'origem' e 'id_encomenda' na tabela order_items
+    d.exec(`ALTER TABLE order_items ADD COLUMN origem TEXT DEFAULT 'manual';`);
+  } catch {}
+  try {
+    d.exec(`ALTER TABLE order_items ADD COLUMN id_encomenda TEXT;`);
+  } catch {}
+  try {
+    // Migração: adicionar colunas 'origem' e 'id_encomenda' na tabela itens_confirmados
+    d.exec(`ALTER TABLE itens_confirmados ADD COLUMN origem TEXT DEFAULT 'manual';`);
+  } catch {}
+  try {
+    d.exec(`ALTER TABLE itens_confirmados ADD COLUMN id_encomenda TEXT;`);
+  } catch {}
 }
 
 const SCHEMA_SQL = `
@@ -81,6 +95,8 @@ const SCHEMA_SQL = `
     preco_original REAL,
     economia REAL,
     is_swap INTEGER DEFAULT 0,
+    origem TEXT DEFAULT 'manual',
+    id_encomenda TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (num_pedido) REFERENCES orders(num_pedido)
   );
@@ -117,6 +133,8 @@ const SCHEMA_SQL = `
     motivo TEXT,
     cnpj TEXT,
     data_confirmacao TEXT,
+    origem TEXT DEFAULT 'manual',
+    id_encomenda TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
     UNIQUE(num_pedido, ean, cod_dist)
@@ -236,12 +254,13 @@ export async function saveOrderItem(item: {
   numPedido: string; ean: string; descricao: string; laboratorio: string;
   codDist: number; nomeDist: string; qtd: number; precoLiquido: number;
   precoOriginal?: number; economia?: number; isSwap?: boolean;
+  origem?: string; idEncomenda?: string;
 }) {
   const d = getDb();
   if (!d) return;
   try {
-    const sql = `INSERT INTO order_items (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd, preco_liquido, preco_original, economia, is_swap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtd, item.precoLiquido, item.precoOriginal || 0, item.economia || 0, item.isSwap ? 1 : 0];
+    const sql = `INSERT INTO order_items (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd, preco_liquido, preco_original, economia, is_swap, origem, id_encomenda) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtd, item.precoLiquido, item.precoOriginal || 0, item.economia || 0, item.isSwap ? 1 : 0, item.origem || 'manual', item.idEncomenda || null];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
 }

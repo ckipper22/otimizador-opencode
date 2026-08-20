@@ -610,11 +610,75 @@ git push origin master               # Push para GitHub
 # Path do gcloud no Windows
 $gcloud = "C:\Users\carlo\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
 
-# Deploy com variáveis Turso
-$envFile = Get-Content .env
-$tursoUrl = ($envFile | Select-String "TURSO_DATABASE_URL=").ToString().Split("=",2)[1]
-$tursoToken = ($envFile | Select-String "TURSO_AUTH_TOKEN=").ToString().Split("=",2)[1]
-& "$gcloud" run deploy smartped-cli --source . --region us-east1 --project gen-lang-client-0702342051 --set-env-vars="TURSO_DATABASE_URL=$tursoUrl,TURSO_AUTH_TOKEN=$tursoToken"
+# Deploy CORRETO — usa --env-vars-file (NÃO --set-env-vars, que substitui todas as vars)
+# cloud-env.yaml contém TODAS as 13 variáveis (inclui NODE_ENV=production → porta 8080)
+# build-env.yaml contém variáveis de build (Firebase config) para o Dockerfile
+
+& "$gcloud" run deploy smartped-cli --source . --region us-east1 --project gen-lang-client-0702342051 --env-vars-file cloud-env.yaml --build-env-vars-file build-env.yaml
+```
+
+**cloud-env.yaml** (runtime env vars — commitado, mas NÃO o .env):
+```yaml
+SMARTPED_PRODUCTION_TOKEN: "fddfd9871b77f44f243e145207c8e93a"
+SMARTPED_SANDBOX_TOKEN: "79770c03eb119691f0355c5628c496e2"
+SMARTPED_DEFAULT_CNPJ: "13408443000168"
+SMARTPED_PRODUCTION_URL: "https://api.smartped.com.br"
+SMARTPED_SANDBOX_URL: "https://apitest.smartped.com.br"
+FERRAMENTINHAS_API_URL: "https://api.ferramentinhas.com.br"
+APP_ADMIN_EMAILS: "ckipper22@gmail.com,aga706panambi@gmail.com"
+APP_ADMIN_PASSWORD: "Aq1sw2de#fr4"
+ENCOMENDAS_API_URL: "https://encomenda-com-smartped-887122622666.us-east1.run.app"
+ENCOMENDAS_INTEGRATION_KEY: "enc_sec_9f7a8b3c1d4e2f5061728394a5b6c7d8e9f01234"
+TURSO_DATABASE_URL: "libsql://smartped-db-ckipper22.aws-us-east-1.turso.io"
+TURSO_AUTH_TOKEN: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+NODE_ENV: "production"
+```
+
+**build-env.yaml** (build-time env vars para Dockerfile — NÃO commitar se tiver segredos):
+```yaml
+FIREBASE_API_KEY: "AIzaSyCS1rsR1TkAxY3VBkJDfXXDSQDRVHALGxs"
+FIREBASE_AUTH_DOMAIN: "gen-lang-client-0702342051.firebaseapp.com"
+FIREBASE_PROJECT_ID: "gen-lang-client-0702342051"
+FIREBASE_STORAGE_BUCKET: "gen-lang-client-0702342051.firebasestorage.app"
+FIREBASE_MESSAGING_SENDER_ID: "887122622666"
+FIREBASE_APP_ID: "1:887122622666:web:667517613ca87c91015c33"
+FIREBASE_MEASUREMENT_ID: ""
+FIREBASE_FIRESTORE_DATABASE_ID: "ai-studio-otimizadordepedi-748c6a3d-532e-4702-871a-e8730b62c0d1"
+```
+
+### Firebase Config no Cloud Run (Fix 2026-08-20)
+
+**Problema:** O arquivo `firebase-applet-config.json` está no `.gitignore` (não vai pro repo). Durante o build no Cloud Run, o Vite fazia análise estática do `import '../../firebase-applet-config.json'` e falhava porque o arquivo não existia.
+
+**Solução aplicada:**
+1. **Dockerfile:** Adicionado step que cria `firebase-applet-config.json` a partir dos build args (`FIREBASE_API_KEY`, etc.) se fornecidos, senão cria um JSON vazio
+2. **src/lib/firebaseClient.ts:** Usa `import.meta.glob('../../firebase-applet-config.json', { eager: false })` — importação verdadeiramente dinâmica que escapa da análise estática do Vite
+3. **build-env.yaml:** Contém as variáveis Firebase para o build
+
+**Código em `src/lib/firebaseClient.ts`:**
+```typescript
+const firebaseConfigModules = import.meta.glob<{ default: any }>('../../firebase-applet-config.json', { eager: false });
+
+// ... no initFirebase():
+if (typeof window !== 'undefined' && firebaseConfigModules['../../firebase-applet-config.json']) {
+  const configModule = await firebaseConfigModules['../../firebase-applet-config.json']();
+  firebaseConfig = configModule.default || configModule;
+}
+```
+
+**Dockerfile relevante (steps 14-16):**
+```dockerfile
+ARG FIREBASE_API_KEY
+ARG FIREBASE_AUTH_DOMAIN
+# ... outros args
+
+RUN if [ -n "$FIREBASE_API_KEY" ]; then \
+    cat > firebase-applet-config.json <<EOF \
+{ "apiKey": "$FIREBASE_API_KEY", ... } \
+EOF \
+  else \
+    echo '{"apiKey":"",...}' > firebase-applet-config.json; \
+  fi
 ```
 
 ### Produção (URL fixa)
@@ -622,7 +686,7 @@ $tursoToken = ($envFile | Select-String "TURSO_AUTH_TOKEN=").ToString().Split("=
 
 **Sistema de Versão:** Formato `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). Gerado em build time (`vite.config.ts`) e passado como env var `APP_VERSION` no deploy. Visível no header do app, no `/api/health`, e no `cloud-env.yaml`.
 
-**Versão atual:** `v2026-08-18-1830`
+**Versão atual:** `v2026-08-20-1530`
 
 **Estado do deploy:**
 - `runPriceSync` desativado (código comentado)

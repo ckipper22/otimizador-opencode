@@ -3519,7 +3519,7 @@ export default function App() {
                 <div className="flex items-center space-x-2.5">
                   <AlertTriangle className="w-5 h-5 text-yellow-300" />
                   <span className="text-xs font-black uppercase tracking-widest font-mono text-white">
-                    Aviso: Itens Manuais Não Faturados!
+                    Aviso: Itens Manuais e Encomendas Não Faturados!
                   </span>
                 </div>
                 <button
@@ -3533,7 +3533,7 @@ export default function App() {
               {/* Body */}
               <div className="p-6 overflow-y-auto space-y-4 text-left">
                 <p className="text-xs text-[#141414]/80 font-semibold uppercase tracking-wide">
-                  ⚠️ Os seguintes itens adicionados manualmente não puderam ser faturados e foram marcados como faltas:
+                  ⚠️ Os seguintes itens (manuais e encomendas) não puderam ser faturados e foram marcados como faltas:
                 </p>
 
                 <div className="space-y-3">

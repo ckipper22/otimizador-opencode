@@ -4011,7 +4011,9 @@ app.post("/api/faturar", async (req, res) => {
           precoLiquido: Number(it.novoPreco || 0),
           precoOriginal: Number(it.originalPreco || 0),
           economia: Number(it.economiaTotal || 0),
-          isSwap: it.novoEan !== it.originalEan
+          isSwap: it.novoEan !== it.originalEan,
+          origem: it.origem || 'manual',
+          idEncomenda: it.idEncomenda || null
         });
       }
     } catch {}

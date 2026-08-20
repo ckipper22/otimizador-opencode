@@ -642,7 +642,7 @@ export function useBilling({
 
         const ean = String(reportItem.novoEan || reportItem.originalEan).trim();
         const returnItem = items.find((it) => String(it.Ean).trim() === ean && String(it.CodDist).trim() === itemDistCod);
-        const isManual = reportItem.codInterno.startsWith("MANUAL-");
+        const isManualOrEncomenda = reportItem.codInterno.startsWith("MANUAL-") || reportItem.origem === "encomenda";
 
         if (returnItem) {
             if (returnItem.QuantFaturada > 0) {
@@ -665,7 +665,7 @@ export function useBilling({
                     isShortage: true
                 });
 
-                if (isManual) {
+                if (isManualOrEncomenda) {
                   manualCuts.push({
                     descricao: reportItem.novaDescricao || reportItem.originalDescricao,
                     ean,
@@ -682,8 +682,8 @@ export function useBilling({
                  isShortage: true
              });
 
-             if (isManual) {
-               manualCuts.push({
+if (isManualOrEncomenda) {
+                manualCuts.push({
                  descricao: reportItem.novaDescricao || reportItem.originalDescricao,
                  ean,
                  distribuidora: reportItem.distribuidora,
