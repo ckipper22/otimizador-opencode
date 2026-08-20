@@ -162,7 +162,11 @@ startDbCachePurge();
 
 // API Health Check
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", version: process.env.APP_VERSION || "dev", timestamp: new Date().toISOString() });
+  let version = "dev";
+  try {
+    version = fs.readFileSync(path.join(process.cwd(), "dist", "version.txt"), "utf-8").trim();
+  } catch {}
+  res.json({ status: "ok", version, timestamp: new Date().toISOString() });
 });
 
 // Endpoint para salvar item manual no Turso

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 import {execSync} from 'child_process';
+import fs from 'fs';
 
 function getBuildInfo() {
   try {
@@ -22,6 +23,9 @@ function getBuildInfo() {
 }
 
 const buildInfo = getBuildInfo();
+
+// Write version to file for server to read at runtime
+fs.writeFileSync('dist/version.txt', buildInfo.version);
 
 export default defineConfig(() => {
   return {
