@@ -123,6 +123,13 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 
 36. **DROPDOWN NÃO MOSTRA ITENS SEM CODPRODDIST:** O ConditionSelector (dropdown de alternativas) NUNCA deve mostrar alternativas com `codProdutoDist` vazio — filtrar antes de renderizar (`server.ts:2048`, `server.ts:2579`). Itens sem código falhariam no faturamento.
 
+37. **VERSIONAMENTO DE DEPLOY — DATA/HORA FUSO PANAMBI (UTC-3):** A versão do deploy **SEMPRE** segue o formato `vYYYY-MM-DD-HHmm` no fuso horário de Panambi/RS (UTC-3).
+    - Gerado automaticamente no build pelo `vite.config.ts` (função `getBuildInfo()`)
+    - Escrito em `dist/version.txt` via plugin Vite `closeBundle` hook
+    - Lido pelo `server.ts` em `/api/health` para exibir no header e health check
+    - **NÃO** usar `process.env.APP_VERSION` no Cloud Run (não confiável com Dockerfile)
+    - Serve para rastreabilidade em testes local e Cloud
+
 ---
 
 ## DEPENDÊNCIAS CRUZADAS — AO MUDAR UM PONTO, VERIFIQUE OS OUTROS

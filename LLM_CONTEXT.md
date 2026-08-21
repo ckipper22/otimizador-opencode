@@ -684,9 +684,14 @@ EOF \
 ### Produção (URL fixa)
 **URL:** https://smartped-cli-887122622666.us-east1.run.app
 
-**Sistema de Versão:** Formato `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). Gerado em build time (`vite.config.ts`) e passado como env var `APP_VERSION` no deploy. Visível no header do app, no `/api/health`, e no `cloud-env.yaml`.
+**Sistema de Versão:** Formato `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). 
+- Gerado automaticamente no build pelo `vite.config.ts` (função `getBuildInfo()`)
+- Escrito em `dist/version.txt` via plugin Vite `closeBundle` hook
+- Lido pelo `server.ts` em `/api/health` para exibir no header e health check
+- **NÃO** usar `process.env.APP_VERSION` no Cloud Run (não confiável com Dockerfile)
+- Serve para rastreabilidade em testes local e Cloud
 
-**Versão atual:** `v2026-08-20-1530`
+**Versão atual:** `v2026-08-20-1857`
 
 **Estado do deploy:**
 - `runPriceSync` desativado (código comentado)
