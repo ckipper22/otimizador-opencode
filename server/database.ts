@@ -3,7 +3,7 @@ import { connect } from "@tursodatabase/serverless";
 
 const TURSO_URL = process.env.TURSO_DATABASE_URL;
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
-const USE_TURSO = !!TURSO_URL && !!TURSO_TOKEN;
+export const USE_TURSO = !!TURSO_URL && !!TURSO_TOKEN;
 
 let tursoClient: any = null;
 let db: any = null;
@@ -17,7 +17,7 @@ function getTursoClient() {
   return tursoClient;
 }
 
-function getDb(): any {
+export function getDb(): any {
   if (USE_TURSO) return getTursoClient();
   if (dbFailed) return null;
   if (!db) {

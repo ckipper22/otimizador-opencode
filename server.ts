@@ -12,6 +12,7 @@ import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatab
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
 import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
+import { getDb, USE_TURSO } from "./server/database";
 
 const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   2: "Pan/Santa",
@@ -829,6 +830,55 @@ app.post("/api/optimize", async (req, res) => {
     if (!finalCnpj) {
       logs.push(`[ERRO] NÃ£o foi possÃ­vel encontrar nenhum CNPJ do cliente.`);
       return res.status(400).json({ error: "CNPJ do cliente nÃ£o fornecido e nÃ£o encontrado no cabeÃ§alho do arquivo.", logs });
+    }
+
+    // Buscar fornecedores bloqueados por falta de estoque nos últimos 2 dias
+    const blockedSuppliers = new Map<string, Set<number>>();
+    try {
+      const d = getDb();
+      if (d) {
+        const hoje = new Date();
+        const doisDiasAtras = new Date(hoje.getTime() - 2 * 24 * 60 * 60 * 1000);
+        const fmt = (d: Date) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+        const dataIni = fmt(doisDiasAtras);
+        const dataFim = fmt(hoje);
+        
+        let itens: any[];
+        if (USE_TURSO) {
+          itens = await d.all(
+            `SELECT ean, cod_dist, motivo FROM itens_confirmados 
+             WHERE cnpj = ? AND status = 'nao_confirmado' 
+             AND data_confirmacao BETWEEN ? AND ?`,
+            finalCnpj.replace(/\D/g, ""), dataIni, dataFim
+          );
+        } else {
+          itens = d.prepare(
+            `SELECT ean, cod_dist, motivo FROM itens_confirmados 
+             WHERE cnpj = ? AND status = 'nao_confirmado' 
+             AND data_confirmacao BETWEEN ? AND ?`
+          ).all(finalCnpj.replace(/\D/g, ""), dataIni, dataFim);
+        }
+
+        const motivoFalta = ["estoque", "falta", "corte", "sem estoque", "indispon"];
+        for (const item of itens) {
+          const motivo = String(item.motivo || "").toLowerCase();
+          if (motivoFalta.some(m => motivo.includes(m)) && !motivo.includes("minimo") && !motivo.includes("pedido m")) {
+            const ean = cleanEan(item.ean);
+            const codDist = Number(item.cod_dist);
+            if (ean && codDist > 0) {
+              if (!blockedSuppliers.has(ean)) blockedSuppliers.set(ean, new Set());
+              blockedSuppliers.get(ean)!.add(codDist);
+            }
+          }
+        }
+        if (blockedSuppliers.size > 0) {
+          let total = 0;
+          blockedSuppliers.forEach(s => total += s.size);
+          logs.push(`[BLOQUEIO FALTA] ${blockedSuppliers.size} EANs com ${total} fornecedores bloqueados por falta nos últimos 2 dias`);
+        }
+      }
+    } catch (err: any) {
+      logs.push(`[AVISO] Falha ao buscar fornecedores bloqueados: ${err.message}`);
     }
 
     const uniqueEans = Array.from(new Set(parsedItems.map(item => item.ean)));
@@ -1836,6 +1886,8 @@ app.post("/api/optimize", async (req, res) => {
       }).filter((alt: any) => {
         if (isNotFoundName(alt.distribuidora)) return false;
         if (alt.codDist !== undefined && disabledDistSet.has(Number(alt.codDist))) return false;
+        // Bloquear fornecedores que falharam por falta de estoque nos últimos 2 dias
+        if (blockedSuppliers.has(alt.ean) && blockedSuppliers.get(alt.ean)!.has(Number(alt.codDist))) return false;
         return alt.estoque > 0;
       }).sort((a: any, b: any) => a.preco - b.preco);
 
@@ -1988,6 +2040,10 @@ app.post("/api/optimize", async (req, res) => {
             if (isNotFoundName(distName)) {
               return false;
             }
+            const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+            const altEan = cleanEan(s.Ean || s.ean || "");
+            // Bloquear fornecedores que falharam por falta de estoque nos últimos 2 dias
+            if (blockedSuppliers.has(altEan) && blockedSuppliers.get(altEan)!.has(Number(codDist))) return false;
             return validateSwapEquivalence(itemPedido, s);
           })
           .map((s: any) => {
@@ -2463,13 +2519,23 @@ app.post("/api/optimize", async (req, res) => {
           substitutos = substitutosRaw.filter((s: any) => {
             const dist = s.CodDist !== undefined ? s.CodDist : s.codDist;
             if (dist !== undefined && disabledDistSet.has(Number(dist))) return false;
+            const sEan = cleanEan(s.Ean || s.ean || "");
+            const sCodDist = Number(dist);
+            // Bloquear fornecedores que falharam por falta de estoque nos últimos 2 dias
+            if (blockedSuppliers.has(sEan) && blockedSuppliers.get(sEan)!.has(sCodDist)) return false;
             return validateSwapEquivalence(itemPedido, s);
           });
           
           // Rebuild condicoes (com filtro disabledDistSet)
           condicoes = condicoesRaw.filter((c: any) => {
             const dist = c.CodDist !== undefined ? c.CodDist : c.codDist;
-            return dist === undefined || !disabledDistSet.has(Number(dist));
+            if (dist === undefined) return true;
+            if (disabledDistSet.has(Number(dist))) return false;
+            const cEan = cleanEan(c.Ean || c.ean || "");
+            const cCodDist = Number(dist);
+            // Bloquear fornecedores que falharam por falta de estoque nos últimos 2 dias
+            if (blockedSuppliers.has(cEan) && blockedSuppliers.get(cEan)!.has(cCodDist)) return false;
+            return true;
           });
           
           // Rebuild condicoesEnriched
@@ -2524,6 +2590,10 @@ condicoesEnriched = condicoes.map((c: any) => {
               if (est <= 0) return false;
               const distName = resolveDistName(s);
               if (isNotFoundName(distName)) return false;
+              const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
+              const altEan = cleanEan(s.Ean || s.ean || "");
+              // Bloquear fornecedores que falharam por falta de estoque nos últimos 2 dias
+              if (blockedSuppliers.has(altEan) && blockedSuppliers.get(altEan)!.has(Number(codDist))) return false;
               return validateSwapEquivalence(itemPedido, s);
             })
             .map((s: any) => {
