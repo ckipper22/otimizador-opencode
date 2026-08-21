@@ -133,6 +133,7 @@ export default function SwapsTable({
       termoFiltro: "EUROFARMA",
       nomeRepresentante: "Representante Eurofarma",
       telefone: config?.telefoneWhatsappEurofarma || "",
+      tipoFiltro: "genericos",
       ocultarPrecos: true,
       ativo: true
     }];
@@ -1103,8 +1104,12 @@ export default function SwapsTable({
                               Quantidade: <strong>{item.qtd} un</strong> | 
                               Economia Total: <strong className="text-green-600 font-bold">{formatCurrency(item.economiaTotal)}</strong>
                               {item.motivoAcao && (
-                                <span className="ml-2 px-1.5 py-0.5 bg-yellow-100 text-yellow-800 text-[8px] uppercase font-bold">
-                                  {item.motivoAcao}
+                                <span className={`ml-2 px-1.5 py-0.5 text-[8px] uppercase font-bold ${
+                                  item.motivoAcao === "whatsapp_regra_lab"
+                                    ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                                    : "bg-yellow-100 text-yellow-800"
+                                }`}>
+                                  {item.motivoAcao === "whatsapp_regra_lab" ? "📱 WhatsApp" : item.motivoAcao}
                                 </span>
                               )}
                             </div>
@@ -1915,8 +1920,12 @@ export default function SwapsTable({
                                       <div className="text-gray-400 text-[9px] uppercase font-bold font-sans mb-1">Sem sugestão</div>
                                     )}
                                     {item.motivoAcao && (
-                                      <div className="text-[#141414] bg-[#DCDAD7] text-[9px] uppercase font-bold font-sans p-1 border border-[#141414]/20 leading-tight">
-                                        {item.motivoAcao}
+                                      <div className={`text-[9px] uppercase font-bold font-sans p-1 border leading-tight ${
+                                        item.motivoAcao === "whatsapp_regra_lab"
+                                          ? "text-emerald-900 bg-emerald-50 border-emerald-300"
+                                          : "text-[#141414] bg-[#DCDAD7] border-[#141414]/20"
+                                      }`}>
+                                        {item.motivoAcao === "whatsapp_regra_lab" ? "📱 WhatsApp" : item.motivoAcao}
                                       </div>
                                     )}
                                     <button

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { X, Copy, Check, MessageSquare, ExternalLink, Phone, Building2, Package, EyeOff, Eye, Send } from "lucide-react";
+import { X, Copy, Check, MessageSquare, ExternalLink, Phone, Building2, Package, EyeOff, Eye, Send, Loader2, Save } from "lucide-react";
 import { SwapReportItem, OptimizerConfig, WhatsAppRule } from "../types";
 import { formatCurrency } from "../utils";
 
@@ -22,6 +22,8 @@ export const WhatsAppOrderModal: React.FC<WhatsAppOrderModalProps> = ({
   const [pharmacyName, setPharmacyName] = useState("");
   const [hidePrices, setHidePrices] = useState<boolean>(rule?.ocultarPrecos !== undefined ? rule.ocultarPrecos : true);
   const [orderNotes, setOrderNotes] = useState("Favor confirmar recebimento e faturamento dos itens.");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   
   // Selection state for items (default all selected)
   const [selectedCodInternos, setSelectedCodInternos] = useState<Set<string>>(() => {
@@ -128,6 +130,42 @@ export const WhatsAppOrderModal: React.FC<WhatsAppOrderModalProps> = ({
     }
 
     window.open(url, "_blank");
+  };
+
+  const handleSaveOrder = async () => {
+    if (saving || saved) return;
+    setSaving(true);
+    try {
+      const payload = {
+        fornecedor: rule?.nomeRegra || titleText,
+        telefone: repPhone,
+        itens: activeItems.map(item => ({
+          ean: item.novoEan || item.originalEan,
+          descricao: item.novaDescricao || item.originalDescricao,
+          laboratorio: item.novoLaboratorio || item.originalLaboratorio,
+          qtd: item.qtd || 1,
+          preco: item.novoPreco,
+          precoLiquido: item.novoPreco,
+          observacao: orderNotes.trim() || undefined,
+        })),
+        status: "Pendente",
+        observacao: orderNotes.trim() || undefined,
+        origem: "regra_lab",
+        cnpj: config.cnpj,
+      };
+      const res = await fetch("/api/pedidos-whatsapp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`Erro ${res.status}`);
+      setSaved(true);
+    } catch (err) {
+      console.error("Erro ao salvar pedido WhatsApp:", err);
+      alert("Erro ao salvar pedido. Tente novamente.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -351,6 +389,34 @@ export const WhatsAppOrderModal: React.FC<WhatsAppOrderModalProps> = ({
           </div>
 
           <div className="flex items-center space-x-2.5 w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={handleSaveOrder}
+              disabled={saving || saved || activeItems.length === 0}
+              className={`flex-1 sm:flex-none py-2 px-4 border font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center space-x-2 cursor-pointer shadow-sm disabled:opacity-50 disabled:cursor-not-allowed ${
+                saved
+                  ? "bg-emerald-600 text-white border-emerald-600"
+                  : "bg-white hover:bg-emerald-50 text-emerald-800 border-emerald-300"
+              }`}
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Salvando...</span>
+                </>
+              ) : saved ? (
+                <>
+                  <Check className="w-4 h-4 text-white" />
+                  <span>Pedido Salvo!</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4 text-emerald-600" />
+                  <span>Salvar Pedido</span>
+                </>
+              )}
+            </button>
+
             <button
               type="button"
               onClick={handleCopy}

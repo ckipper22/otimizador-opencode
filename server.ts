@@ -12,7 +12,7 @@ import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatab
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
 import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
-import { getDb, USE_TURSO } from "./server/database";
+import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier } from "./server/database";
 
 const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   2: "Pan/Santa",
@@ -209,10 +209,234 @@ app.post("/api/itens-manuais", async (req, res) => {
     if (!cnpj) {
       return res.status(400).json({ error: "cnpj é obrigatório." });
     }
-    const itens = await getItensManuais(cnpj, dataInicio, dataFim);
+    const rows = await getItensManuais(cnpj, dataInicio, dataFim);
+    // Normalizar snake_case (banco) → camelCase (frontend) — regra #28/#32 AGENTS.md
+    const itens = rows.map((r: any) => ({
+      id: r.id,
+      codInterno: r.cod_interno,
+      ean: r.ean,
+      descricao: r.descricao,
+      laboratorio: r.laboratorio,
+      distribuidora: r.distribuidora,
+      codDist: r.cod_dist,
+      qtd: r.qtd,
+      precoLiquido: r.preco_liquido,
+      precoFabrica: r.preco_fabrica,
+      condicao: r.condicao,
+      prazo: r.prazo,
+      cnpj: r.cnpj,
+      status: r.status,
+      dataAdicao: r.data_adicao,
+      origem: r.origem,
+      idEncomenda: r.id_encomenda,
+    }));
     res.json({ itens });
   } catch (err: any) {
     console.error("Erro ao buscar itens manuais:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== PEDIDOS WHATSAPP =====
+
+// Salvar pedido WhatsApp
+app.post("/api/pedidos-whatsapp", async (req, res) => {
+  try {
+    const { fornecedor, telefone, itens, status, observacao, origem, cnpj } = req.body;
+    if (!fornecedor || !itens || !Array.isArray(itens) || itens.length === 0 || !cnpj) {
+      return res.status(400).json({ error: "fornecedor, itens (array) e cnpj são obrigatórios." });
+    }
+    await savePedidoWhatsApp({
+      dataPedido: new Date().toISOString(),
+      fornecedor,
+      telefone,
+      itens,
+      status: status || "Pendente",
+      observacao,
+      origem: origem || "lista",
+      cnpj
+    });
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    console.error("Erro ao salvar pedido WhatsApp:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Buscar pedidos WhatsApp
+app.post("/api/pedidos-whatsapp/list", async (req, res) => {
+  try {
+    const { cnpj } = req.body;
+    if (!cnpj) {
+      return res.status(400).json({ error: "cnpj é obrigatório." });
+    }
+    const rows = await getPedidosWhatsApp(cnpj);
+    // Normalizar snake_case (banco) → camelCase (frontend)
+    const pedidos = rows.map((r: any) => ({
+      id: r.id,
+      dataPedido: r.data_pedido,
+      fornecedor: r.fornecedor,
+      telefone: r.telefone,
+      itens: typeof r.itens === "string" ? JSON.parse(r.itens) : r.itens,
+      status: r.status,
+      observacao: r.observacao,
+      origem: r.origem,
+      cnpj: r.cnpj
+    }));
+    res.json({ pedidos });
+  } catch (err: any) {
+    console.error("Erro ao buscar pedidos WhatsApp:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Atualizar status pedido WhatsApp
+app.put("/api/pedidos-whatsapp/:id/status", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { status } = req.body;
+    if (!id || !status) {
+      return res.status(400).json({ error: "id e status são obrigatórios." });
+    }
+    const validStatuses = ["Pendente", "Confirmado", "Recebido", "Cancelado"];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: `Status inválido. Use: ${validStatuses.join(", ")}` });
+    }
+    await updatePedidoWhatsAppStatus(id, status);
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    console.error("Erro ao atualizar pedido WhatsApp:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Deletar pedido WhatsApp
+app.delete("/api/pedidos-whatsapp/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "id é obrigatório." });
+    }
+    await deletePedidoWhatsApp(id);
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    console.error("Erro ao deletar pedido WhatsApp:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== REGRAS WHATSAPP (Laboratório) =====
+
+// Salvar regra WhatsApp
+app.post("/api/whatsapp-rules", async (req, res) => {
+  try {
+    const { nomeRegra, termoFiltro, nomeRepresentante, telefone, tipoFiltro, ocultarPrecos, cnpj } = req.body;
+    if (!nomeRegra || !termoFiltro || !cnpj) {
+      return res.status(400).json({ error: "nomeRegra, termoFiltro e cnpj são obrigatórios." });
+    }
+    const id = `wr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await saveWhatsAppRule({
+      id, nomeRegra, termoFiltro, nomeRepresentante, telefone,
+      tipoFiltro: tipoFiltro || "todos",
+      ocultarPrecos: ocultarPrecos || false,
+      ativo: true, cnpj
+    });
+    res.json({ sucesso: true, id });
+  } catch (err: any) {
+    console.error("Erro ao salvar regra WhatsApp:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Buscar regras WhatsApp
+app.post("/api/whatsapp-rules/list", async (req, res) => {
+  try {
+    const { cnpj } = req.body;
+    if (!cnpj) {
+      return res.status(400).json({ error: "cnpj é obrigatório." });
+    }
+    const rows = await getWhatsAppRules(cnpj);
+    // Normalizar snake_case (banco) → camelCase (frontend)
+    const regras = rows.map((r: any) => ({
+      id: r.id,
+      nomeRegra: r.nome_regra,
+      termoFiltro: r.termo_filtro,
+      nomeRepresentante: r.nome_representante,
+      telefone: r.telefone,
+      tipoFiltro: r.tipo_filtro,
+      ocultarPrecos: !!r.ocultar_precos,
+      ativo: !!r.ativo,
+      cnpj: r.cnpj
+    }));
+    res.json({ regras });
+  } catch (err: any) {
+    console.error("Erro ao buscar regras WhatsApp:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Deletar regra WhatsApp
+app.delete("/api/whatsapp-rules/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id) {
+      return res.status(400).json({ error: "id é obrigatório." });
+    }
+    await deleteWhatsAppRule(id);
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    console.error("Erro ao deletar regra WhatsApp:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== EXTERNAL SUPPLIERS (TABELAS DE PRECO WHATSAPP) =====
+app.post("/api/external-suppliers", async (req, res) => {
+  try {
+    const { id, name, rawText, validade, products, cnpj } = req.body;
+    if (!id || !cnpj) {
+      return res.status(400).json({ error: "id e cnpj são obrigatórios." });
+    }
+    await saveExternalSupplier({ id, name: name || "", rawText: rawText || "", validade: validade || "", products: JSON.stringify(products || []), cnpj });
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    console.error("Erro ao salvar fornecedor externo:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/external-suppliers/list", async (req, res) => {
+  try {
+    const { cnpj } = req.body;
+    if (!cnpj) {
+      return res.status(400).json({ error: "cnpj é obrigatório." });
+    }
+    const rows = await getExternalSuppliers(cnpj);
+    const suppliers = (rows as any[]).map((r) => ({
+      id: r.id,
+      name: r.name,
+      rawText: r.raw_text,
+      validade: r.validade,
+      products: (() => { try { return JSON.parse(r.products || "[]"); } catch { return []; } })(),
+      cnpj: r.cnpj,
+    }));
+    res.json({ suppliers });
+  } catch (err: any) {
+    console.error("Erro ao listar fornecedores externos:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/external-suppliers/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id) {
+      return res.status(400).json({ error: "id é obrigatório." });
+    }
+    await deleteExternalSupplier(id);
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    console.error("Erro ao deletar fornecedor externo:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -712,13 +936,39 @@ app.get("/api/precos-cache-stats", async (_req, res) => {
 app.get("/api/precos-cache/:ean", async (req, res) => {
   const ean = req.params.ean;
   if (!ean) return res.status(400).json({ error: "EAN obrigatorio." });
-  const precos = await getPrecoCacheByEan(ean);
+  const rows = await getPrecoCacheByEan(ean);
+  // Normalizar snake_case → camelCase — regra #28/#32 AGENTS.md
+  const precos = rows.map((r: any) => ({
+    ean: r.ean,
+    codDist: r.cod_dist,
+    condicao: r.condicao,
+    prazo: r.prazo,
+    precoLiquido: r.preco_liquido,
+    estoque: r.estoque,
+    nomeDist: r.nome_dist,
+    qtdMin: r.qtd_min,
+    tipoItem: r.tipo_item,
+    ultimaAtualizacao: r.ultima_atualizacao
+  }));
   res.json({ ean, total: precos.length, precos });
 });
 
 app.get("/api/precos-cache", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-  const precos = await listPrecosCache(limit);
+  const rows = await listPrecosCache(limit);
+  // Normalizar snake_case → camelCase — regra #28/#32 AGENTS.md
+  const precos = rows.map((r: any) => ({
+    ean: r.ean,
+    codDist: r.cod_dist,
+    condicao: r.condicao,
+    prazo: r.prazo,
+    precoLiquido: r.preco_liquido,
+    estoque: r.estoque,
+    nomeDist: r.nome_dist,
+    qtdMin: r.qtd_min,
+    tipoItem: r.tipo_item,
+    ultimaAtualizacao: r.ultima_atualizacao
+  }));
   res.json({ total: precos.length, precos });
 });
 
@@ -948,6 +1198,59 @@ app.post("/api/optimize", async (req, res) => {
 
     const eansToQuote = Array.from(eansToQuoteSet);
     logs.push(`[MOTOR AGRUPAMENTO] Ampliado o leque de cotaÃ§Ã£o de ${uniqueEans.length} EANs originais para ${eansToQuote.length} EANs totais de concorrentes.`);
+
+    // ===== WHATSAPP: Regras de Laboratório =====
+    // Carregar regras ativas para o CNPJ e marcar itens que vão direto pro WhatsApp
+    const whatsappRulesAtivas: any[] = [];
+    const whatsappItemsMap = new Map<number, { rule: any; item: any }>(); // lineIndex → {rule, item}
+    try {
+      const regras = await getWhatsAppRules(finalCnpj);
+      if (regras.length > 0) {
+        logs.push(`[WHATSAPP-RULES] ${regras.length} regra(s) ativa(s) encontrada(s) para CNPJ ${finalCnpj}`);
+        for (const item of parsedItems) {
+          const labUpper = (item.laboratorio || "").toUpperCase().trim();
+          for (const rule of regras) {
+            const termoUpper = (rule.termo_filtro || rule.termoFiltro || "").toUpperCase().trim();
+            if (!termoUpper) continue;
+            // Match: laboratório contém o termo OU termo contém o laboratório
+            const matches = labUpper.includes(termoUpper) || termoUpper.includes(labUpper);
+            if (!matches) continue;
+
+            // Verificar filtro por tipo
+            const tipoFiltro = rule.tipo_filtro || rule.tipoFiltro || "todos";
+            const descUpper = (item.descricao || "").toUpperCase();
+            const isGenerico = descUpper.includes("(G)") || descUpper.includes("GENERICO") || descUpper.includes("GENÉRICO");
+            const isSimilar = descUpper.includes("(S)") || descUpper.includes("SIMILAR");
+
+            let tipoMatch = true;
+            if (tipoFiltro === "genericos") tipoMatch = isGenerico;
+            else if (tipoFiltro === "eticos") tipoMatch = !isGenerico && !isSimilar;
+
+            if (tipoMatch) {
+              whatsappItemsMap.set(item.lineIndex, { rule, item });
+              logs.push(`[WHATSAPP-RULES] Item "${item.descricao}" (lab: ${item.laboratorio}) → regra "${rule.nome_regra || rule.nomeRegra}" (${tipoFiltro})`);
+              break; // Uma regra por item
+            }
+          }
+        }
+        // Remover EANs de itens WhatsApp do eansToQuote (não precisa consultar SmartPed)
+        if (whatsappItemsMap.size > 0) {
+          const waEans = new Set<string>();
+          for (const { item } of whatsappItemsMap.values()) {
+            waEans.add(cleanEan(item.ean));
+          }
+          const originalCount = eansToQuote.length;
+          for (let i = eansToQuote.length - 1; i >= 0; i--) {
+            if (waEans.has(eansToQuote[i])) {
+              eansToQuote.splice(i, 1);
+            }
+          }
+          logs.push(`[WHATSAPP-RULES] ${whatsappItemsMap.size} item(s) redirecionados para WhatsApp. EANs removidos da cotação SmartPed: ${originalCount - eansToQuote.length}`);
+        }
+      }
+    } catch (err: any) {
+      logs.push(`[WHATSAPP-RULES] Erro ao carregar regras: ${err.message}`);
+    }
 
     const apiResponses: Record<string, any> = {};
     
@@ -1743,6 +2046,54 @@ app.post("/api/optimize", async (req, res) => {
     const queriedEanSet = new Set<string>();
 
     for (const item of parsedItems) {
+      // ===== WHATSAPP: Item com regra de laboratório → vai direto pro WhatsApp =====
+      const waMatch = whatsappItemsMap.get(item.lineIndex);
+      if (waMatch) {
+        const { rule } = waMatch;
+        const qtdNum = parseFloat(item.qtd.replace(",", "."));
+        const ruleName = rule.nome_regra || rule.nomeRegra || "WhatsApp";
+        const rulePhone = rule.telefone || "";
+        logs.push(`[WHATSAPP-REPORT] Item "${item.descricao}" → WhatsApp via regra "${ruleName}"`);
+
+        report.push({
+          codInterno: item.codInterno,
+          originalEan: item.ean,
+          originalDescricao: item.descricao,
+          originalLaboratorio: item.laboratorio,
+          originalPreco: item.precoOriginal,
+          novoEan: item.ean,
+          novaDescricao: item.descricao,
+          novoLaboratorio: item.laboratorio,
+          novoPreco: item.precoOriginal,
+          qtd: qtdNum,
+          economiaUnit: 0,
+          economiaTotal: 0,
+          distribuidora: `WhatsApp: ${ruleName}`,
+          estoque: 0,
+          codDist: 0,
+          condicao: "WHATSAPP",
+          prazo: 0,
+          codProdutoDist: "",
+          codProduto: "",
+          pedidoMinimo: 0,
+          qtdMin: 0,
+          qtdMax: 0,
+          cx: 1,
+          qtdMinima: 0,
+          observacao: rulePhone ? `Fornecedor via WhatsApp: ${ruleName} (${rulePhone})` : `Fornecedor via WhatsApp: ${ruleName}`,
+          motivoAcao: "whatsapp_regra_lab",
+          whatsappDestino: rulePhone,
+          originalSemEstoque: false,
+          isRupturaSubstitution: false,
+          alertaConfirmarQtd: false,
+          alternatives: []
+        });
+
+        // Manter linha original no SICF
+        finalLines.push(item.originalLine);
+        continue; // Pular processamento SmartPed
+      }
+
       const origEan = cleanEan(item.ean);
       const localEquivs = getLocalEquivalents(origEan, item.descricao);
       const apiSimilars = (marketSimilarMap[origEan] || []).map(s => cleanEan(s.cod_barra || s.Ean || s.ean || ""));
@@ -3088,8 +3439,17 @@ condicoesEnriched = condicoes.map((c: any) => {
           bestSmartPedPrice = bestOriginalNovoPreco;
         }
 
-        if (matchedExternal && (bestSmartPedPrice - matchedExternal.price) >= margemMinima) {
-          logs.push(`â­ [FORNECEDOR WHATSAPP] Melhor preÃ§o no fornecedor externo "${matchedSupplierName}": R$ ${matchedExternal.price.toFixed(2)} (SmartPed: R$ ${bestSmartPedPrice.toFixed(2)}) para "${matchedExternal.description}"`);
+        // Calcular preço do fornecedor externo (suporte a % desconto)
+        if (matchedExternal) {
+          if ((!matchedExternal.price || matchedExternal.price === 0) && matchedExternal.discountPercent && matchedExternal.discountPercent > 0 && bestSmartPedPrice > 0) {
+            matchedExternal.price = bestSmartPedPrice * (1 - matchedExternal.discountPercent / 100);
+            logs.push(`[FORNECEDOR WHATSAPP] Preço calculado via ${matchedExternal.discountPercent}% desconto: R$ ${matchedExternal.price.toFixed(2)} (base SmartPed: R$ ${bestSmartPedPrice.toFixed(2)})`);
+          }
+        }
+
+        if (matchedExternal && matchedExternal.price > 0 && (bestSmartPedPrice - matchedExternal.price) >= margemMinima) {
+          const discountInfo = matchedExternal.discountPercent ? ` (${matchedExternal.discountPercent}% desconto)` : "";
+          logs.push(`⭐ [FORNECEDOR WHATSAPP] Melhor preço no fornecedor externo "${matchedSupplierName}": R$ ${matchedExternal.price.toFixed(2)}${discountInfo} (SmartPed: R$ ${bestSmartPedPrice.toFixed(2)}) para "${matchedExternal.description}"`);
           const melhorExt = {
             Ean: item.ean,
             Descricao: matchedExternal.description,
@@ -4101,6 +4461,33 @@ app.post("/api/faturar", async (req, res) => {
         });
       }
     } catch {}
+
+    // Confirmar encomendas no sistema externo pós-faturamento
+    try {
+      const encomendasItens = validatedItems.filter((it: any) => it.origem === "encomenda" && it.idEncomenda);
+      if (encomendasItens.length > 0) {
+        const idsEncomenda = [...new Set(encomendasItens.map((it: any) => String(it.idEncomenda)))];
+        const itensConfirmar = idsEncomenda.map((id) => ({
+          id,
+          fornecedor: encomendasItens.find((it: any) => String(it.idEncomenda) === id)?.distribuidora || "",
+          dataPrevisao: new Date().toISOString().split("T")[0]
+        }));
+        console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando ${itensConfirmar.length} encomenda(s) no sistema externo...`);
+        const respConfirmar = await fetch(`${ENCOMENDAS_API_URL}/api/integracao/encomendas/confirmar-pedido`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": ENCOMENDAS_API_KEY },
+          body: JSON.stringify({ itens: itensConfirmar })
+        });
+        if (respConfirmar.ok) {
+          console.log(`[ENCOMENDAS-CONFIRMACAO] Encomendas confirmadas com sucesso.`);
+        } else {
+          const errText = await respConfirmar.text().catch(() => "Sem detalhes");
+          console.error(`[ENCOMENDAS-CONFIRMACAO] Falha ao confirmar: ${respConfirmar.status} - ${errText}`);
+        }
+      }
+    } catch (encErr: any) {
+      console.error(`[ENCOMENDAS-CONFIRMACAO] Erro ao confirmar encomendas: ${encErr.message}`);
+    }
   } catch (err: any) {
     console.error("Erro no faturamento do servidor:", err);
     logs.push(`[ERRO FATURAMENTO] Erro interno: ${err.message}`);

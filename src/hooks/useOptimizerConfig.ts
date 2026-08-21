@@ -2,18 +2,22 @@ import { useState, useEffect } from "react";
 import { OptimizerConfig, DistributorOption, ExternalSupplier } from "../types";
 
 export function useOptimizerConfig() {
-  const [externalSuppliers, setExternalSuppliers] = useState<ExternalSupplier[]>(() => {
-    try {
-      const saved = localStorage.getItem("external_suppliers");
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [externalSuppliers, setExternalSuppliers] = useState<ExternalSupplier[]>([]);
+  const [externalSuppliersLoaded, setExternalSuppliersLoaded] = useState(false);
 
-  const handleUpdateExternalSuppliers = (newSuppliers: ExternalSupplier[]) => {
+  const handleUpdateExternalSuppliers = async (newSuppliers: ExternalSupplier[]) => {
     setExternalSuppliers(newSuppliers);
-    localStorage.setItem("external_suppliers", JSON.stringify(newSuppliers));
+    for (const sup of newSuppliers) {
+      try {
+        await fetch("/api/external-suppliers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...sup, cnpj: config.cnpj }),
+        });
+      } catch (err) {
+        console.error("Erro ao salvar fornecedor externo:", err);
+      }
+    }
   };
   
   const [distributors, setDistributors] = useState<DistributorOption[]>([]);
@@ -100,6 +104,29 @@ export function useOptimizerConfig() {
     }
     checkBackend();
   }, []);
+
+  useEffect(() => {
+    if (!config.cnpj || externalSuppliersLoaded) return;
+    (async () => {
+      try {
+        const res = await fetch("/api/external-suppliers/list", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cnpj: config.cnpj }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.suppliers && Array.isArray(data.suppliers)) {
+            setExternalSuppliers(data.suppliers);
+          }
+        }
+      } catch (err) {
+        console.error("Erro ao buscar fornecedores externos:", err);
+      } finally {
+        setExternalSuppliersLoaded(true);
+      }
+    })();
+  }, [config.cnpj, externalSuppliersLoaded]);
 
   return {
     config,

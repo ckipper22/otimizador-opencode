@@ -44,6 +44,7 @@ export interface SwapReportItem {
   novoPmc?: number;
   origem?: string;
   idEncomenda?: string;
+  whatsappDestino?: string;
   alternatives?: Array<{
     ean: string;
     descricao: string;
@@ -79,8 +80,31 @@ export interface WhatsAppRule {
   termoFiltro: string;
   nomeRepresentante?: string;
   telefone?: string;
+  tipoFiltro?: "genericos" | "eticos" | "todos";
   ocultarPrecos?: boolean;
   ativo?: boolean;
+}
+
+export interface WhatsAppOrderItem {
+  ean: string;
+  descricao: string;
+  laboratorio?: string;
+  qtd: number;
+  preco?: number;
+  precoLiquido?: number;
+  observacao?: string;
+}
+
+export interface WhatsAppOrder {
+  id: number;
+  dataPedido: string;
+  fornecedor: string;
+  telefone?: string;
+  itens: WhatsAppOrderItem[];
+  status: "Pendente" | "Confirmado" | "Recebido" | "Cancelado";
+  observacao?: string;
+  origem: "lista" | "regra_lab";
+  cnpj: string;
 }
 
 export interface OptimizerConfig {
@@ -143,13 +167,15 @@ export interface DistributorOption {
 
 export interface ExternalProduct {
   description: string;
-  price: number;
+  price: number | null;
+  discountPercent?: number;
 }
 
 export interface ExternalSupplier {
   id: string;
   name: string;
   rawText: string;
+  validade: string;
   products: ExternalProduct[];
 }
 

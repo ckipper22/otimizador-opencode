@@ -26,6 +26,7 @@ const LazySwapsTable = React.lazy(() => import("./components/SwapsTable"));
 const LazyOrderReturnView = React.lazy(() => import("./components/OrderReturnView").then(m => ({ default: m.OrderReturnView })));
 const LazyDailyItemsView = React.lazy(() => import("./components/DailyItemsView").then(m => ({ default: m.DailyItemsView })));
 const LazyPendingOrdersTable = React.lazy(() => import("./components/PendingOrdersTable").then(m => ({ default: m.PendingOrdersTable })));
+const LazyWhatsAppOrdersView = React.lazy(() => import("./components/WhatsAppOrdersView").then(m => ({ default: m.WhatsAppOrdersView })));
 
 const normalizeDistName = (name: string) => 
   (name || "")
@@ -73,7 +74,7 @@ export default function App() {
 
   // Application State
   const [activeTab, setActiveTab] = useState<"production" | "homologation" | "daily_items">("production");
-  const [mainView, setMainView] = useState<"optimize" | "returns" | "daily_items">("optimize");
+  const [mainView, setMainView] = useState<"optimize" | "returns" | "daily_items" | "whatsapp_orders">("optimize");
 
   const {
     dailyOrders,
@@ -857,9 +858,7 @@ export default function App() {
       setEncomendasList([]);
       setEncomendasWithOffers([]);
       
-      // TODO: Chamar endpoint para confirmar encomendas no sistema externo
-      // const idsConfirmar = itensParaImportar.map(i => ({ id: i.idEncomenda, fornecedor: i.ofertaSelecionada.distribuidora, dataPrevisao: new Date().toISOString().split('T')[0] }));
-      // await fetch("/api/integracao/encomendas/confirmar-pedido", { method: "POST", ... });
+      // Confirmação de encomendas no sistema externo é feita automaticamente pelo backend (server.ts) após faturamento
 
     } catch (err: any) {
       console.error("Erro ao importar encomendas:", err);
@@ -1205,6 +1204,16 @@ export default function App() {
           >
             <span>📅 Itens do Dia</span>
           </button>
+          <button
+            onClick={() => setMainView("whatsapp_orders")}
+            className={`py-3 px-6 text-xs font-bold uppercase tracking-wider border-t border-l border-r border-transparent rounded-none transition-all flex items-center space-x-2 ${
+              mainView === "whatsapp_orders"
+                ? "bg-[#DCDAD7] border-[#141414] text-[#141414] border-b-[#E4E3E0] -mb-[1px] z-10 font-extrabold"
+                : "text-[#141414]/60 hover:text-[#141414] hover:bg-[#DCDAD7]/50"
+            }`}
+          >
+            <span>📱 Pedidos WhatsApp</span>
+          </button>
         </div>
       </div>
 
@@ -1277,6 +1286,12 @@ export default function App() {
               setOverriddenDistributors({});
             }}
           />
+        )}
+        
+        {mainView === "whatsapp_orders" && (
+          <Suspense fallback={<div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-slate-400" /></div>}>
+            <LazyWhatsAppOrdersView config={config} />
+          </Suspense>
         )}
         
         {mainView === "optimize" && (

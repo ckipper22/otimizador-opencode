@@ -96,6 +96,18 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
     - SmartPed API: `NomeDist`, `CodDist`, `Pliquido`, `Preco`, `Estoque`, `Condicao`, `Prazo`, `Ean`, `Descricao` (PascalCase)
     - Ferramentinhas: `nom_produto`, `nom_laborat`, `vlr_custopersonalizado`, `vlr_venda_final`, `qtd_estoque`, `cod_dcb`, `grupo`, `classificacao`
     - **NUNCA misturar.** O backend normaliza de PascalCase (SmartPed) pra lowercase antes de retornar ao frontend.
+    - **BANCO → API → FRONTEND:** Banco Turso usa snake_case (`data_pedido`, `nome_regra`, `preco_liquido`). **TODOS os endpoints de leitura** devem normalizar com `rows.map(r => ({...}))` convertendo snake_case → camelCase antes de `res.json()`. **NUNCA** retornar linhas cruas do banco. Exemplo:
+      ```typescript
+      const rows = await getItensManuais(cnpj);
+      const itens = rows.map((r: any) => ({
+        codInterno: r.cod_interno,
+        precoLiquido: r.preco_liquido,
+        dataAdicao: r.data_adicao,
+        // ...todos os campos
+      }));
+      res.json({ itens });
+      ```
+    - **Exceção:** Endpoints internos (otimização, blockedSuppliers) que usam dados do banco apenas em memória e não retornam ao frontend.
 28. **PESQUISA EXTERNA ANTES DE DEBUGAR:** Quando um bug não tem causa óbvia no código (ex: funciona local mas não no Cloud), SEMPRE pesquisar em fonts externas (GitHub issues, StackOverflow, docs oficiais da plataforma, forums) antes de propor soluções. Evitar "inventar" soluções sem evidência externa. Registrar descobertas em `LLM_CONTEXT.md` (seção 4.21 ou similar).
 
 29. **MODAL ENCOMENDAS — PADRÃO IGUAL AO MODAL "+" (ADIÇÃO MANUAL):** O modal de importar encomendas deve seguir exatamente o padrão do modal de adição manual (botão "+"):
@@ -134,6 +146,8 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
     - Lido pelo `server.ts` em `/api/health` para exibir no header e health check
     - **NÃO** usar `process.env.APP_VERSION` no Cloud Run (não confiável com Dockerfile)
     - Serve para rastreabilidade em testes local e Cloud
+
+38. **ENCOMENDAS — CONFIRMAÇÃO AUTOMÁTICA PÓS-FATURAMENTO:** Quando itens com `origem="encomenda"` são faturados, o backend automaticamente chama `POST /api/integracao/encomendas/confirmar-pedido` no sistema externo para atualizar o status para "Encomendado". Fluxo: faturamento → saveOrder → filtra itens `origem="encomenda"` com `idEncomenda` → deduplica por `idEncomenda` → chama `confirmar-pedido`. Execução asíncrona (não bloqueia resposta). Erros são logados mas não afetam faturamento. **Arquivo:** `server.ts:4464-4485`.
 
 ---
 

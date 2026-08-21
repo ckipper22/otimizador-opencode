@@ -28,53 +28,114 @@ export default function ConfigurationPanel({
   isAdmin = false
 }: ConfigurationPanelProps) {
   const [showAdvanced, setShowAdvanced] = React.useState<boolean>(false);
-  const [showSuppliersSection, setShowSuppliersSection] = React.useState<boolean>(false);
   const [showCompaniesSection, setShowCompaniesSection] = React.useState<boolean>(false);
   const [expandedSupplierId, setExpandedSupplierId] = React.useState<string | null>(null);
+  const [whatsappTab, setWhatsappTab] = React.useState<"regras" | "tabelas">("regras");
 
-  // Regras de WhatsApp Parametrizadas
-  const rulesList: WhatsAppRule[] = (config.whatsAppRules && config.whatsAppRules.length > 0)
-    ? config.whatsAppRules
-    : [{
-        id: "rule_eurofarma_default",
-        nomeRegra: "Genéricos Eurofarma",
-        termoFiltro: "EUROFARMA",
-        nomeRepresentante: "Representante Eurofarma",
-        telefone: config.telefoneWhatsappEurofarma || "",
-        ocultarPrecos: true,
-        ativo: true
-      }];
+  // Regras de WhatsApp Parametrizadas — carrega do Turso no mount
+  const [rulesLoaded, setRulesLoaded] = React.useState(false);
+  const [rulesDirty, setRulesDirty] = React.useState(() => {
+    try { return localStorage.getItem("whatsapp_rules_dirty") === "true"; } catch { return false; }
+  });
+
+  const markDirty = () => {
+    setRulesDirty(true);
+    try { localStorage.setItem("whatsapp_rules_dirty", "true"); } catch {}
+  };
+
+  React.useEffect(() => {
+    if (!config.cnpj || rulesLoaded) return;
+    (async () => {
+      try {
+        const res = await fetch("/api/whatsapp-rules/list", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cnpj: config.cnpj }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.regras && Array.isArray(data.regras) && data.regras.length > 0) {
+            onChange({ ...config, whatsAppRules: data.regras });
+          }
+        }
+      } catch (err) {
+        console.error("Erro ao carregar regras WhatsApp do Turso:", err);
+      } finally {
+        setRulesLoaded(true);
+      }
+    })();
+  }, [config.cnpj]);
+
+  const rulesList: WhatsAppRule[] = React.useMemo(() => {
+    if (config.whatsAppRules && config.whatsAppRules.length > 0) {
+      return config.whatsAppRules;
+    }
+    return [{
+      id: "rule_eurofarma_default",
+      nomeRegra: "Genéricos Eurofarma",
+      termoFiltro: "EUROFARMA",
+      nomeRepresentante: "Representante Eurofarma",
+      telefone: config.telefoneWhatsappEurofarma || "",
+      tipoFiltro: "genericos",
+      ocultarPrecos: true,
+      ativo: true
+    }];
+  }, [config.whatsAppRules, config.telefoneWhatsappEurofarma]);
 
   const handleAddRule = () => {
     const newRule: WhatsAppRule = {
       id: `rule_${Date.now()}`,
-      nomeRegra: "Novo Representante / Laboratório",
+      nomeRegra: "Nova Regra",
       termoFiltro: "",
       nomeRepresentante: "",
       telefone: "",
+      tipoFiltro: "todos",
       ocultarPrecos: true,
       ativo: true
     };
-    onChange({
-      ...config,
-      whatsAppRules: [...rulesList, newRule]
-    });
+    onChange({ ...config, whatsAppRules: [...rulesList, newRule] });
+    markDirty();
   };
 
   const handleUpdateRule = (id: string, updatedFields: Partial<WhatsAppRule>) => {
     const updated = rulesList.map(r => r.id === id ? { ...r, ...updatedFields } : r);
-    onChange({
-      ...config,
-      whatsAppRules: updated
-    });
+    onChange({ ...config, whatsAppRules: updated });
+    markDirty();
   };
 
   const handleRemoveRule = (id: string) => {
     const updated = rulesList.filter(r => r.id !== id);
-    onChange({
-      ...config,
-      whatsAppRules: updated
-    });
+    onChange({ ...config, whatsAppRules: updated });
+    markDirty();
+  };
+
+  const handleSaveRulesToTurso = async () => {
+    try {
+      const existingRes = await fetch("/api/whatsapp-rules/list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cnpj: config.cnpj }),
+      });
+      if (existingRes.ok) {
+        const existingData = await existingRes.json();
+        if (existingData.regras) {
+          for (const r of existingData.regras) {
+            await fetch(`/api/whatsapp-rules/${encodeURIComponent(r.id)}`, { method: "DELETE" });
+          }
+        }
+      }
+      for (const rule of rulesList) {
+        await fetch("/api/whatsapp-rules", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...rule, cnpj: config.cnpj }),
+        });
+      }
+      setRulesDirty(false);
+      try { localStorage.removeItem("whatsapp_rules_dirty"); } catch {}
+    } catch (err) {
+      console.error("Erro ao salvar regras WhatsApp no Turso:", err);
+    }
   };
 
   // Estados para cadastro de empresas autorizadas
@@ -94,13 +155,14 @@ export default function ConfigurationPanel({
 
   const parsePriceList = (text: string) => {
     const lines = text.split("\n");
-    const products: { description: string; price: number }[] = [];
+    const products: { description: string; price: number; discountPercent?: number }[] = [];
     let pendingDescription = "";
 
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       
+      // Padrão 1: Preço fixo (R$ 5,99 ou 5.99)
       const priceRegex = /(?:r\$)?\s*(\d+[\d\s]*[,.]\d{2})(?:\s*[^0-9\r\n]*)?\s*$/i;
       const match = trimmed.match(priceRegex);
       if (match) {
@@ -109,7 +171,6 @@ export default function ConfigurationPanel({
         let description = trimmed.substring(0, match.index).trim();
         description = description.replace(/[-\s•💊;]+$/, "").replace(/^[-\s•💊;]+/, "").trim();
         
-        // Se a descrição na linha do preço for vazia ou apenas um marcador, usa a descrição pendente da linha anterior
         if ((!description || description === "-" || description === "•") && pendingDescription) {
           description = pendingDescription;
         }
@@ -117,11 +178,29 @@ export default function ConfigurationPanel({
         description = description.replace(/[-\s•💊;]+$/, "").replace(/^[-\s•💊;]+/, "").trim();
         if (description && !isNaN(price)) {
           products.push({ description, price });
-          pendingDescription = ""; // Consumido
+          pendingDescription = "";
         }
       } else {
-        // Se a linha não tem preço, guardamos ela como potencial descrição para a próxima linha
-        pendingDescription = trimmed;
+        // Padrão 2: Percentual de desconto (15%, -15%, 15 %OFF)
+        const discountRegex = /[-]?\s*(\d+[,.]?\d*)\s*%\s*(?:off|desc|desconto)?\s*$/i;
+        const discMatch = trimmed.match(discountRegex);
+        if (discMatch) {
+          const discountPercent = parseFloat(discMatch[1].replace(",", "."));
+          let description = trimmed.substring(0, discMatch.index).trim();
+          description = description.replace(/[-\s•💊;]+$/, "").replace(/^[-\s•💊;]+/, "").trim();
+          
+          if ((!description || description === "-" || description === "•") && pendingDescription) {
+            description = pendingDescription;
+          }
+
+          description = description.replace(/[-\s•💊;]+$/, "").replace(/^[-\s•💊;]+/, "").trim();
+          if (description && !isNaN(discountPercent) && discountPercent > 0 && discountPercent < 100) {
+            products.push({ description, price: 0, discountPercent });
+            pendingDescription = "";
+          }
+        } else {
+          pendingDescription = trimmed;
+        }
       }
     }
     return products;
@@ -129,15 +208,17 @@ export default function ConfigurationPanel({
 
   const handleAddSupplier = () => {
     const newId = `sup_${Date.now()}`;
+    const today = new Date().toISOString().slice(0, 10);
     const newSupplier: ExternalSupplier = {
       id: newId,
       name: `Fornecedor ${externalSuppliers.length + 1}`,
       rawText: "",
+      validade: today,
       products: []
     };
     onUpdateExternalSuppliers([...externalSuppliers, newSupplier]);
     setExpandedSupplierId(newId);
-    setShowSuppliersSection(true);
+    setWhatsappTab("tabelas");
   };
 
   const handleRemoveSupplier = (id: string) => {
@@ -181,16 +262,21 @@ export default function ConfigurationPanel({
 
   // Salvar a edição de um produto individual
   const handleSaveEditProduct = (supplierId: string, index: number, newDesc: string, newPriceStr: string) => {
-    const price = parseFloat(newPriceStr.replace(",", ".")) || 0;
+    const parsedPrice = newPriceStr.trim() ? parseFloat(newPriceStr.replace(",", ".")) || null : null;
     const updated = externalSuppliers.map(s => {
       if (s.id === supplierId) {
         const updatedProds = s.products.map((p, idx) => {
           if (idx === index) {
-            return { description: newDesc, price };
+            return { description: newDesc, price: parsedPrice, discountPercent: parsedPrice != null && parsedPrice > 0 ? undefined : p.discountPercent };
           }
           return p;
         });
-        const newRawText = updatedProds.map(p => `${p.description} ${p.price.toFixed(2).replace(".", ",")}`).join("\n");
+        const newRawText = updatedProds.map(p => {
+          if (p.discountPercent && p.discountPercent > 0) {
+            return `${p.description} ${p.discountPercent}%`;
+          }
+          return `${p.description} ${p.price != null && p.price > 0 ? p.price.toFixed(2).replace(".", ",") : ""}`;
+        }).join("\n");
         return {
           ...s,
           products: updatedProds,
@@ -205,12 +291,12 @@ export default function ConfigurationPanel({
 
   // Adicionar produto manual/avulso
   const handleAddManualProduct = (supplierId: string, desc: string, priceStr: string) => {
-    const price = parseFloat(priceStr.replace(",", ".")) || 0;
-    if (!desc.trim() || price <= 0) return;
+    if (!desc.trim()) return;
+    const parsedPrice = priceStr.trim() ? parseFloat(priceStr.replace(",", ".")) || null : null;
     const updated = externalSuppliers.map(s => {
       if (s.id === supplierId) {
-        const updatedProds = [...s.products, { description: desc.trim(), price }];
-        const newRawText = updatedProds.map(p => `${p.description} ${p.price.toFixed(2).replace(".", ",")}`).join("\n");
+        const updatedProds = [...s.products, { description: desc.trim(), price: parsedPrice }];
+        const newRawText = updatedProds.map(p => `${p.description} ${p.price != null && p.price > 0 ? p.price.toFixed(2).replace(".", ",") : ""}`).join("\n");
         return {
           ...s,
           products: updatedProds,
@@ -396,407 +482,304 @@ export default function ConfigurationPanel({
             </p>
           </div>
 
-          {/* DIRECIONAMENTO E PARÂMETROS DE PEDIDOS VIA WHATSAPP */}
-          <div className="bg-emerald-50/70 border border-emerald-200/80 p-3.5 rounded-lg space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="flex items-center space-x-2.5 text-xs font-bold text-emerald-950 cursor-pointer">
-                <input
-                  type="checkbox"
-                  name="direcionarEurofarmaWhatsapp"
-                  checked={config.direcionarEurofarmaWhatsapp !== false}
-                  onChange={(e) => {
-                    onChange({
-                      ...config,
-                      direcionarEurofarmaWhatsapp: e.target.checked
-                    });
-                  }}
-                  className="w-4.5 h-4.5 text-emerald-600 bg-white border-emerald-300 rounded focus:ring-emerald-500 accent-emerald-600 cursor-pointer"
-                />
-                <span className="flex items-center gap-1.5 text-emerald-950 font-bold">
-                  <MessageSquare className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Direcionar Pedidos Diretos via WhatsApp (Representantes)</span>
-                </span>
-              </label>
-            </div>
+          {/* ─── WHATSAPP: ABAS REGRAS + TABELAS ─── */}
+          <div className="border-2 border-slate-200 rounded-lg overflow-hidden">
+                {/* Tab headers */}
+                <div className="flex border-b-2 border-slate-200 bg-slate-50">
+                  <button
+                    type="button"
+                    onClick={() => setWhatsappTab("regras")}
+                    className={`flex-1 py-2.5 text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer border-b-2 -mb-[2px] ${
+                      whatsappTab === "regras"
+                        ? "border-emerald-500 text-emerald-800 bg-emerald-50"
+                        : "border-transparent text-slate-400 hover:text-slate-600 hover:bg-white"
+                    }`}
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    Regras de Lab
+                    {config.whatsAppRules && config.whatsAppRules.length > 0 && (
+                      <span className="bg-emerald-200 text-emerald-800 text-[9px] px-1.5 py-0.5 rounded-full font-bold">
+                        {config.whatsAppRules.length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWhatsappTab("tabelas")}
+                    className={`flex-1 py-2.5 text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer border-b-2 -mb-[2px] ${
+                      whatsappTab === "tabelas"
+                        ? "border-indigo-500 text-indigo-800 bg-indigo-50"
+                        : "border-transparent text-slate-400 hover:text-slate-600 hover:bg-white"
+                    }`}
+                  >
+                    <List className="w-4 h-4" />
+                    Tabelas de Preço
+                    {externalSuppliers.length > 0 && (
+                      <span className="bg-indigo-200 text-indigo-800 text-[9px] px-1.5 py-0.5 rounded-full font-bold">
+                        {externalSuppliers.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
 
-            <p className="text-[10px] text-emerald-800/90 font-normal leading-relaxed">
-              Cadastre e gerencie parâmetros para encaminhar itens de laboratórios (ex: Eurofarma, Medley, etc.) direto para o representante. <strong>Sem preços na mensagem</strong> por padrão (confia no preço negociado no dia).
-            </p>
-
-            {config.direcionarEurofarmaWhatsapp !== false && (
-              <div className="space-y-2.5 pt-1">
-                {rulesList.map((rule) => (
-                  <div key={rule.id} className="bg-white border border-emerald-300/80 p-3 rounded-md shadow-xs space-y-2">
-                    <div className="flex items-center justify-between gap-2 border-b border-emerald-100 pb-1.5">
-                      <input
-                        type="text"
-                        value={rule.nomeRegra}
-                        onChange={(e) => handleUpdateRule(rule.id, { nomeRegra: e.target.value })}
-                        placeholder="Ex: Genéricos Eurofarma"
-                        className="font-bold text-xs text-emerald-950 bg-slate-50 border border-slate-200 px-2 py-1 rounded focus:bg-white focus:outline-none focus:border-emerald-500 flex-1"
-                      />
-                      <div className="flex items-center gap-2 shrink-0">
-                        <label className="flex items-center space-x-1 text-[10px] text-emerald-900 font-bold cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={rule.ativo !== false}
-                            onChange={(e) => handleUpdateRule(rule.id, { ativo: e.target.checked })}
-                            className="w-3.5 h-3.5 text-emerald-600 rounded accent-emerald-600"
-                          />
-                          <span>Ativo</span>
-                        </label>
-                        {rulesList.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveRule(rule.id)}
-                            className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded cursor-pointer"
-                            title="Remover Regra"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px]">
+                {/* ═══ ABA: REGRAS DE LABORATÓRIO ═══ */}
+                {whatsappTab === "regras" && (
+                  <div className="p-4 bg-emerald-50/30 space-y-3">
+                    <div className="flex items-center justify-between">
                       <div>
-                        <label className="block font-bold text-slate-600 mb-0.5">Termo / Laboratório Filtro</label>
-                        <input
-                          type="text"
-                          value={rule.termoFiltro}
-                          onChange={(e) => handleUpdateRule(rule.id, { termoFiltro: e.target.value })}
-                          placeholder="Ex: EUROFARMA"
-                          className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-800 font-mono focus:bg-white uppercase"
-                        />
+                        <p className="text-[11px] text-emerald-800 leading-snug">
+                          Itens de laboratórios específicos vão <strong>direto pro representante</strong> via WhatsApp. <strong>Sem preços</strong> na mensagem (confia no preço negociado).
+                        </p>
                       </div>
-                      <div>
-                        <label className="block font-bold text-slate-600 mb-0.5">Nome do Representante</label>
-                        <input
-                          type="text"
-                          value={rule.nomeRepresentante || ""}
-                          onChange={(e) => handleUpdateRule(rule.id, { nomeRepresentante: e.target.value })}
-                          placeholder="Ex: João - Eurofarma"
-                          className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-800 focus:bg-white"
-                        />
-                      </div>
-                      <div className="sm:col-span-2">
-                        <label className="block font-bold text-slate-600 mb-0.5">Telefone WhatsApp do Vendedor</label>
-                        <input
-                          type="text"
-                          value={rule.telefone || ""}
-                          onChange={(e) => handleUpdateRule(rule.id, { telefone: e.target.value })}
-                          placeholder="Ex: (11) 99999-9999"
-                          className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-800 font-mono focus:bg-white"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="pt-1 flex items-center justify-between border-t border-slate-100">
-                      <label className="flex items-center space-x-1.5 text-[10px] text-slate-700 font-semibold cursor-pointer">
+                      <label className="flex items-center gap-1.5 cursor-pointer shrink-0 ml-3">
                         <input
                           type="checkbox"
-                          checked={rule.ocultarPrecos !== false}
-                          onChange={(e) => handleUpdateRule(rule.id, { ocultarPrecos: e.target.checked })}
-                          className="w-3.5 h-3.5 text-emerald-600 rounded accent-emerald-600"
+                          checked={config.direcionarEurofarmaWhatsapp !== false}
+                          onChange={(e) => onChange({ ...config, direcionarEurofarmaWhatsapp: e.target.checked })}
+                          className="w-4 h-4 text-emerald-600 rounded accent-emerald-600"
                         />
-                        <span>Ocultar preços na mensagem (envia só EAN e Quantidade)</span>
+                        <span className="text-[10px] font-bold text-emerald-800">Ativo</span>
                       </label>
                     </div>
-                  </div>
-                ))}
 
-                <button
-                  type="button"
-                  onClick={handleAddRule}
-                  className="w-full py-1.5 bg-white hover:bg-emerald-100/50 text-emerald-800 border border-dashed border-emerald-400 font-bold text-xs rounded transition-all flex items-center justify-center space-x-1 cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Adicionar Parâmetro / Representante WhatsApp</span>
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* SEÇÃO FORNECEDORES WHATSAPP (COPIAR E COLAR / EDIÇÃO DE ITENS) */}
-          <div className="border-t border-slate-100 pt-4 mt-4">
-            <button
-              type="button"
-              onClick={() => setShowSuppliersSection(!showSuppliersSection)}
-              className="w-full flex items-center justify-between text-xs font-semibold text-slate-700 hover:text-indigo-600 focus:outline-none"
-            >
-              <span className="flex items-center gap-1.5">
-                <MessageSquare className="w-4 h-4 text-emerald-600" />
-                <span>Tabelas de Fornecedores WhatsApp</span>
-                {externalSuppliers.length > 0 && (
-                  <span className="bg-emerald-100 text-emerald-800 text-[9px] px-1.5 py-0.5 font-bold rounded-full">
-                    {externalSuppliers.length}
-                  </span>
-                )}
-              </span>
-              {showSuppliersSection ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
-
-            {showSuppliersSection && (
-              <div className="mt-3 space-y-3">
-                <p className="text-[10px] text-slate-500 leading-normal">
-                  Cole tabelas recebidas ou gerencie produtos individualmente. O otimizador buscará automaticamente e comparará de forma precisa.
-                </p>
-
-                {externalSuppliers.length === 0 ? (
-                  <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-center text-[10px] text-slate-400">
-                    Nenhum fornecedor externo cadastrado.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {externalSuppliers.map((sup) => {
-                      const isExpanded = expandedSupplierId === sup.id;
-                      const activeTab = supplierTabs[sup.id] || "text";
-                      return (
-                        <div key={sup.id} className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-xs">
-                          <div 
-                            onClick={() => setExpandedSupplierId(isExpanded ? null : sup.id)}
-                            className="px-3 py-2 bg-slate-50 border-b border-slate-200/55 flex items-center justify-between cursor-pointer hover:bg-slate-100"
-                          >
-                            <span className="text-xs font-bold text-slate-700">{sup.name || "Sem Nome"}</span>
-                            <div className="flex items-center space-x-2">
-                              <span className="text-[9px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">
-                                {sup.products.length} itens
+                    {config.direcionarEurofarmaWhatsapp !== false && (
+                      <div className="space-y-2.5">
+                        {rulesList.map((rule, idx) => (
+                          <div key={rule.id} className="bg-white border border-emerald-200 rounded-lg p-3 space-y-2 shadow-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-black text-emerald-600 bg-emerald-100 w-5 h-5 flex items-center justify-center rounded-full shrink-0">
+                                {idx + 1}
                               </span>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleRemoveSupplier(sup.id);
-                                }}
-                                className="text-rose-500 hover:text-rose-700 focus:outline-none p-0.5 rounded hover:bg-slate-200/50"
-                                title="Excluir Fornecedor"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <input
+                                type="text"
+                                value={rule.nomeRegra}
+                                onChange={(e) => handleUpdateRule(rule.id, { nomeRegra: e.target.value })}
+                                placeholder="Nome da regra"
+                                className="flex-1 text-xs font-bold text-slate-800 bg-transparent border-b border-slate-200 focus:border-emerald-500 focus:outline-none px-1 py-0.5"
+                              />
+                              <label className="flex items-center gap-1 text-[9px] font-bold text-slate-500 cursor-pointer shrink-0">
+                                <input
+                                  type="checkbox"
+                                  checked={rule.ativo !== false}
+                                  onChange={(e) => handleUpdateRule(rule.id, { ativo: e.target.checked })}
+                                  className="w-3 h-3 text-emerald-600 rounded accent-emerald-600"
+                                />
+                                On
+                              </label>
+                              {rulesList.length > 1 && (
+                                <button type="button" onClick={() => handleRemoveRule(rule.id)} className="text-rose-400 hover:text-rose-600 cursor-pointer p-0.5" title="Excluir">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Laboratório</label>
+                                <input type="text" value={rule.termoFiltro} onChange={(e) => handleUpdateRule(rule.id, { termoFiltro: e.target.value.toUpperCase() })} placeholder="Ex: EUROFARMA" className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-[11px] font-mono text-slate-800 focus:bg-white focus:outline-none focus:border-emerald-500 uppercase" />
+                              </div>
+                              <div>
+                                <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Representante</label>
+                                <input type="text" value={rule.nomeRepresentante || ""} onChange={(e) => handleUpdateRule(rule.id, { nomeRepresentante: e.target.value })} placeholder="Nome do vendedor" className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-[11px] text-slate-800 focus:bg-white focus:outline-none focus:border-emerald-500" />
+                              </div>
+                              <div>
+                                <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Telefone</label>
+                                <input type="text" value={rule.telefone || ""} onChange={(e) => handleUpdateRule(rule.id, { telefone: e.target.value })} placeholder="(11) 99999-9999" className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-[11px] font-mono text-slate-800 focus:bg-white focus:outline-none focus:border-emerald-500" />
+                              </div>
+                              <div>
+                                <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Filtrar</label>
+                                <select value={rule.tipoFiltro || "todos"} onChange={(e) => handleUpdateRule(rule.id, { tipoFiltro: e.target.value as WhatsAppRule["tipoFiltro"] })} className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-[11px] text-slate-800 focus:bg-white focus:outline-none focus:border-emerald-500">
+                                  <option value="todos">Todos</option>
+                                  <option value="genericos">Só Genéricos</option>
+                                  <option value="eticos">Só Éticos/Ref</option>
+                                </select>
+                              </div>
+                            </div>
+                            <label className="flex items-center gap-1.5 text-[9px] text-slate-600 font-semibold cursor-pointer">
+                              <input type="checkbox" checked={rule.ocultarPrecos !== false} onChange={(e) => handleUpdateRule(rule.id, { ocultarPrecos: e.target.checked })} className="w-3 h-3 text-emerald-600 rounded accent-emerald-600" />
+                              Ocultar preços (só EAN + Qtd)
+                            </label>
                           </div>
+                        ))}
+                        <div className="flex gap-2 pt-1">
+                          <button type="button" onClick={handleAddRule} className="flex-1 py-2 bg-white hover:bg-emerald-50 text-emerald-700 border border-dashed border-emerald-300 font-bold text-[11px] rounded transition-all flex items-center justify-center gap-1 cursor-pointer">
+                            <Plus className="w-3.5 h-3.5" />
+                            Nova Regra
+                          </button>
+                          <button type="button" onClick={handleSaveRulesToTurso} className={`flex-1 py-2 font-bold text-[11px] rounded transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm ${rulesDirty ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-emerald-100 text-emerald-500 cursor-default"}`}>
+                            <Save className="w-3.5 h-3.5" />
+                            {rulesDirty ? "Salvar Regras" : "Salvo ✓"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
-                          {isExpanded && (
-                            <div className="p-3 space-y-3 bg-white">
-                              {/* Tabs de Controle do Fornecedor */}
-                              <div className="flex border-b border-slate-100 mb-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setSupplierTabs({ ...supplierTabs, [sup.id]: "text" })}
-                                  className={`flex-1 py-1.5 text-[10px] font-bold text-center flex items-center justify-center gap-1 border-b-2 transition-colors cursor-pointer ${
-                                    activeTab === "text"
-                                      ? "border-emerald-500 text-emerald-700 bg-emerald-50/25"
-                                      : "border-transparent text-slate-500 hover:text-slate-700"
-                                  }`}
-                                >
-                                  <FileText className="w-3 h-3" />
-                                  <span>Texto Copiado</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setSupplierTabs({ ...supplierTabs, [sup.id]: "items" })}
-                                  className={`flex-1 py-1.5 text-[10px] font-bold text-center flex items-center justify-center gap-1 border-b-2 transition-colors cursor-pointer ${
-                                    activeTab === "items"
-                                      ? "border-emerald-500 text-emerald-700 bg-emerald-50/25"
-                                      : "border-transparent text-slate-500 hover:text-slate-700"
-                                  }`}
-                                >
-                                  <List className="w-3 h-3" />
-                                  <span>Produtos ({sup.products.length})</span>
-                                </button>
+                {/* ═══ ABA: TABELAS DE PREÇO ═══ */}
+                {whatsappTab === "tabelas" && (
+                  <div className="p-4 bg-indigo-50/30 space-y-3">
+                    <p className="text-[11px] text-indigo-800 leading-snug">
+                      Cole tabelas de preços recebidas via WhatsApp. O otimizador compara automaticamente com SmartPed e escolhe o <strong>menor preço</strong>.
+                    </p>
+
+                    {externalSuppliers.length === 0 ? (
+                      <div className="p-4 bg-white border border-dashed border-indigo-200 rounded-lg text-center text-[11px] text-slate-400">
+                        Nenhum fornecedor cadastrado. Clique em "Adicionar" para começar.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {externalSuppliers.map((sup) => {
+                          const isExpanded = expandedSupplierId === sup.id;
+                          const activeTab = supplierTabs[sup.id] || "text";
+                          const today = new Date().toISOString().slice(0, 10);
+                          const isExpired = sup.validade && sup.validade < today;
+                          const hasPriceItems = sup.products.some(p => p.price != null && p.price > 0);
+                          return (
+                            <div key={sup.id} className={`border rounded-lg overflow-hidden bg-white shadow-xs ${isExpired ? "border-amber-300" : "border-indigo-200"}`}>
+                              <div onClick={() => setExpandedSupplierId(isExpanded ? null : sup.id)} className={`px-3 py-2 border-b flex items-center justify-between cursor-pointer ${isExpired ? "bg-amber-50/50 border-amber-100 hover:bg-amber-50" : "bg-indigo-50/50 border-indigo-100 hover:bg-indigo-50"}`}>
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-xs font-bold text-slate-700 truncate">{sup.name || "Sem Nome"}</span>
+                                  {isExpired ? (
+                                    <span className="text-[8px] font-bold bg-amber-100 text-amber-700 border border-amber-200 px-1 py-0.5 rounded shrink-0">EXPIRADA</span>
+                                  ) : hasPriceItems ? (
+                                    <span className="text-[8px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 rounded shrink-0">ATIVA</span>
+                                  ) : (
+                                    <span className="text-[8px] font-bold bg-slate-100 text-slate-500 border border-slate-200 px-1 py-0.5 rounded shrink-0">SEM PREÇO</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center space-x-2 shrink-0">
+                                  {sup.validade && (
+                                    <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${isExpired ? "bg-amber-100 text-amber-700 border-amber-200" : "bg-indigo-100 text-indigo-700 border-indigo-200"}`}>
+                                      {sup.validade}
+                                    </span>
+                                  )}
+                                  <span className="text-[9px] font-semibold bg-indigo-100 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded">
+                                    {sup.products.length} itens
+                                  </span>
+                                  <button type="button" onClick={(e) => { e.stopPropagation(); handleRemoveSupplier(sup.id); }} className="text-rose-500 hover:text-rose-700 p-0.5 rounded hover:bg-rose-50" title="Excluir">
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
                               </div>
 
-                              {/* Conteúdo Aba TEXTO COPIADO */}
-                              {activeTab === "text" && (
-                                <div className="space-y-2.5">
-                                  <div>
-                                    <label className="block text-[9px] font-bold text-slate-500 uppercase mb-1">Nome do Fornecedor / Tabela</label>
-                                    <input
-                                      type="text"
-                                      value={sup.name}
-                                      onChange={(e) => handleUpdateSupplier(sup.id, e.target.value, sup.rawText)}
-                                      placeholder="Ex: Germed Promo, WhatsApp Distribuidor"
-                                      className="w-full bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                                    />
+                              {isExpanded && (
+                                <div className="p-3 space-y-3 bg-white">
+                                  <div className="flex border-b border-slate-100 mb-2">
+                                    <button type="button" onClick={() => setSupplierTabs({ ...supplierTabs, [sup.id]: "text" })} className={`flex-1 py-1.5 text-[10px] font-bold text-center flex items-center justify-center gap-1 border-b-2 transition-colors cursor-pointer ${activeTab === "text" ? "border-indigo-500 text-indigo-700 bg-indigo-50/25" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+                                      <FileText className="w-3 h-3" />
+                                      <span>Texto Copiado</span>
+                                    </button>
+                                    <button type="button" onClick={() => setSupplierTabs({ ...supplierTabs, [sup.id]: "items" })} className={`flex-1 py-1.5 text-[10px] font-bold text-center flex items-center justify-center gap-1 border-b-2 transition-colors cursor-pointer ${activeTab === "items" ? "border-indigo-500 text-indigo-700 bg-indigo-50/25" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+                                      <List className="w-3 h-3" />
+                                      <span>Produtos ({sup.products.length})</span>
+                                    </button>
                                   </div>
 
-                                  <div>
-                                    <label className="block text-[9px] font-bold text-slate-500 uppercase mb-1">Colar Tabela de Preços (WhatsApp)</label>
-                                    <textarea
-                                      value={sup.rawText}
-                                      onChange={(e) => handleUpdateSupplier(sup.id, sup.name, e.target.value)}
-                                      placeholder={`Cole o texto do WhatsApp aqui...\nExemplo:\nTadalafila 5mg 30cp Germed 5,99\nEnalapril 2,49\nSinvastatina Novartis 3,19`}
-                                      className="w-full bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 text-[11px] font-mono text-slate-700 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 h-28 resize-none"
-                                    />
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* Conteúdo Aba PRODUTOS IDENTIFICADOS */}
-                              {activeTab === "items" && (
-                                <div className="space-y-2.5">
-                                  <div className="max-h-[220px] overflow-y-auto border border-slate-100 rounded-lg p-2 bg-slate-50 space-y-1.5 scrollbar-thin">
-                                    {sup.products.length === 0 ? (
-                                      <p className="text-center text-[10px] text-slate-400 py-4">
-                                        Nenhum item reconhecido. Cole um texto ou adicione manualmente abaixo.
-                                      </p>
-                                    ) : (
-                                      sup.products.map((prod, pIdx) => {
-                                        const isEditing = editingProductId?.supplierId === sup.id && editingProductId?.index === pIdx;
-                                        return (
-                                          <div key={pIdx} className="flex items-center justify-between p-2 bg-white rounded border border-slate-200/60 shadow-xs text-xs">
-                                            {isEditing ? (
-                                              <div className="flex flex-1 items-center space-x-1">
-                                                <input
-                                                  type="text"
-                                                  value={editDescription}
-                                                  onChange={(e) => setEditDescription(e.target.value)}
-                                                  className="flex-1 min-w-0 bg-slate-50 border border-slate-300 rounded px-1.5 py-1 text-[11px] focus:bg-white focus:outline-none"
-                                                />
-                                                <div className="relative w-16 shrink-0">
-                                                  <span className="absolute inset-y-0 left-1 flex items-center text-[9px] text-slate-400">R$</span>
-                                                  <input
-                                                    type="text"
-                                                    value={editPrice}
-                                                    onChange={(e) => setEditPrice(e.target.value)}
-                                                    className="w-full bg-slate-50 border border-slate-300 rounded pl-4 pr-1 py-1 text-[11px] text-right focus:bg-white focus:outline-none font-mono"
-                                                  />
-                                                </div>
-                                                <div className="flex items-center space-x-0.5 shrink-0">
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => handleSaveEditProduct(sup.id, pIdx, editDescription, editPrice)}
-                                                    className="p-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded cursor-pointer"
-                                                    title="Salvar"
-                                                  >
-                                                    <Check className="w-3 h-3" />
-                                                  </button>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => setEditingProductId(null)}
-                                                    className="p-1 bg-slate-200 hover:bg-slate-300 text-slate-600 rounded cursor-pointer"
-                                                    title="Cancelar"
-                                                  >
-                                                    <X className="w-3 h-3" />
-                                                  </button>
-                                                </div>
-                                              </div>
-                                            ) : (
-                                              <>
-                                                <div className="flex-1 min-w-0 pr-2">
-                                                  <p className="font-semibold text-slate-700 truncate" title={prod.description}>
-                                                    {prod.description}
-                                                  </p>
-                                                </div>
-                                                <div className="flex items-center space-x-1.5 shrink-0">
-                                                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[10px]">
-                                                    R$ {prod.price.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                  </span>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                      setEditingProductId({ supplierId: sup.id, index: pIdx });
-                                                      setEditDescription(prod.description);
-                                                      setEditPrice(prod.price.toFixed(2).replace(".", ","));
-                                                    }}
-                                                    className="p-1 text-slate-400 hover:text-indigo-600 focus:outline-none cursor-pointer hover:bg-slate-100 rounded"
-                                                    title="Editar item"
-                                                  >
-                                                    <Edit2 className="w-3 h-3" />
-                                                  </button>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => handleDeleteProduct(sup.id, pIdx)}
-                                                    className="p-1 text-rose-400 hover:text-rose-600 focus:outline-none cursor-pointer hover:bg-rose-50 rounded"
-                                                    title="Excluir item"
-                                                  >
-                                                    <Trash2 className="w-3 h-3" />
-                                                  </button>
-                                                </div>
-                                              </>
-                                            )}
-                                          </div>
-                                        );
-                                      })
-                                    )}
-                                  </div>
-
-                                  {/* Form de Adicionar Manualmente */}
-                                  {showAddFormSupplierId === sup.id ? (
-                                    <div className="p-2 bg-emerald-50 border border-emerald-100 rounded-lg space-y-2">
-                                      <p className="text-[9px] font-bold text-emerald-800 uppercase">Novo Item Manual</p>
-                                      <div className="flex space-x-1.5">
-                                        <input
-                                          type="text"
-                                          placeholder="Descrição do produto (ex: Dorflex 36cp)"
-                                          value={newProdDesc}
-                                          onChange={(e) => setNewProdDesc(e.target.value)}
-                                          className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                        />
-                                        <div className="relative w-18 shrink-0">
-                                          <span className="absolute inset-y-0 left-1.5 flex items-center text-[9px] text-slate-400 font-mono">R$</span>
-                                          <input
-                                            type="text"
-                                            placeholder="0,00"
-                                            value={newProdPrice}
-                                            onChange={(e) => setNewProdPrice(e.target.value)}
-                                            className="w-full bg-white border border-slate-200 rounded pl-5 pr-1.5 py-1 text-xs text-right font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                          />
-                                        </div>
+                                  {activeTab === "text" && (
+                                    <div className="space-y-2.5">
+                                      <div>
+                                        <label className="block text-[9px] font-bold text-slate-500 uppercase mb-1">Nome do Fornecedor</label>
+                                        <input type="text" value={sup.name} onChange={(e) => handleUpdateSupplier(sup.id, e.target.value, sup.rawText)} placeholder="Ex: Germed Promo" className="w-full bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500" />
                                       </div>
-                                      <div className="flex justify-end space-x-1.5">
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setShowAddFormSupplierId(null);
-                                            setNewProdDesc("");
-                                            setNewProdPrice("");
-                                          }}
-                                          className="px-2.5 py-1 text-[10px] text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 font-semibold rounded cursor-pointer"
-                                        >
-                                          Cancelar
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleAddManualProduct(sup.id, newProdDesc, newProdPrice)}
-                                          disabled={!newProdDesc.trim() || !newProdPrice}
-                                          className="px-2.5 py-1 text-[10px] text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 font-semibold rounded cursor-pointer"
-                                        >
-                                          Adicionar
-                                        </button>
+                                      <div>
+                                        <label className="block text-[9px] font-bold text-slate-500 uppercase mb-1">Validade da Proposta</label>
+                                        <input type="date" value={sup.validade || ""} onChange={(e) => {
+                                          const updated = externalSuppliers.map(s => s.id === sup.id ? { ...s, validade: e.target.value } : s);
+                                          onUpdateExternalSuppliers(updated);
+                                        }} className={`w-full bg-slate-50 border rounded px-2.5 py-1.5 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 ${isExpired ? "border-amber-300 text-amber-700" : "border-slate-200"}`} />
+                                        {isExpired && <p className="text-[9px] text-amber-600 mt-0.5">Proposta expirada — preços não serão comparados</p>}
+                                      </div>
+                                      <div>
+                                        <label className="block text-[9px] font-bold text-slate-500 uppercase mb-1">Colar Tabela de Preços</label>
+                                        <textarea value={sup.rawText} onChange={(e) => handleUpdateSupplier(sup.id, sup.name, e.target.value)} placeholder={"Cole o texto do WhatsApp aqui...\nEx:\nDorflex 36cp 5,99\nDipirona 10cp 3,49\nAmoxil 21cp 15%"} className="w-full bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 text-[11px] font-mono text-slate-700 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 h-28 resize-none" />
                                       </div>
                                     </div>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() => setShowAddFormSupplierId(sup.id)}
-                                      className="w-full py-1 bg-white hover:bg-slate-50 text-slate-600 border border-dashed border-slate-200 hover:border-slate-300 text-[10px] font-bold rounded-lg flex items-center justify-center space-x-1 transition-all"
-                                    >
-                                      <Plus className="w-3 h-3" />
-                                      <span>Inserir Item Avulso</span>
-                                    </button>
+                                  )}
+
+                                  {activeTab === "items" && (
+                                    <div className="space-y-2.5">
+                                      <div className="max-h-[220px] overflow-y-auto border border-slate-100 rounded-lg p-2 bg-slate-50 space-y-1.5 scrollbar-thin">
+                                        {sup.products.length === 0 ? (
+                                          <p className="text-center text-[10px] text-slate-400 py-4">Nenhum item reconhecido. Cole um texto ou adicione manualmente.</p>
+                                        ) : (
+                                          sup.products.map((prod, pIdx) => {
+                                            const isEditing = editingProductId?.supplierId === sup.id && editingProductId?.index === pIdx;
+                                            return (
+                                              <div key={pIdx} className="flex items-center justify-between p-2 bg-white rounded border border-slate-200/60 shadow-xs text-xs">
+                                                {isEditing ? (
+                                                  <div className="flex flex-1 items-center space-x-1">
+                                                    <input type="text" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="flex-1 min-w-0 bg-slate-50 border border-slate-300 rounded px-1.5 py-1 text-[11px] focus:bg-white focus:outline-none" />
+                                                    <div className="relative w-16 shrink-0">
+                                                      <span className="absolute inset-y-0 left-1 flex items-center text-[9px] text-slate-400">R$</span>
+                                                      <input type="text" value={editPrice} onChange={(e) => setEditPrice(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded pl-4 pr-1 py-1 text-[11px] text-right focus:bg-white focus:outline-none font-mono" />
+                                                    </div>
+                                                    <div className="flex items-center space-x-0.5 shrink-0">
+                                                      <button type="button" onClick={() => handleSaveEditProduct(sup.id, pIdx, editDescription, editPrice)} className="p-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded cursor-pointer" title="Salvar"><Check className="w-3 h-3" /></button>
+                                                      <button type="button" onClick={() => setEditingProductId(null)} className="p-1 bg-slate-200 hover:bg-slate-300 text-slate-600 rounded cursor-pointer" title="Cancelar"><X className="w-3 h-3" /></button>
+                                                    </div>
+                                                  </div>
+                                                ) : (
+                                                  <>
+                                                    <div className="flex-1 min-w-0 pr-2">
+                                                      <p className="font-semibold text-slate-700 truncate" title={prod.description}>{prod.description}</p>
+                                                    </div>
+                                                    <div className="flex items-center space-x-1.5 shrink-0">
+                                                      {prod.discountPercent && prod.discountPercent > 0 ? (
+                                                        <span className="font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[10px] border border-amber-200">{prod.discountPercent}% desc</span>
+                                                      ) : prod.price != null && prod.price > 0 ? (
+                                                        <span className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded text-[10px]">R$ {prod.price.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                                      ) : (
+                                                        <span className="font-bold text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded text-[10px] border border-slate-200 italic">só item</span>
+                                                      )}
+                                                      <button type="button" onClick={() => { setEditingProductId({ supplierId: sup.id, index: pIdx }); setEditDescription(prod.description); setEditPrice(prod.price != null ? prod.price.toFixed(2).replace(".", ",") : ""); }} className="p-1 text-slate-400 hover:text-indigo-600 cursor-pointer hover:bg-slate-100 rounded" title="Editar"><Edit2 className="w-3 h-3" /></button>
+                                                      <button type="button" onClick={() => handleDeleteProduct(sup.id, pIdx)} className="p-1 text-rose-400 hover:text-rose-600 cursor-pointer hover:bg-rose-50 rounded" title="Excluir"><Trash2 className="w-3 h-3" /></button>
+                                                    </div>
+                                                  </>
+                                                )}
+                                              </div>
+                                            );
+                                          })
+                                        )}
+                                      </div>
+
+                                      {showAddFormSupplierId === sup.id ? (
+                                        <div className="p-2 bg-indigo-50 border border-indigo-100 rounded-lg space-y-2">
+                                          <p className="text-[9px] font-bold text-indigo-800 uppercase">Novo Item Manual</p>
+                                          <div className="flex space-x-1.5">
+                                            <input type="text" placeholder="Descrição do produto" value={newProdDesc} onChange={(e) => setNewProdDesc(e.target.value)} className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+                                            <div className="relative w-18 shrink-0">
+                                              <span className="absolute inset-y-0 left-1.5 flex items-center text-[9px] text-slate-400 font-mono">R$</span>
+                                              <input type="text" placeholder="opcional" value={newProdPrice} onChange={(e) => setNewProdPrice(e.target.value)} className="w-full bg-white border border-slate-200 rounded pl-5 pr-1.5 py-1 text-xs text-right font-mono focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+                                            </div>
+                                          </div>
+                                          <div className="flex justify-end space-x-1.5">
+                                            <button type="button" onClick={() => { setShowAddFormSupplierId(null); setNewProdDesc(""); setNewProdPrice(""); }} className="px-2.5 py-1 text-[10px] text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 font-semibold rounded cursor-pointer">Cancelar</button>
+                                            <button type="button" onClick={() => handleAddManualProduct(sup.id, newProdDesc, newProdPrice)} disabled={!newProdDesc.trim()} className="px-2.5 py-1 text-[10px] text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 font-semibold rounded cursor-pointer">Adicionar</button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <button type="button" onClick={() => setShowAddFormSupplierId(sup.id)} className="w-full py-1 bg-white hover:bg-indigo-50 text-slate-600 border border-dashed border-slate-200 hover:border-indigo-300 text-[10px] font-bold rounded-lg flex items-center justify-center space-x-1 transition-all">
+                                          <Plus className="w-3 h-3" />
+                                          <span>Inserir Item Avulso</span>
+                                        </button>
+                                      )}
+                                    </div>
                                   )}
                                 </div>
                               )}
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <button type="button" onClick={handleAddSupplier} className="w-full py-2 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-dashed border-indigo-300 hover:border-indigo-400 text-xs font-bold transition-all rounded-lg flex items-center justify-center space-x-1 cursor-pointer">
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Adicionar Fornecedor</span>
+                    </button>
                   </div>
                 )}
-
-                <button
-                  type="button"
-                  onClick={handleAddSupplier}
-                  className="w-full py-1.5 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-dashed border-emerald-300 hover:border-emerald-400 text-xs font-bold transition-all rounded-lg flex items-center justify-center space-x-1"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Adicionar Fornecedor WhatsApp</span>
-                </button>
               </div>
-            )}
-          </div>
 
           {/* Seção de Cadastro de Empresas Autorizadas (Apenas Admin) */}
           {isAdmin && (

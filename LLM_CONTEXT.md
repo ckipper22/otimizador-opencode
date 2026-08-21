@@ -954,10 +954,188 @@ Item do SICF/Encomenda
 ```
 
 ### Arquivos Impactados (estimativa)
-- `server.ts` — Novo endpoint `/api/pedidos-whatsapp` (CRUD)
-- `server/database.ts` — Tabela `pedidos_whatsapp`
+- `server.ts` — Novos endpoints CRUD `/api/pedidos-whatsapp`, `/api/whatsapp-rules` + integração regra lab no optimize
+- `server/database.ts` — Tabelas `pedidos_whatsapp`, `whatsapp_rules` + funções CRUD
+- `src/types.ts` — Tipos `WhatsAppRule` (expandido com `tipoFiltro`), `WhatsAppOrder`, `WhatsAppOrderItem`
 - `src/App.tsx` — Nova aba "Pedidos WhatsApp"
 - `src/components/` — Novo componente `WhatsAppOrdersView.tsx`
 - `src/components/ConfigurationPanel.tsx` — Regras de lab com filtro tipo
 - `src/components/SwapsTable.tsx` — Integração regra lab no pré-pedido
-- `src/types.ts` — Tipo `WhatsAppRule` atualizado com `tipoFiltro`
+
+---
+
+## 4.4. Sessão 2026-08-21 — Backend WhatsApp Implementado
+
+### O que foi implementado
+1. **Tabelas Turso** (`server/database.ts`):
+   - `pedidos_whatsapp` — id, data_pedido, fornecedor, telefone, itens (JSON), status, observacao, origem, cnpj
+   - `whatsapp_rules` — id, nome_regra, termo_filtro, nome_representante, telefone, tipo_filtro, ocultar_precos, ativo, cnpj
+
+2. **Funções CRUD** (`server/database.ts`):
+   - `savePedidoWhatsApp()`, `getPedidosWhatsApp()`, `updatePedidoWhatsAppStatus()`, `deletePedidoWhatsApp()`
+   - `saveWhatsAppRule()`, `getWhatsAppRules()`, `deleteWhatsAppRule()`
+
+3. **Endpoints** (`server.ts`):
+   - `POST /api/pedidos-whatsapp` — Salvar pedido WhatsApp
+   - `POST /api/pedidos-whatsapp/list` — Listar pedidos por CNPJ
+   - `PUT /api/pedidos-whatsapp/:id/status` — Atualizar status (Pendente/Confirmado/Recebido/Cancelado)
+   - `DELETE /api/pedidos-whatsapp/:id` — Deletar pedido
+   - `POST /api/whatsapp-rules` — Criar regra de laboratório
+   - `POST /api/whatsapp-rules/list` — Listar regras ativas
+   - `DELETE /api/whatsapp-rules/:id` — Deletar regra
+
+4. **Integração regra lab no optimize** (`server.ts`):
+   - No início de `/api/optimize`, carrega regras ativas para o CNPJ
+   - Para cada item, verifica se `laboratorio` bate com `termoFiltro` da regra
+   - Filtra por `tipoFiltro`: `genericos` (só genéricos), `eticos` (só referência), `todos`
+   - Itens匹配ados são marcados com `motivoAcao: "whatsapp_regra_lab"` e vão direto pro report sem consulta SmartPed
+   - EANs desses itens são removidos do `eansToQuote` (economiza chamadas API)
+
+5. **Tipos** (`src/types.ts`):
+   - `WhatsAppRule` expandido com `tipoFiltro: "genericos" | "eticos" | "todos"`
+   - `WhatsAppOrder` e `WhatsAppOrderItem` adicionados
+   - Campo `whatsappDestino` (telefone) adicionado ao `SwapReportItem`
+
+### O que falta (próxima sessão)
+- **Frontend**: Aba "Pedidos WhatsApp", componente `WhatsAppOrdersView.tsx`
+- **Frontend**: ConfigurationPanel para gerenciar regras de lab
+- **Frontend**: SwapsTable mostrar badge WhatsApp para itens com `motivoAcao: "whatsapp_regra_lab"`
+- **Lista de preço**: Integração compete com SmartPed (injetar itens da lista como alternativas no motor)
+- **Automação importação**: Importar listas WhatsApp automaticamente
+
+### Mapeamento de Nomenclatura (Banco ↔ API ↔ Frontend)
+
+**Regra:** Banco usa snake_case, API normaliza para camelCase antes de retornar, frontend usa camelCase.
+
+| Campo no Banco (snake_case) | Endpoint API (camelCase) | Tipo |
+|-----------------------------|--------------------------|------|
+| `data_pedido` | `dataPedido` | string (ISO) |
+| `nome_regra` | `nomeRegra` | string |
+| `termo_filtro` | `termoFiltro` | string |
+| `nome_representante` | `nomeRepresentante` | string |
+| `telefone` | `telefone` | string |
+| `tipo_filtro` | `tipoFiltro` | "genericos" \| "eticos" \| "todos" |
+| `ocultar_precos` | `ocultarPrecos` | boolean |
+| `ativo` | `ativo` | boolean |
+
+**Endpoints de leitura normalizam:** `/api/pedidos-whatsapp/list` e `/api/whatsapp-rules/list` fazem `rows.map(r => ({...}))` convertendo snake_case → camelCase.
+
+**Endpoints de escrita recebem camelCase** do frontend e convertem para snake_case no SQL.
+
+**Dentro do optimize** (`/api/optimize`), as regras vêm direto do banco (snake_case) — o código usa fallback `rule.termo_filtro || rule.termoFiltro` para tolerância.
+
+### Purge
+- `pedidos_whatsapp` adicionado ao `purgeOldData()` (6 meses)
+
+## 4.5. Sessão 2026-08-21 — External Suppliers: Migrado para Turso com Validade
+
+### Contexto
+Fornecedores WhatsApp (tabelas de preços) estavam salvos apenas em `localStorage` — perdiam-se ao limpar cache ou trocar dispositivo. Agora persistem no Turso com campo de validade.
+
+### O que foi implementado
+
+1. **Tabela Turso `external_suppliers`** (`server/database.ts`):
+   - `id` TEXT PK, `name`, `raw_text`, `validade` (YYYY-MM-DD), `products` (JSON), `cnpj`, `created_at`, `updated_at`
+   - Index em `cnpj` e `validade`
+
+2. **Funções CRUD** (`server/database.ts`):
+   - `saveExternalSupplier()`, `getExternalSuppliers()`, `deleteExternalSupplier()`
+
+3. **Endpoints** (`server.ts`):
+   - `POST /api/external-suppliers` — Salvar fornecedor
+   - `POST /api/external-suppliers/list` — Listar por CNPJ
+   - `DELETE /api/external-suppliers/:id` — Deletar
+
+4. **Frontend migrado** (`useOptimizerConfig.ts`):
+   - `externalSuppliers` carrega do Turso via API (não mais localStorage)
+   - `handleUpdateExternalSuppliers` salva no Turso a cada alteração
+   - `externalSuppliersLoaded` controla o estado de carregamento
+
+5. **Campo validade** (`ConfigurationPanel.tsx`):
+   - Input `type="date"` no card de cada fornecedor expandido
+   - Badge visual: 🟢 `ATIVA` (com preço + não expirada), 🟡 `EXPIRADA` (validade < hoje), ⚪ `SEM PREÇO` (só itens sem preço)
+   - Aviso em texto quando expirada: "Proposta expirada — preços não serão comparados"
+
+6. **Produtos sem preço** (`ExternalProduct.price: number | null`):
+   - `price: null` = "fornecedor trabalha com este item, mas não tem preço"
+   - Badge visual: `só item` (cinza, itálico)
+   - Esses itens **nunca somem** — persistem no Turso para referência futura
+   - Campo de preço opcional (placeholder "opcional")
+
+### Regra de Validade
+- A validade é **por fornecedor** (cada tabela de preços tem sua data)
+- Quando expirada (`validade < hoje`): preços não são comparados no motor de trocas
+- Itens sem preço (`price: null`) são mantidos independente da validade
+- **Purge automático:** `external_suppliers` incluído no `purgeOldData()` (6 meses)
+- **Futuro (chatbot):** chatbot irá popular listas automaticamente com validade diária
+
+### Nomenclatura (Banco ↔ API ↔ Frontend)
+- Banco: `raw_text`, `validade`, `products` (snake_case/JSON)
+- API: `rawText`, `validade`, `products` (camelCase, JSON parseado)
+- Frontend: `rawText`, `validade`, `products` (camelCase, `ExternalSupplier[]`)
+
+---
+
+## 4.6. Sessão 2026-08-21 — Confirmação Automática de Encomendas Pós-Faturamento + Verificação de Payload
+
+### Contexto
+1. **Encomendas:** Após faturar um lote que contém itens de encomenda (origem="encomenda"), o status da encomenda no sistema externo não era atualizado para "Encomendado". O endpoint `confirmar-pedido` existia mas não era chamado automaticamente.
+2. **Verificação de Payload:** Outro sistema de IA afirmou incorretamente que itens com `"disabled": false` no JSON seriam faturados mesmo se desmarcados na tela. Análise confirmou que o mecanismo correto é `disabledItemCodes` (Set de `codInterno`) no frontend, que filtra ANTES de gerar o JSON.
+
+### O que foi implementado
+
+1. **Backend (`server.ts:4464-4485`):** Após o `saveOrder` pós-faturamento, o código:
+   - Filtra itens com `origem === "encomenda"` e `idEncomenda` preenchido
+   - Deduplica por `idEncomenda` (cada encomenda = 1 chamada)
+   - Chama `POST /api/integracao/encomendas/confirmar-pedido` no sistema externo
+   - Payload: `{ itens: [{ id, fornecedor, dataPrevisao }] }`
+   - Execução asíncrona (não bloqueia a resposta ao frontend)
+   - Erros são logados no console mas não afetam o faturamento
+
+2. **Frontend (`src/App.tsx:861`):** TODO removido, substituído por comentário indicando que a confirmação é feita pelo backend.
+
+### Verificação de Payload (esta sessão)
+
+**Payload analisado:** `faturamento_payload_Todas_as_Distribuidoras (5).json` (31 itens)
+
+**Resultado:**
+- ✅ Todos os 31 itens têm `codProdutoDist` e `codProduto` preenchidos
+- ✅ Todos os `codDist` estão corretos (2=Pan/Santa, 4=Profarma, 59=ANB, 60=GAM)
+- ✅ Todos os preços são > 0
+- ✅ Ruptura Rosuvastatina (Pharlab R$ 8,01 via ANB) correta
+- ✅ Alerta Benegrip (R$ 301,80 vs ERP R$ 9,95) sinalizado
+- ✅ Maracugina PI Noite (encomenda #56) incluída
+- ✅ 4 itens problemáticos (Metformina, Aciclovir, Puran T4, Cetoconazol) NÃO estão no payload
+
+**Bug de display identificado:** Alguns itens mostram `economiaUnit: 0` quando preço escolhido > original (ex: CODEX R$ 35,89→43,52). Bug de cálculo frontend, não afeta faturamento.
+
+**Mecanismo de exclusão correto:**
+- `disabledItemCodes` (Set) no frontend filtra itens antes de gerar JSON
+- Campo `"disabled"` no JSON é irrelevante para o backend
+- `useBilling.ts:51` filtra: `activeReport.filter(item => !disabledItemCodes.has(item.codInterno))`
+
+### Fluxo Completo Agora
+```
+Importar encomendas → Buscar ofertas → Modal de revisão → Confirmar importação
+    → Itens injetados no lote (origem="encomenda", idEncomenda)
+    → Otimização roda normalmente
+    → Faturamento envia à SmartPed
+    → Após saveOrder, backend chama confirmar-pedido
+    → Sistema externo atualiza status para "Encomendado"
+```
+
+### Arquivos Afetados
+- `server.ts` — Adicionado bloco de confirmação automática (linhas 4464-4485)
+- `src/App.tsx` — TODO removido (linha 861)
+
+### Resultado do Faturamento (esta sessão)
+- **Pedido SmartPed #224** — sucesso
+- **Protocolo:** SP-2026-0821-9459
+- **Valor:** R$ 901,22 | Economia: R$ -292,92 (negativa porque alguns itens foram para distribuidoras mais caras)
+- **31 itens** processados e enriquecidos
+- **Retorno SmartPed** — HTTP 200
+
+### Notas
+- A confirmação é por `idEncomenda` (não por item) — se uma encomenda tem vários itens, todos são confirmados juntos
+- Se o sistema externo estiver offline, o erro é logado mas não afeta o faturamento
+- `ENCOMENDAS_API_URL` e `ENCOMENDAS_API_KEY` devem estar configurados no `.env`

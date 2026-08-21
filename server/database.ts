@@ -199,6 +199,49 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_produtos_cache_dcb ON produtos_cache(dcb);
   CREATE INDEX IF NOT EXISTS idx_produtos_cache_molecula ON produtos_cache(molecula);
   CREATE INDEX IF NOT EXISTS idx_produtos_cache_update ON produtos_cache(ultima_atualizacao);
+  CREATE TABLE IF NOT EXISTS pedidos_whatsapp (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    data_pedido TEXT,
+    fornecedor TEXT,
+    telefone TEXT,
+    itens TEXT,
+    status TEXT DEFAULT 'Pendente',
+    observacao TEXT,
+    origem TEXT DEFAULT 'lista',
+    cnpj TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_pedidos_whatsapp_cnpj ON pedidos_whatsapp(cnpj);
+  CREATE INDEX IF NOT EXISTS idx_pedidos_whatsapp_status ON pedidos_whatsapp(status);
+  CREATE INDEX IF NOT EXISTS idx_pedidos_whatsapp_data ON pedidos_whatsapp(data_pedido);
+  CREATE TABLE IF NOT EXISTS whatsapp_rules (
+    id TEXT PRIMARY KEY,
+    nome_regra TEXT,
+    termo_filtro TEXT,
+    nome_representante TEXT,
+    telefone TEXT,
+    tipo_filtro TEXT DEFAULT 'todos',
+    ocultar_precos INTEGER DEFAULT 0,
+    ativo INTEGER DEFAULT 1,
+    cnpj TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_whatsapp_rules_cnpj ON whatsapp_rules(cnpj);
+
+  CREATE TABLE IF NOT EXISTS external_suppliers (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    raw_text TEXT,
+    validade TEXT,
+    products TEXT,
+    cnpj TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_external_suppliers_cnpj ON external_suppliers(cnpj);
+  CREATE INDEX IF NOT EXISTS idx_external_suppliers_validade ON external_suppliers(validade);
 `;
 
 export async function initTursoSchema() {
@@ -438,7 +481,9 @@ export async function purgeOldData() {
       { table: "order_items", dateCol: "created_at" },
       { table: "faturados", dateCol: "created_at" },
       { table: "itens_confirmados", dateCol: "created_at" },
-      { table: "itens_manuais", dateCol: "created_at" }
+      { table: "itens_manuais", dateCol: "created_at" },
+      { table: "pedidos_whatsapp", dateCol: "created_at" },
+      { table: "external_suppliers", dateCol: "created_at" }
     ];
     for (const { table, dateCol } of tables) {
       const sql = `DELETE FROM ${table} WHERE ${dateCol} < ?`;
@@ -625,6 +670,119 @@ export async function countEansFixos(): Promise<number> {
     if (USE_TURSO) { row = await d.get(sql); } else { row = d.prepare(sql).get(); }
     return row?.count || 0;
   } catch { return 0; }
+}
+
+// Pedidos WhatsApp
+export async function savePedidoWhatsApp(item: {
+  dataPedido: string; fornecedor: string; telefone?: string;
+  itens: any[]; status?: string; observacao?: string;
+  origem?: string; cnpj: string;
+}) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `INSERT INTO pedidos_whatsapp (data_pedido, fornecedor, telefone, itens, status, observacao, origem, cnpj, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`;
+    const args = [item.dataPedido, item.fornecedor, item.telefone || null, JSON.stringify(item.itens), item.status || "Pendente", item.observacao || null, item.origem || "lista", item.cnpj];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function getPedidosWhatsApp(cnpj: string, limit = 100) {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT * FROM pedidos_whatsapp WHERE cnpj = ? ORDER BY data_pedido DESC LIMIT ?`;
+    if (USE_TURSO) { return await d.all(sql, cnpj, limit); }
+    return d.prepare(sql).all(cnpj, limit);
+  } catch { return []; }
+}
+
+export async function updatePedidoWhatsAppStatus(id: number, status: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE pedidos_whatsapp SET status = ?, updated_at = datetime('now') WHERE id = ?`;
+    const args = [status, id];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function deletePedidoWhatsApp(id: number) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `DELETE FROM pedidos_whatsapp WHERE id = ?`;
+    if (USE_TURSO) { await d.run(sql, id); } else { d.prepare(sql).run(id); }
+  } catch {}
+}
+
+// WhatsApp Rules (regras de laboratório)
+export async function saveWhatsAppRule(rule: {
+  id: string; nomeRegra: string; termoFiltro: string;
+  nomeRepresentante?: string; telefone?: string;
+  tipoFiltro?: string; ocultarPrecos?: boolean; ativo?: boolean; cnpj: string;
+}) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `INSERT OR REPLACE INTO whatsapp_rules (id, nome_regra, termo_filtro, nome_representante, telefone, tipo_filtro, ocultar_precos, ativo, cnpj, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`;
+    const args = [rule.id, rule.nomeRegra, rule.termoFiltro, rule.nomeRepresentante || null, rule.telefone || null, rule.tipoFiltro || "todos", rule.ocultarPrecos ? 1 : 0, rule.ativo !== false ? 1 : 0, rule.cnpj];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function getWhatsAppRules(cnpj: string) {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT * FROM whatsapp_rules WHERE cnpj = ? AND ativo = 1 ORDER BY nome_regra`;
+    if (USE_TURSO) { return await d.all(sql, cnpj); }
+    return d.prepare(sql).all(cnpj);
+  } catch { return []; }
+}
+
+export async function deleteWhatsAppRule(id: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `DELETE FROM whatsapp_rules WHERE id = ?`;
+    if (USE_TURSO) { await d.run(sql, id); } else { d.prepare(sql).run(id); }
+  } catch {}
+}
+
+export async function saveExternalSupplier(supplier: {
+  id: string; name: string; rawText: string;
+  validade: string; products: string; cnpj: string;
+}) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `INSERT OR REPLACE INTO external_suppliers (id, name, raw_text, validade, products, cnpj, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`;
+    const args = [supplier.id, supplier.name, supplier.rawText, supplier.validade, supplier.products, supplier.cnpj];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function getExternalSuppliers(cnpj: string) {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT * FROM external_suppliers WHERE cnpj = ? ORDER BY name`;
+    if (USE_TURSO) { return await d.all(sql, cnpj); }
+    return d.prepare(sql).all(cnpj);
+  } catch { return []; }
+}
+
+export async function deleteExternalSupplier(id: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `DELETE FROM external_suppliers WHERE id = ?`;
+    if (USE_TURSO) { await d.run(sql, id); } else { d.prepare(sql).run(id); }
+  } catch {}
 }
 
 export function closeDb() {
