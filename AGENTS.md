@@ -65,7 +65,12 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 22. **ITENS CONFIRMADOS - CACHE TURSO + API:** O endpoint `/api/itens-confirmados-do-dia` deve consultar Turso primeiro (histórico) e depois API SmartPed (tempo real). Combinar resultados evitando duplicatas. Salvar no Turso apenas itens com Status === 3 (faturados).
 23. **PURGE AUTOMÁTICA 6 MESES:** Dados permanentes (`orders`, `order_items`, `faturados`, `itens_confirmados`, `itens_manuais`) têm purge automática após 6 meses. Nunca confiar em crescimento infinito do banco.
 24. **DEPLOY APENAS COM AUTORIZAÇÃO:** Nunca fazer deploy sem confirmação explícita do usuário. Sempre perguntar antes de executar `gcloud run deploy`.
-25. **CLASSIFICAÇÃO DE PRODUTOS — FONTE ÚNICA: FERRAMENTINHAS `grupo`:** A classificação do produto vem do campo `grupo` retornado pelo endpoint `/api/produtos/similares/{ean}` da Ferramentinhas. **NÃO usar** TipoItem da SmartPed como fonte primária (às vezes vem vazio ou incorreto). Valores do campo `grupo`:
+
+25. **PARADA OBRIGATÓRIA ANTES DE COMANDOS DESTRUTIVOS/IRREVERSÍVEIS:** Antes de executar qualquer comando que altere estado de produção ou seja irreversível (`gcloud run deploy`, `git push --force`, `DELETE`/`DROP` no banco, migrações destrutivas, `npm publish`, etc.), **SEMPRE** confirmar explicitamente com o usuário. Não assumir que "build passou = pode deployar". Aguardar "sim, deploy agora" ou equivalente.
+
+26. **PROIBIDO MATAR/INICIAR SERVIDOR LOCAL:** É **OBRIGAÇÃO DO USUÁRIO** iniciar e finalizar o servidor de desenvolvimento (`npm run dev`, `node`, etc.). O agente **NUNCA** deve executar `Stop-Process`, `kill`, `Get-Process | Stop-Process`, `npm run dev`, `npm run start` ou qualquer comando que mate ou inicie processos node. O agente pode ler logs de arquivos e sugerir comandos ao usuário, mas NUNCA executá-los. Exceção: o agente PODE matar processos APENAS se o usuário pedir explicitamente.
+
+27. **CLASSIFICAÇÃO DE PRODUTOS — FONTE ÚNICA: FERRAMENTINHAS `grupo`:** A classificação do produto vem do campo `grupo` retornado pelo endpoint `/api/produtos/similares/{ean}` da Ferramentinhas. **NÃO usar** TipoItem da SmartPed como fonte primária (às vezes vem vazio ou incorreto). Valores do campo `grupo`:
     - **"Genérico"** → Busca subs (só genéricos). Ruptura → pode similar, NÃO referência.
     - **"Similar"** → Sem subs. Ruptura → qualquer coisa com estoque.
     - **"Referência"** → Sem subs. Ruptura → qualquer coisa com estoque.
@@ -91,9 +96,9 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
     - SmartPed API: `NomeDist`, `CodDist`, `Pliquido`, `Preco`, `Estoque`, `Condicao`, `Prazo`, `Ean`, `Descricao` (PascalCase)
     - Ferramentinhas: `nom_produto`, `nom_laborat`, `vlr_custopersonalizado`, `vlr_venda_final`, `qtd_estoque`, `cod_dcb`, `grupo`, `classificacao`
     - **NUNCA misturar.** O backend normaliza de PascalCase (SmartPed) pra lowercase antes de retornar ao frontend.
-26. **PESQUISA EXTERNA ANTES DE DEBUGAR:** Quando um bug não tem causa óbvia no código (ex: funciona local mas não no Cloud), SEMPRE pesquisar em fonts externas (GitHub issues, StackOverflow, docs oficiais da plataforma, forums) antes de propor soluções. Evitar "inventar" soluções sem evidência externa. Registrar descobertas em `LLM_CONTEXT.md` (seção 4.21 ou similar).
+28. **PESQUISA EXTERNA ANTES DE DEBUGAR:** Quando um bug não tem causa óbvia no código (ex: funciona local mas não no Cloud), SEMPRE pesquisar em fonts externas (GitHub issues, StackOverflow, docs oficiais da plataforma, forums) antes de propor soluções. Evitar "inventar" soluções sem evidência externa. Registrar descobertas em `LLM_CONTEXT.md` (seção 4.21 ou similar).
 
-27. **MODAL ENCOMENDAS — PADRÃO IGUAL AO MODAL "+" (ADIÇÃO MANUAL):** O modal de importar encomendas deve seguir exatamente o padrão do modal de adição manual (botão "+"):
+29. **MODAL ENCOMENDAS — PADRÃO IGUAL AO MODAL "+" (ADIÇÃO MANUAL):** O modal de importar encomendas deve seguir exatamente o padrão do modal de adição manual (botão "+"):
     - Tabela horizontal: Checkbox | Produto&EAN | Cliente/Hora | Observação | Oferta(Dropdown) | Qtd
     - Dropdown com `<optgroup>`: 📦 Mesmo Produto | 🔄 Genéricos/Similares
     - Busca SEM filtro `tipos` (encomendas não filtram por [G,O])
@@ -103,17 +108,17 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
     - **`alternatives` leva TODAS as ofertas** (não apenas a selecionada) → ConditionSelector no pré-pedido permite trocar fornecedor/condição
     - Proteção: ConditionSelector e ObservationBell pulam itens `origem="encomenda" || "manual"`
 
-28. **PMC — APENAS SE API RETORNA, SEM FALLBACK:** PMC (Preço Máximo ao Consumidor) só aparece se a SmartPed retornar o campo. **NUNCA** calcular fallback `preco * 1.4`. Backend (`server.ts` `/api/search-products`) não calcula PMC — repassa `PMC` direto do JSON SmartPed. Frontend (`App.tsx`) normaliza `offer.PMC || offer.pmc` (case-sensitivity). Visual: fonte 11px bold, texto rosa, fundo rosa transparente (`bg-pink-100/60`). Campo `originalPmc`/`novoPmc` nas linhas do relatório vem do `useOptimizationResult.activeReport` via spread `...item`.
-29. **CASE-SENSITIVITY SMARTPED:** A API SmartPed retorna campos com maiúsculas/minúsculas inconsistentes (`PMC`/`pmc`, `Pmc`, `VlrPmc`). Sempre usar fallback: `field || field_lowercase || field_PascalCase`. Verificar em: `/api/search-products` (backend), `App.tsx` (frontend), `useManualSearch.ts` (normalização).
-30. **CONTRATO DE CAMPOS: BACKEND → FRONTEND:** O backend normaliza os campos da SmartPed antes de retornar ao frontend. **Campos obrigatórios no retorno de qualquer endpoint de busca:**
+30. **PMC — APENAS SE API RETORNA, SEM FALLBACK:** PMC (Preço Máximo ao Consumidor) só aparece se a SmartPed retornar o campo. **NUNCA** calcular fallback `preco * 1.4`. Backend (`server.ts` `/api/search-products`) não calcula PMC — repassa `PMC` direto do JSON SmartPed. Frontend (`App.tsx`) normaliza `offer.PMC || offer.pmc` (case-sensitivity). Visual: fonte 11px bold, texto rosa, fundo rosa transparente (`bg-pink-100/60`). Campo `originalPmc`/`novoPmc` nas linhas do relatório vem do `useOptimizationResult.activeReport` via spread `...item`.
+31. **CASE-SENSITIVITY SMARTPED:** A API SmartPed retorna campos com maiúsculas/minúsculas inconsistentes (`PMC`/`pmc`, `Pmc`, `VlrPmc`). Sempre usar fallback: `field || field_lowercase || field_PascalCase`. Verificar em: `/api/search-products` (backend), `App.tsx` (frontend), `useManualSearch.ts` (normalização).
+32. **CONTRATO DE CAMPOS: BACKEND → FRONTEND:** O backend normaliza os campos da SmartPed antes de retornar ao frontend. **Campos obrigatórios no retorno de qualquer endpoint de busca:**
     - `distribuidora` (não `NomeDist`), `codDist` (não `CodDist`)
     - `precoLiquido` (não `Pliquido`), `preco` (não `Preco`)
     - `estoque` (não `Estoque`), `condicao` (não `Condicao`), `prazo` (não `Prazo`)
     - `ean` (não `Ean`), `descricao`, `laboratorio`
     - Frontend (App.tsx, ConditionSelector, SwapsTable) SEMPRE usa lowercase. Se o backend retornar PascalCase, o preço aparece R$ 0.00.
-31. **VALIDAÇÃO DE NOMES DE DISTRIBUIDORA — SEMPRE USAR `isNotFoundName()`:** Nunca fazer checagem inline como `dist.includes("NÃO ENCONTRADOS")` ou `dist.startsWith("DISTRIBUIDOR")`. SEMPRE usar o helper `isNotFoundName(name)` (server.ts, linha ~68) que trata automaticamente: UTF-8, mojibake (`nÃ£`), sem acento, "Sem Estoque" e "Distribuidor*". O mojibake ocorre porque o arquivo fonte pode ter encoding Latin-1 misturado com UTF-8.
+33. **VALIDAÇÃO DE NOMES DE DISTRIBUIDORA — SEMPRE USAR `isNotFoundName()`:** Nunca fazer checagem inline como `dist.includes("NÃO ENCONTRADOS")` ou `dist.startsWith("DISTRIBUIDOR")`. SEMPRE usar o helper `isNotFoundName(name)` (server.ts, linha ~68) que trata automaticamente: UTF-8, mojibake (`nÃ£`), sem acento, "Sem Estoque" e "Distribuidor*". O mojibake ocorre porque o arquivo fonte pode ter encoding Latin-1 misturado com UTF-8.
 
-32. **MEMORY BANK — AUTO-ATUALIZAÇÃO OBRIGATÓRIA:** Sempre que o usuário digitar o gatilho EXATO `[SAVE]`, o agente tem a OBRIGAÇÃO ABSOLUTA de interromper a análise e invocar imediatamente a ferramenta `write` ou `edit` para resumir e atualizar o arquivo `memoryBank/activeContext.md`. É EXPRESSAMENTE PROIBIDO gerar a frase de confirmação "Estado salvo com sucesso" ANTES que o log do sistema confirme que a gravação física no HD foi concluída. Ler `memoryBank/` no início de cada sessão para retomar contexto.
+34. **MEMORY BANK — AUTO-ATUALIZAÇÃO OBRIGATÓRIA:** Sempre que o usuário digitar o gatilho EXATO `[SAVE]`, o agente tem a OBRIGAÇÃO ABSOLUTA de interromper a análise e invocar imediatamente a ferramenta `write` ou `edit` para resumir e atualizar o arquivo `memoryBank/activeContext.md`. É EXPRESSAMENTE PROIBIDO gerar a frase de confirmação "Estado salvo com sucesso" ANTES que o log do sistema confirme que a gravação física no HD foi concluída. Ler `memoryBank/` no início de cada sessão para retomar contexto.
 
 33. **PROIBIDO MATAR OU INICIAR PROCESSOS `npm run dev` / `node`:** É OBRIGAÇÃO DO USUÁRIO iniciar e finalizar o servidor de desenvolvimento. O agente NUNCA deve executar `Stop-Process`, `kill`, `Get-Process | Stop-Process`, `npm run dev`, `npm run start` ou qualquer comando que mate ou inicie processos node. O agente pode ler logs de arquivos e sugerir comandos ao usuário, mas NUNCA executá-los. Exceção: o agente PODE matar processos APENAS se o usuário pedir explicitamente.
 
@@ -142,7 +147,7 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 | 2 | `resolveDistName()` | `server.ts:75` | Todas as linhas que usam `distribuidora` no relatório, `DISTRIBUIDORAS_DYNAMIC_CACHE`, `DISTRIBUIDORAS_MAP` |
 | 3 | `fetchSimilarGenericsBatch()` | `server/smartped-api.ts` | `server.ts` optimize flow (linha ~830), fallback ruptura (linha ~2330) |
 | 4 | `codProdutoDist` mapping | `server.ts` (alternatives linha ~1665, ~1719, faturamento linha ~3323) | Blindagem 1 (linha ~3233), payload SmartPed (linha ~3324) |
-| 5 | ` TipoItem` classification | `server/parsers.ts` + `AGENTS.md #25` | `server.ts` isGeneric (linha ~1911), `tiposAceitos` (linha ~754), `RUPTURA-REGEX` check (linha ~2053), swap-engine filtros |
+| 5 | ` TipoItem` classification | `server/parsers.ts` + `AGENTS.md #27` | `server.ts` isGeneric (linha ~1911), `tiposAceitos` (linha ~754), `RUPTURA-REGEX` check (linha ~2053), swap-engine filtros |
 | 6 | `isNotFoundName()` | `server.ts:68` | TODAS as filtragens de distribuidora, `resolveDistName`, `allAlternativesForRupture`, blindagem |
 | 7 | `disabledDistSet` | `server.ts:750` | batch encomendas, optimize flow (linha ~1777, ~1795, ~2268), `todasCondicoesOriginal` (linha ~2404) |
 | 8 | `cleanCodProduto()` | `server/parsers.ts` | `server.ts` todas as linhas que setam `codProduto` (linhas ~2302, ~2456, ~2720, ~2886, etc.) |
