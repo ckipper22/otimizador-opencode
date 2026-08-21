@@ -378,10 +378,12 @@ O cache de 5min para condições comerciais é um "bônus" — o valor real do T
     - **Problema:** Modal de busca manual (botão "+") e ConditionSelector não separaram ofertas do mesmo produto de genéricos/similares. Regra #27 do AGENTS.md define `<optgroup>` mas não está funcionando na prática.
     - **Status:** **PENDENTE** — UX improvedment.
 
-39. **Performance — Tela lenta durante SICF + encomendas simultâneos (2026-08-18):**
+39. **Performance — Tela lenta durante SICF + encomendas simultâneos (2026-08-18/21):**
     - **Problema:** Processar SICF (otimização em lote) e importar encomendas ao mesmo tempo causa lentidão. Muitas chamadas simultâneas à API SmartPed.
-    - **Causa provável:** Batch de 40 EANs + chamadas extras (RUPTURA-REGEX, TARGET-EAN-PRE) + encomendas = requests concorrentes pesados.
-    - **Status:** **PENDENTE** — performance improvement.
+    - **Causa raiz:** `/api/encomendas/buscar-ofertas-batch` usava `Promise.all(encomendas.map(...))` — N encomendas = 2N chamadas simultâneas à SmartPed. Zero throttling.
+    - **Correção:** Portado padrão `CONCURRENCY=1, BATCH_DELAY_MS=200` (já usado em `/api/optimize`) para o endpoint de encomendas. Agora processa 1 encomenda por vez com 200ms de intervalo.
+    - **Arquivo:** `server.ts:311-538`
+    - **Status:** RESOLVIDO
 
 40. **Itens imaginários no JSON de envio — Fornecedor externo (codDist=9999) (2026-08-18):**
     - **Problema:** Itens de fornecedor externo (codDist=9999, "Pedido via WhatsApp") são criados com `CodProduto: ""` e `CodProdutoDist: ""` (server.ts:2536-2550). Blindagem 1 pula para `codDist===9999` (server.ts:3138). SmartPed recebe `CodProduto: "0"` e `CodProdutoDist: "0"`.
@@ -863,3 +865,99 @@ Temos **dois sistemas separados** que se integram:
 - **Token SmartPed** circula em: headers de API, cache, `config.ts` via `.env`
 - **Mascaramento obrigatório** em logs: `maskCnpj(cnpj)` → `13.408.443/0001-***`
 - **Retenção:** Cache tem purga automática (10 min); dados permanentes têm purge de 6 meses (a cada 24h)
+
+---
+
+## 11. Pedidos WhatsApp — Requisitos de Design (Sessão 2026-08-21)
+
+### Visão Geral
+Integrar os fluxos WhatsApp (listas de preço + regras por laboratório) ao pré-pedido existente, com nova aba "Pedidos WhatsApp" para rastreabilidade. **Sem código ainda — apenas design.**
+
+### Duas Fontes WhatsApp
+
+| Fonte | Comportamento | Prioridade |
+|-------|---------------|------------|
+| **Regra de Laboratório** | Filtro por lab + tipo (genéricos/éticos/todos). **SEM preço, SEM comparação.** Vai direto pro WhatsApp | **MÁXIMA** — sobrepõe tudo |
+| **Lista de Preço** | Compete com SmartPed e outras listas. Preço calculado via `Preco_SmartPed × (1 - desconto%)` | Normal — entra no motor de trocas |
+
+### Hierarquia de Prioridade
+```
+1. REGRA DE LABORATÓRIO (prioridade máxima)
+   → Sem preço, sem comparação, vai direto pro WhatsApp
+   → Filtro: genéricos / éticos / todos (configurável por regra)
+
+2. LISTA DE PREÇO (compete com SmartPed)
+   → Preço líquido direto → usa
+   → % desconto → Preco_SmartPed × (1 - desconto/100)
+   → Sem preço → "Solicitar preço" (aparece no botão +)
+   → Item sem CMED/SmartPed → descarta
+
+3. SMARTPED (baseline — sempre competidor)
+```
+
+### Cálculo de Preço com % Desconto
+- Base: campo `Preco` da SmartPed (extraído por `extractTablePrice()` em `server/parsers.ts:133`)
+- Fórmula: `precoLiquido = Preco × (1 - desconto/100)`
+- Se `Preco = 0` ou item não encontrado na SmartPed → descarta item
+
+### Classificação de Produto (Genérico/Referência/Similar)
+- Sistema descobre pela descrição se é genérico ou não
+- Usa `resolveCategoria()` em `server/parsers.ts` como fonte
+- SmartPed TipoItem é fallback quando Ferramentinhas não tem o produto
+
+### Itens Sem Preço
+- Aparecem no botão "+" indicando "fornecedor trabalha com este item"
+- Complemento: "Solicitar preço via WhatsApp"
+- Útil para descobrir quais fornecedores trabalham com determinado item
+
+### Tabela `pedidos_whatsapp` (Turso)
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `id` | INTEGER PK | Auto-increment |
+| `data_pedido` | TEXT | Timestamp do envio (ISO) |
+| `fornecedor` | TEXT | Nome do fornecedor/regra |
+| `telefone` | TEXT | Número WhatsApp |
+| `itens` | TEXT | JSON com lista de itens |
+| `status` | TEXT | Pendente/Confirmado/Recebido/Cancelado |
+| `observacao` | TEXT | Nota do comprador |
+| `origem` | TEXT | "lista" ou "regra_lab" |
+| `cnpj` | TEXT | Farmácia do usuário |
+
+### Nova Aba "Pedidos WhatsApp"
+- Aba separada no sistema (junto a Production, Homologation, Daily Items)
+- Lista todos os pedidos enviados via WhatsApp
+- Mostra: data, fornecedor, quantidade de itens, status
+- Permite marcar status (Pendente → Confirmado → Recebido)
+
+### Pontos Pendentes (futuro)
+- **Pedido mínimo** — quando tiver essa informação dos fornecedores
+- **Automação importação** — importar listas automaticamente de mensagens WhatsApp
+- **Concorrência entre fornecedores WhatsApp** — quando múltiplos fornecedores têm o mesmo item
+
+### Fluxo de Decisão (Resumo Visual)
+```
+Item do SICF/Encomenda
+  │
+  ├─ Existe regra de laboratório para este lab?
+  │   ├─ SIM → Item bate com filtro (genérico/ético/todo)?
+  │   │   ├─ SIM → Vai direto pro WhatsApp (sem preço, sem comparação)
+  │   │   └─ NÃO → Continua para lista/SmartPed
+  │   └─ NÃO → Continua
+  │
+  ├─ Existe lista de preço com este item?
+  │   ├─ SIM (com preço) → Compete com SmartPed no motor de trocas
+  │   ├─ SIM (só % desconto) → Calcula: Preco_SmartPed × (1 - desconto%)
+  │   └─ SIM (sem preço) → "Solicitar preço" no botão +
+  │
+  └─ SmartPed (baseline)
+      └─ Compete normalmente
+```
+
+### Arquivos Impactados (estimativa)
+- `server.ts` — Novo endpoint `/api/pedidos-whatsapp` (CRUD)
+- `server/database.ts` — Tabela `pedidos_whatsapp`
+- `src/App.tsx` — Nova aba "Pedidos WhatsApp"
+- `src/components/` — Novo componente `WhatsAppOrdersView.tsx`
+- `src/components/ConfigurationPanel.tsx` — Regras de lab com filtro tipo
+- `src/components/SwapsTable.tsx` — Integração regra lab no pré-pedido
+- `src/types.ts` — Tipo `WhatsAppRule` atualizado com `tipoFiltro`

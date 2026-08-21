@@ -58,6 +58,10 @@ function getLabBadge(labName: string) {
   }
 }
 
+function getLabAbbrev(labName: string): string {
+  return (labName || "").toUpperCase().trim() || "GEN";
+}
+
 interface SwapsTableProps {
   report: SwapReportItem[];
   rawReport?: SwapReportItem[];
@@ -487,7 +491,7 @@ export default function SwapsTable({
                 Avalie as trocas recomendadas pelo motor inteligente
               </h3>
               <p className="text-[11px] text-gray-600 font-semibold uppercase mt-0.5">
-                Escolha quais substituições de medicamentos você aceita para obter descontos. Os preços e distribuidores são atualizados em tempo real.
+                Escolha quais trocas aceitar para obter descontos. Preços em tempo real.
               </p>
             </div>
             <div className="text-left sm:text-right shrink-0">
@@ -511,8 +515,8 @@ export default function SwapsTable({
                 <tr className="bg-[#141414] text-[#E4E3E0] uppercase tracking-wider text-[9px] font-bold">
                   <th className="py-2.5 px-3 border-r border-white/10 text-center w-28">Status</th>
                   <th className="py-2.5 px-3 border-r border-white/10 w-16 text-center">Cód</th>
-                  <th className="py-2.5 px-3 border-r border-white/10 min-w-[220px]">De (Produto Original)</th>
-                  <th className="py-2.5 px-3 border-r border-white/10 min-w-[220px]">Para (Substituto Recomendado)</th>
+                  <th className="py-2.5 px-3 border-r border-white/10 min-w-[260px]">De (Produto Original)</th>
+                  <th className="py-2.5 px-3 border-r border-white/10 min-w-[260px]">Para (Substituto Recomendado)</th>
                   <th className="py-2.5 px-3 border-r border-white/10 text-center w-14">Qtd</th>
                   <th className="py-2.5 px-3 border-r border-white/10 text-right w-24">Economia Unit.</th>
                   <th className="py-2.5 px-3 border-r border-white/10 text-right w-24">Economia Total</th>
@@ -556,7 +560,17 @@ export default function SwapsTable({
                       {/* Original Product */}
                       <td className={`py-2.5 px-3 border-r border-[#141414]/10 font-bold ${item.isRupturaSubstitution ? 'bg-red-50' : 'text-gray-700'}`}>
                         <div>
-                          <p className={`line-clamp-1 ${item.isRupturaSubstitution ? 'text-red-900 font-black' : ''}`}>{item.isRupturaSubstitution ? item.novaDescricao : item.originalDescricao}</p>
+                          <p className={`line-clamp-2 ${item.isRupturaSubstitution ? 'text-red-900 font-black' : ''}`}>
+                            {item.isRupturaSubstitution ? item.novaDescricao : item.originalDescricao}
+                            {((item.isRupturaSubstitution ? item.novoLaboratorio : item.originalLaboratorio) || "").trim() && (
+                              <>
+                                <span> - </span>
+                                <span className="font-normal text-gray-500">
+                                  {getLabAbbrev(item.isRupturaSubstitution ? item.novoLaboratorio : item.originalLaboratorio)}
+                                </span>
+                              </>
+                            )}
+                          </p>
                           <div className="text-[10px] text-gray-400 mt-0.5 font-normal flex flex-wrap items-center">
                             EAN: {item.isRupturaSubstitution ? item.novoEan : item.originalEan} <EanEyeButton ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} descricao={item.isRupturaSubstitution ? item.novaDescricao : item.originalDescricao} laboratorio={item.isRupturaSubstitution ? item.novoLaboratorio : item.originalLaboratorio} qtd={item.qtd || 1} />
                             {item.alternatives && item.alternatives.length > 0 && (
@@ -585,7 +599,7 @@ export default function SwapsTable({
                                 <AlertTriangle className="w-3.5 h-3.5" />
                               </button>
                             )}
-                            <span className="mx-1">|</span> Lab: <span className="truncate max-w-[120px] ml-1 px-1.5 py-0.5 bg-gray-200 text-gray-800 font-bold rounded-sm uppercase tracking-wider">{item.isRupturaSubstitution ? (item.novoLaboratorio || "GENÉRICO") : (item.originalLaboratorio || "GENÉRICO")}</span> <span className="mx-1">|</span> Unit: {formatCurrency(item.isRupturaSubstitution ? item.novoPreco : item.originalPreco)}
+                            <span className="mx-1">|</span> Unit: {formatCurrency(item.isRupturaSubstitution ? item.novoPreco : item.originalPreco)}
                           </div>
                           {item.isRupturaSubstitution && item.originalRupturaEan && (
                             <div className="mt-1.5 p-2 bg-yellow-50 border border-yellow-400 rounded-sm">
@@ -606,8 +620,16 @@ export default function SwapsTable({
                       {/* Replacement Product */}
                       <td className={`py-2.5 px-3 border-r border-[#141414]/10 font-bold ${item.isRupturaSubstitution ? 'bg-red-50' : ''}`}>
                         <div>
-                          <p className={`line-clamp-1 ${item.isRupturaSubstitution ? 'text-red-900 font-black' : isAccepted ? "text-emerald-950" : "text-gray-500 line-through font-normal"}`}>
+                          <p className={`line-clamp-2 ${item.isRupturaSubstitution ? 'text-red-900 font-black' : isAccepted ? "text-emerald-950" : "text-gray-500 line-through font-normal"}`}>
                             {item.novaDescricao}
+                            {((item.novoLaboratorio || item.originalLaboratorio) || "").trim() && (
+                              <>
+                                <span> - </span>
+                                <span className="font-normal text-gray-500">
+                                  {getLabAbbrev(item.novoLaboratorio || item.originalLaboratorio || "GENÉRICO")}
+                                </span>
+                              </>
+                            )}
                           </p>
                           {item.qtdMin && item.qtdMin > 0 && (
                             <span className="inline-block text-[9px] font-black text-yellow-800 bg-yellow-200 border border-yellow-400 px-1.5 py-0.5 rounded-sm mt-0.5">
@@ -629,7 +651,7 @@ export default function SwapsTable({
                                 <Layers className="w-3.5 h-3.5" />
                               </button>
                             )}
-                            <span className="mx-1">|</span> Lab: <span className="truncate max-w-[120px] ml-1 px-1.5 py-0.5 bg-blue-100 text-blue-900 font-bold rounded-sm uppercase tracking-wider">{item.novoLaboratorio || item.originalLaboratorio || "GENÉRICO"}</span> <span className="mx-1">|</span> Unit: <span className={item.isRupturaSubstitution ? "text-red-700 font-bold ml-1" : isAccepted ? "text-emerald-700 font-bold ml-1" : "text-gray-400 ml-1"}>{formatCurrency(item.novoPreco)}</span>
+                            <span className="mx-1">|</span> Unit: <span className={item.isRupturaSubstitution ? "text-red-700 font-bold ml-1" : isAccepted ? "text-emerald-700 font-bold ml-1" : "text-gray-400 ml-1"}>{formatCurrency(item.novoPreco)}</span>
                           </div>
                           {item.isRupturaSubstitution ? (
                             <div className="mt-1 flex items-start gap-1 text-[9.5px] text-red-700 bg-red-100 p-1.5 rounded-sm border border-red-400 font-bold">
@@ -1468,7 +1490,7 @@ export default function SwapsTable({
                         </div>
                       </div>
                     )}
-                    <table className="w-full text-left border-collapse font-mono text-xs">
+<table className="w-full text-left border-collapse font-mono text-xs table-fixed">
                       <thead>
                         <tr className={`uppercase tracking-wider text-[9px] font-bold border-b ${tableHeaderBg}`}>
                           <th className="py-2.5 px-3 text-center w-12 border-r border-[#141414]/15">OK</th>

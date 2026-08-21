@@ -308,8 +308,13 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
 
     log(`Iniciando busca batch para ${encomendas.length} encomendas...`);
 
-    // Processa todas as encomendas em paralelo
-    const results = await Promise.all(encomendas.map(async (enc: any, idx: number) => {
+    // Processa encomendas SEQUENCIALMENTE (1 por vez) para evitar rate limit da SmartPed
+    const ENCOMENDA_CONCURRENCY = 1;
+    const ENCOMENDA_DELAY_MS = 200;
+    const results: any[] = [];
+    for (let g = 0; g < encomendas.length; g += ENCOMENDA_CONCURRENCY) {
+      const group = encomendas.slice(g, g + ENCOMENDA_CONCURRENCY);
+      const batchResults = await Promise.all(group.map(async (enc: any, idx: number) => {
       const ean = enc.codigoBarras || enc.ean;
       const descricao = enc.item || enc.descricao || "";
       const quantidade = enc.quantidade || 1;
@@ -526,6 +531,11 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
         };
       }
     }));
+      results.push(...batchResults);
+      if (g + ENCOMENDA_CONCURRENCY < encomendas.length) {
+        await new Promise(r => setTimeout(r, ENCOMENDA_DELAY_MS));
+      }
+    }
 
     log(`Busca batch concluída. ${results.filter(r => r.temOfertas).length}/${results.length} com ofertas.`);
     res.json({ results, logs });
