@@ -2,6 +2,9 @@
 
 Este documento é o **índice de contexto** do projeto. Leia-o no início de qualquer sessão para entender o propósito, a stack e onde encontrar detalhes por domínio.
 
+> **⚠️ INSTRUÇÃO OBRIGATÓRIA PARA NOVAS SESSÕES:**
+> Ao iniciar uma nova sessão, **ALÉM** deste arquivo e do `AGENTS.md`, verifique se existem arquivos de plano em `docs/*-plan.md` ou `docs/*-reference.md`. Se existirem, **LEIA-OS TODOS** antes de começar qualquer tarefa. Eles contêm decisões de design, fluxos aprovados e detalhes técnicos das últimas sessões de planejamento. **NUNCA** implemente uma feature sem ler o plano correspondente.
+
 ## 1. Visão Geral e Objetivo do Sistema
 
 **O que o software faz:**
@@ -52,10 +55,27 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 
 ## 3. Mapa de Documentação por Domínio
 
+### Arquivos Principais (SEMPRE ler no início)
+
 | Arquivo | Conteúdo | Quando ler |
 |---------|----------|------------|
 | `LLM_CONTEXT.md` (este) | Visão geral + stack + índice | **SEMPRE no início da sessão** |
 | `AGENTS.md` | Regras permanentes de operação | **SEMPRE no início da sessão** |
+
+### Planos de Implementação (LER quando existirem)
+
+> **ATENÇÃO:** Se houver planos em `docs/*-plan.md` ou `docs/*-reference.md`, eles DEVEM ser lidos no início da sessão. Contêm decisões de design, fluxos aprovados e detalhes técnicos que NÃO devem ser reinventados.
+
+| Arquivo | Conteúdo | Quando ler |
+|---------|----------|------------|
+| `docs/promocoes-do-dia-plan.md` | Plano de Promoções do Dia (WhatsApp → análise → tela) | **SEMPRE que implementar esta feature** |
+| `docs/reval-api-reference.md` | Referência técnica da API Reval (login, endpoints, testes) | **SEMPRE que integrar Reval** |
+| `docs/external-suppliers-plan.md` | Plano geral de fornecedores externos (listas, WhatsApp, CSV) | **SEMPRE que trabalhar com fornecedores externos** |
+
+### Documentação Técnica (ler conforme necessidade)
+
+| Arquivo | Conteúdo | Quando ler |
+|---------|----------|------------|
 | `docs/architecture.md` | Mapeamento de arquivos, módulos backend, hooks frontend | Ao criar/modificar módulos |
 | `docs/business-rules.md` | Regras de negócio, fluxo de dados, algoritmo de otimização | Ao alterar lógica de negócio |
 | `docs/sensitive-points.md` | Zonas de perigo, débitos técnicos, ambiente de execução | Antes de tocar em código crítico |
@@ -69,7 +89,8 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 ## 4. Regras Rápidas (Resumo)
 
 1. Consultar `AGENTS.md` antes de qualquer ação.
-2. Nunca logar CNPJ/token em texto claro.
+2. **Ler planos em `docs/*-plan.md` e `docs/*-reference.md`** antes de implementar features.
+3. Nunca logar CNPJ/token em texto claro.
 3. Cache L1+L2 — nunca assumir "em memória".
 4. Ambos endpoints SmartPed (`Condicoes/Ean` + `Condicoes/Molecula`) em paralelo.
 5. Turso em Cloud Run (fallback better-sqlite3 local).
