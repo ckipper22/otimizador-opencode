@@ -1139,3 +1139,28 @@ Importar encomendas → Buscar ofertas → Modal de revisão → Confirmar impor
 - A confirmação é por `idEncomenda` (não por item) — se uma encomenda tem vários itens, todos são confirmados juntos
 - Se o sistema externo estiver offline, o erro é logado mas não afeta o faturamento
 - `ENCOMENDAS_API_URL` e `ENCOMENDAS_API_KEY` devem estar configurados no `.env`
+
+---
+
+## 4.7. Sessão 2026-08-21 — Fornecedores Externos (Planejamento)
+
+### Contexto
+Distribuidoras fora da SmartPed (ex: Reval) podem ser integradas via listas de preço importadas. O sistema já tem `external_suppliers` no Turso mas precisa de parser universal, mapeamento de colunas e integração com motor de trocas.
+
+### Conceito
+- **Fornecedor externo** = distribuidora não conectada à SmartPed
+- **Lista importada** = arquivo CSV/TXT/Excel com produtos e preços
+- **Lista WhatsApp** = texto colado com promoções avulsas
+- **Pedido mínimo** = valor mínimo de compra (informativo, não bloqueante)
+
+### Regra de Negócio
+- Fornecedor com preço válido e não expirado → compete com SmartPed no motor de trocas
+- Fornecedor sem preço → mostra no "+" como "solicitar preço" (não compete)
+- Pedido mínimo = aviso visual no pré-pedido, usuário decide
+- Merge inteligente: nova lista atualiza preços sem deletar itens ausentes
+
+### Documentação
+- Plano completo: `docs/external-suppliers-plan.md`
+- Referência técnica Reval: `docs/reval-api-reference.md`
+- **Promoções do Dia (PRIORIDADE):** `docs/promocoes-do-dia-plan.md`
+- Status: PLANEJAMENTO — aguardando aprovação para implementação
