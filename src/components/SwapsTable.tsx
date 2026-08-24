@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect } from "react";
 import { EanEyeButton } from "./EanEyeButton";
+import { EanPromoButton } from "./EanPromoButton";
 import { ObservationBell } from "./ObservationBell";
 import { 
   Search, 
@@ -573,7 +574,7 @@ export default function SwapsTable({
                             )}
                           </p>
                           <div className="text-[10px] text-gray-400 mt-0.5 font-normal flex flex-wrap items-center">
-                            EAN: {item.isRupturaSubstitution ? item.novoEan : item.originalEan} <EanEyeButton ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} descricao={item.isRupturaSubstitution ? item.novaDescricao : item.originalDescricao} laboratorio={item.isRupturaSubstitution ? item.novoLaboratorio : item.originalLaboratorio} qtd={item.qtd || 1} />
+                            EAN: {item.isRupturaSubstitution ? item.novoEan : item.originalEan} <EanEyeButton ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} descricao={item.isRupturaSubstitution ? item.novaDescricao : item.originalDescricao} laboratorio={item.isRupturaSubstitution ? item.novoLaboratorio : item.originalLaboratorio} qtd={item.qtd || 1} /><EanPromoButton ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} descricao={item.isRupturaSubstitution ? item.novaDescricao : item.originalDescricao} />
                             {item.alternatives && item.alternatives.length > 0 && (
                               <button
                                 onClick={(e) => {
@@ -638,7 +639,7 @@ export default function SwapsTable({
                             </span>
                           )}
                           <div className="text-[10px] text-gray-400 mt-0.5 font-normal flex flex-wrap items-center">
-                            EAN: {item.novoEan} <EanEyeButton ean={item.novoEan} descricao={item.novaDescricao} laboratorio={item.novoLaboratorio || item.originalLaboratorio} qtd={item.qtd || 1} />
+                            EAN: {item.novoEan} <EanEyeButton ean={item.novoEan} descricao={item.novaDescricao} laboratorio={item.novoLaboratorio || item.originalLaboratorio} qtd={item.qtd || 1} /><EanPromoButton ean={item.novoEan} descricao={item.novaDescricao} />
                             {item.alternatives && item.alternatives.length > 0 && (
                               <button
                                 onClick={(e) => {
@@ -1589,7 +1590,9 @@ export default function SwapsTable({
                                         </span>
                                         <div className="text-[10px] text-red-700 bg-red-50/70 px-2 py-1 border border-red-200 uppercase font-black flex items-center gap-1.5 w-fit rounded-none font-mono">
                                           <span>EAN ORIGINAL EM FALTA: {item.originalEan}</span>
-                                          <EanEyeButton ean={item.originalEan} descricao={item.originalDescricao} laboratorio={item.originalLaboratorio} />
+                                        <EanEyeButton ean={item.originalEan} descricao={item.originalDescricao} laboratorio={item.originalLaboratorio} />
+                                        <EanPromoButton ean={item.originalEan} descricao={item.originalDescricao} />
+                                          <EanPromoButton ean={item.originalEan} descricao={item.originalDescricao} />
                                         </div>
                                       </div>
                                     )}
@@ -1798,6 +1801,7 @@ export default function SwapsTable({
                                   <div className="flex items-center">
                                     {isDisregarded ? item.originalEan : item.novoEan}
                                     <EanEyeButton ean={isDisregarded ? item.originalEan : item.novoEan} descricao={isDisregarded ? item.originalDescricao : item.novaDescricao} laboratorio={isDisregarded ? item.originalLaboratorio : item.novoLaboratorio} />
+                                    <EanPromoButton ean={isDisregarded ? item.originalEan : item.novoEan} descricao={isDisregarded ? item.originalDescricao : item.novaDescricao} />
                                     {((item.alternatives && item.alternatives.length > 0) || item.distribuidora === "Sem Estoque" || item.distribuidora === "Não Encontrados") && (
                                       <button
                                         onClick={(e) => {
