@@ -237,6 +237,9 @@ const SCHEMA_SQL = `
     validade TEXT,
     products TEXT,
     cnpj TEXT,
+    dados_analise TEXT,
+    status_analise TEXT DEFAULT 'pendente',
+    analyzed_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   );
@@ -249,6 +252,17 @@ export async function initTursoSchema() {
   const d = getDb();
   if (!d) return;
   await d.exec(SCHEMA_SQL);
+
+  // Migracao: adicionar colunas novas se tabela ja existe sem elas
+  const MIGRATE_SQL = [
+    `ALTER TABLE external_suppliers ADD COLUMN dados_analise TEXT`,
+    `ALTER TABLE external_suppliers ADD COLUMN status_analise TEXT DEFAULT 'pendente'`,
+    `ALTER TABLE external_suppliers ADD COLUMN analyzed_at TEXT`,
+    `CREATE INDEX IF NOT EXISTS idx_external_suppliers_status ON external_suppliers(status_analise)`,
+  ];
+  for (const sql of MIGRATE_SQL) {
+    try { await d.exec(sql); } catch {} // ignora "duplicate column name" ou "duplicate index"
+  }
 }
 
 // Orders
@@ -783,6 +797,36 @@ export async function deleteExternalSupplier(id: string) {
     const sql = `DELETE FROM external_suppliers WHERE id = ?`;
     if (USE_TURSO) { await d.run(sql, id); } else { d.prepare(sql).run(id); }
   } catch {}
+}
+
+export async function updateSupplierAnalysis(id: string, dadosAnalise: any, status: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE external_suppliers SET dados_analise = ?, status_analise = ?, analyzed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`;
+    const args = [JSON.stringify(dadosAnalise), status, id];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function getSuppliersPendentes(cnpj: string) {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT * FROM external_suppliers WHERE cnpj = ? AND status_analise = 'pendente'`;
+    if (USE_TURSO) { return await d.all(sql, cnpj); }
+    return d.prepare(sql).all(cnpj);
+  } catch { return []; }
+}
+
+export async function getSuppliersAnalisados(cnpj: string) {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT * FROM external_suppliers WHERE cnpj = ? AND status_analise IN ('analisado', 'descartada')`;
+    if (USE_TURSO) { return await d.all(sql, cnpj); }
+    return d.prepare(sql).all(cnpj);
+  } catch { return []; }
 }
 
 export function closeDb() {

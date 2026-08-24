@@ -1107,9 +1107,13 @@ export default function SwapsTable({
                                 <span className={`ml-2 px-1.5 py-0.5 text-[8px] uppercase font-bold ${
                                   item.motivoAcao === "whatsapp_regra_lab"
                                     ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                                    : item.motivoAcao === "lista_preco"
+                                    ? "bg-violet-100 text-violet-800 border border-violet-300"
                                     : "bg-yellow-100 text-yellow-800"
                                 }`}>
-                                  {item.motivoAcao === "whatsapp_regra_lab" ? "📱 WhatsApp" : item.motivoAcao}
+                                  {item.motivoAcao === "whatsapp_regra_lab" ? "📱 WhatsApp" 
+                                    : item.motivoAcao === "lista_preco" ? `📋 Lista: ${item.fornecedorLista || item.distribuidora}` 
+                                    : item.motivoAcao}
                                 </span>
                               )}
                             </div>
@@ -1199,7 +1203,7 @@ export default function SwapsTable({
 
               const isExpanded = expandedGroups[group.name] ?? false;
               const billedStatus = billedGroups[group.name]?.status;
-              const isExternalManual = group.condicao === "MANUAL" || group.items.some(it => it.codDist === 9999);
+              const isExternalManual = group.condicao === "MANUAL" || group.items.some(it => it.codDist === 9999 || it.origem === "lista_preco" || it.motivoAcao === "lista_preco");
 
               if (billedStatus === "faturando") {
                 containerBg = "bg-yellow-50 border-yellow-900";
@@ -1923,9 +1927,13 @@ export default function SwapsTable({
                                       <div className={`text-[9px] uppercase font-bold font-sans p-1 border leading-tight ${
                                         item.motivoAcao === "whatsapp_regra_lab"
                                           ? "text-emerald-900 bg-emerald-50 border-emerald-300"
+                                          : item.motivoAcao === "lista_preco"
+                                          ? "text-violet-900 bg-violet-50 border-violet-300"
                                           : "text-[#141414] bg-[#DCDAD7] border-[#141414]/20"
                                       }`}>
-                                        {item.motivoAcao === "whatsapp_regra_lab" ? "📱 WhatsApp" : item.motivoAcao}
+                                        {item.motivoAcao === "whatsapp_regra_lab" ? "📱 WhatsApp" 
+                                          : item.motivoAcao === "lista_preco" ? `📋 Lista: ${item.fornecedorLista || item.distribuidora}` 
+                                          : item.motivoAcao}
                                       </div>
                                     )}
                                     <button

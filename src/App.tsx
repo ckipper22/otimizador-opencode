@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, Suspense } from "react";
-import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, ArrowDown, ChevronRight, XCircle, Copy, Lock, Mail, Eye, EyeOff, Settings, ArrowUp, GripVertical, ShoppingBag, Package, Loader2, Check, AlertCircle as AlertCircleIcon } from "lucide-react";
+import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, ArrowDown, ChevronRight, XCircle, Copy, Lock, Mail, Eye, EyeOff, Settings, ArrowUp, GripVertical, ShoppingBag, Package, Loader2, Check, AlertCircle as AlertCircleIcon, Tag } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import UploadBox from "./components/UploadBox";
 import ConfigurationPanel from "./components/ConfigurationPanel";
@@ -10,6 +10,7 @@ import { PendingOrdersTable } from "./components/PendingOrdersTable";
 import { FaturadosModal } from "./components/FaturadosModal";
 import { ConfirmQuantitiesModal } from "./components/ConfirmQuantitiesModal";
 import { BillingLogsModal } from "./components/BillingLogsModal";
+import { OfertasDoDiaModal } from "./components/OfertasDoDiaModal";
 import VisualChart from "./components/VisualChart";
 import { DailyItemsView } from "./components/DailyItemsView";
 import { OptimizerConfig, OptimizationResponse, SwapReportItem, DistributorOption, ExternalSupplier, AuthorizedCompany } from "./types";
@@ -303,6 +304,33 @@ export default function App() {
 
   // Encomendas Import State
   const [isEncomendasImportOpen, setIsEncomendasImportOpen] = useState<boolean>(false);
+
+  // Ofertas do Dia State
+  const [isOfertasDoDiaModalOpen, setIsOfertasDoDiaModalOpen] = useState<boolean>(false);
+
+  const handleAddFromOfertasDoDia = (oferta: any, qtd = 1) => {
+    const itemKey = `oferta-${oferta.ean || Date.now()}`;
+    const fakeOffer = {
+      ean: oferta.ean,
+      descricao: oferta.produto,
+      laboratorio: oferta.laboratorio || "",
+      distribuidora: oferta.fornecedorLista || oferta.fornecedor,
+      precoLiquido: oferta.preco,
+      preco: oferta.preco,
+      estoque: 9999,
+      codDist: 0,
+      condicao: "PROMOCAO",
+      prazo: 0,
+      codProdutoDist: "",
+      codProduto: "",
+      QtdMin: 0,
+      origem: "lista_preco",
+      fornecedorLista: oferta.fornecedorLista || "",
+      fornecedorId: oferta.fornecedorId || "",
+      motivoAcao: "lista_preco",
+    };
+    handleAddManualItem(fakeOffer, qtd, itemKey);
+  };
   const [manualAddFromEncomendas, setManualAddFromEncomendas] = useState<string | null>(null);
   const [encomendasList, setEncomendasList] = useState<any[]>([]);
   const [encomendasWithOffers, setEncomendasWithOffers] = useState<any[]>([]);
@@ -2199,17 +2227,35 @@ export default function App() {
         )}
 
         {/* Billing Success Modal */}
-        {/* Floating Buttons: Importar Encomendas + Manual Add (responsive stacking on mobile) */}
+        {/* Floating Buttons Container - empilhados com gap automático */}
         {mainView === "optimize" && (
-          <>
-            {/* Importar Encomendas Button - mobile: bottom-20, desktop: bottom-28 */}
+          <div className="fixed bottom-6 right-4 md:right-8 z-40 flex flex-col items-end gap-3">
+            {/* Ofertas do Dia Button */}
             <motion.div
               drag
               dragMomentum={false}
               whileDrag={{ scale: 1.1 }}
               onDragStart={() => (isDragging.current = true)}
               onDragEnd={() => setTimeout(() => (isDragging.current = false), 50)}
-              className="fixed bottom-20 md:bottom-28 right-4 md:right-8 z-40"
+            >
+              <button
+                onClick={() => {
+                  if (!isDragging.current) setIsOfertasDoDiaModalOpen(true);
+                }}
+                className="bg-amber-600 hover:bg-amber-700 text-white rounded-full p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center transition-colors group"
+                title="Ofertas do Dia - Análise de Promoções"
+              >
+                <Tag className="w-6 h-6 group-hover:scale-110 transition-transform" />
+              </button>
+            </motion.div>
+
+            {/* Importar Encomendas Button */}
+            <motion.div
+              drag
+              dragMomentum={false}
+              whileDrag={{ scale: 1.1 }}
+              onDragStart={() => (isDragging.current = true)}
+              onDragEnd={() => setTimeout(() => (isDragging.current = false), 50)}
             >
               <button
                 onClick={() => {
@@ -2217,32 +2263,31 @@ export default function App() {
                     handleImportEncomendas();
                   }
                 }}
-                className="bg-violet-700 hover:bg-violet-800 text-white rounded-full p-4 md:p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center space-x-2 transition-colors group"
+                className="bg-violet-700 hover:bg-violet-800 text-white rounded-full p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center transition-colors group"
                 title="Importar Encomendas Pendentes"
               >
                 <ShoppingBag className="w-6 h-6 group-hover:scale-110 transition-transform" />
               </button>
             </motion.div>
 
-            {/* Manual Add Button (+) - mobile: bottom-8, desktop: bottom-8 */}
+            {/* Manual Add Button (+) */}
             <motion.div
               drag
               dragMomentum={false}
               whileDrag={{ scale: 1.1 }}
               onDragStart={() => (isDragging.current = true)}
               onDragEnd={() => setTimeout(() => (isDragging.current = false), 50)}
-              className="fixed bottom-8 right-4 md:right-8 z-40"
             >
               <button
                 onClick={() => {
                   if (!isDragging.current) setIsManualAddModalOpen(true);
                 }}
-                className="bg-emerald-700 hover:bg-emerald-800 text-white rounded-full p-4 md:p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center space-x-2 transition-colors group"
+                className="bg-emerald-700 hover:bg-emerald-800 text-white rounded-full p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center transition-colors group"
               >
                 <Plus className="w-6 h-6 group-hover:scale-110 transition-transform" />
               </button>
             </motion.div>
-          </>
+          </div>
         )}
 
         {/* Manual Add Modal */}
@@ -3615,6 +3660,13 @@ export default function App() {
             billedGroups={billedGroups}
             title={viewingLogs.title} 
             onClose={() => setViewingLogs(null)} 
+          />
+        )}
+        {isOfertasDoDiaModalOpen && (
+          <OfertasDoDiaModal 
+            cnpj={config.cnpj}
+            onClose={() => setIsOfertasDoDiaModalOpen(false)}
+            onAddToPedido={handleAddFromOfertasDoDia}
           />
         )}
         {suspectItemAlert && (

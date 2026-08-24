@@ -300,6 +300,11 @@ export function useManualSearch({
       prazo: offerPrazo,
       codProduto: offerCodProd,
       pedidoMinimo: offerPedMin,
+      origem: offer.origem || "manual",
+      motivoAcao: offer.motivoAcao || "",
+      whatsappDestino: offer.whatsappDestino || "",
+      fornecedorLista: offer.fornecedorLista || "",
+      fornecedorId: offer.fornecedorId || "",
       alternatives: [{
         ean: offerEan,
         descricao: offerDesc,
@@ -365,7 +370,9 @@ export function useManualSearch({
         condicao: offerCondicao,
         prazo: offerPrazo,
         dataAdicao: new Date().toISOString(),
-        origem: "manual"
+        origem: offer.origem || "manual",
+        motivoAcao: offer.motivoAcao || "",
+        fornecedorLista: offer.fornecedorLista || "",
       });
       localStorage.setItem("itens_manuais_adicionados", JSON.stringify(list));
     } catch (e) {

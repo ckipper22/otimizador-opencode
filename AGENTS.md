@@ -15,6 +15,7 @@
 | 5 | **Cache morre a cada restart do Cloud Run** | Cache L1 (Map) é perdido | Cache L2 (Turso) persiste. Nunca assumir "em memória" | AGENTS.md #13 |
 | 6 | **PMC não aparece / aparece errado** | Case-sensitivity SmartPed (`PMC`/`pmc`/`Pmc`) | Usar fallback: `offer.PMC \|\| offer.pmc` | AGENTS.md #28, server.ts extractPmc |
 | 7 | **`Condicoes/Ean` exige `AceitaOntem: 1`** | Sem ele, promoções do dia anterior são omitidas | Sempre incluir `AceitaOntem: 1` | AGENTS.md #12 |
+| 8 | **Desconto duplo em fornecedor externo** | `analisarUmProduto` usava `Pliquido` (já com desconto dist.) como base | Usar `Preco` (tabela/PFAB) como base. `Pliquido` = desconto duplo | AGENTS.md #43, server.ts `analisarUmProduto()` |
 | 8 | **Deduplicação por preço (ERRADO)** | Chave deve ser `${Ean}_${CodDist}_${Condicao}_${Prazo}` SEM preço | Manter menor preço líquido | AGENTS.md #16, #20 |
 | 9 | **`better-sqlite3` causa SIGSEGV no Cloud Run** | gVisor não suporta mmaps | Usar Turso em produção, better-sqlite3 só local | AGENTS.md #15 |
 | 10 | **Campo `dists[]` da SmartPed ignorado** | `NomeDist` não vem no objeto `Condicoes[]` individual | Extrair de `Retorno.dists[]` via match por `CodDist` | API_TREE_SMARTPED.md #123, #253 |
@@ -149,6 +150,16 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 
 38. **ENCOMENDAS — CONFIRMAÇÃO AUTOMÁTICA PÓS-FATURAMENTO:** Quando itens com `origem="encomenda"` são faturados, o backend automaticamente chama `POST /api/integracao/encomendas/confirmar-pedido` no sistema externo para atualizar o status para "Encomendado". Fluxo: faturamento → saveOrder → filtra itens `origem="encomenda"` com `idEncomenda` → deduplica por `idEncomenda` → chama `confirmar-pedido`. Execução asíncrona (não bloqueia resposta). Erros são logados mas não afetam faturamento. **Arquivo:** `server.ts:4464-4485`.
 
+39. **ITENS DE LISTA_PRECO — NÃO FATURAR NA SMARTPED:** Itens com `origem: "lista_preco"` ou `motivoAcao: "lista_preco"` representam fornecedores externos (ex: Forster) que NÃO estão conectados à SmartPed. O botão correto é "Copiar Pedido (WhatsApp)", NÃO "Faturar Este Pedido". O check `isExternalManual` em `SwapsTable.tsx:1206` controla isso: `group.items.some(it => it.codDist === 9999 || it.origem === "lista_preco" || it.motivoAcao === "lista_preco")`. Quando `isExternalManual = true`, o grupo fica verde e mostra botão WhatsApp.
+
+40. **BUSCAR-LOTE — BODY `{itens:[...]}` NÃO `{termos:[...]}`:** O endpoint `/api/produtos/buscar-lote` da Ferramentinhas espera body `{"itens": ["TERM1", "TERM2"]}`. A resposta é um dict `{ "resultados": { "termo": [produtos] } }`. **NUNCA** usar `{ termos: [...] }` — a API retorna erro silencioso ou vazio. Referência: `main.py` (Ferramentinhas API), `server.ts:657`.
+
+41. **TERMOS DE BUSCA LIMPOS ANTES DE ENVIAR:** Ao usar `buscar-lote`, remover termos que atrapalham a busca: "GENÉRICO", "GENERICO", nomes de marca/genérico (Sandoz, Novartis, EMS, Medley, etc.). Enviar só a substância + dosagem. Ex: "ATENOLOL 25MG GENÉRICO SANDOZ" → enviar "ATENOLOL 25MG". **Arquivo:** `server.ts:~657` (função de limpeza antes do POST).
+
+42. **DOCUMENTAÇÃO — ATUALIZAÇÃO OBRIGATÓRIA EM AMBOS:** Sempre que o usuário pedir para "atualizar documentação" ou "atualizar docs", o agente é OBRIGADO a atualizar **TANTO** `LLM_CONTEXT.md` **QUANTO** `AGENTS.md`. O `LLM_CONTEXT.md` é o "cérebro" (contexto técnico, arquitetura, sessões). O `AGENTS.md` é o "protocolo" (regras permanentes, bugs resolvidos, dependências). Nunca atualizar um sem o outro. A exceção é quando a mudança é puramente técnica (ex: bug fix sem nova regra de negócio) — aí basta `LLM_CONTEXT.md` + tabela de bugs resolvidos. **ALÉM DISSO**, SEMPRE salvar um resumo na `supermemory` (mode: add, type: project-config) para persistir entre sessões.
+
+43. **PFAB vs PLIQUIDO — PREÇO DE TABELA PARA CÁLCULO DE DESCONTO:** Para medicamentos regulados (Referência/Ético), a SmartPed retorna `PFAB`/`Preco` (preço de fábrica/tabela CMED) e `Pliquido` (preço líquido JÁ COM desconto da distribuidora). Ao calcular preço efetivo com desconto de fornecedor externo, **SEMPRE** usar `Preco` (tabela) como base, **NUNCA** `Pliquido`. Fórmula correta: `precoEfetivo = Preco × (1 - desconto/100)`. Usar `Pliquido` causa desconto duplo (desconto da dist. + desconto do fornecedor). Para perfumaria/cosméticos, `Preco` pode vir zerado — usar `Pliquido` como fallback. **Arquivo:** `server.ts` `analisarUmProduto()` (linha ~566).
+
 ---
 
 ## DEPENDÊNCIAS CRUZADAS — AO MUDAR UM PONTO, VERIFIQUE OS OUTROS
@@ -167,6 +178,7 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 | 8 | `cleanCodProduto()` | `server/parsers.ts` | `server.ts` todas as linhas que setam `codProduto` (linhas ~2302, ~2456, ~2720, ~2886, etc.) |
 | 9 | `validateSwapEquivalence()` | `swap-validation.ts` | `server.ts` filtered substitutos (linha ~1775), `allAlternativesForRupture` filter, `finalAlternatives` |
 | 10 | `parseSmartPedEstoque()` | `server/parsers.ts` | `server.ts` `originalHasStock` (linha ~1934), `findBestSubstitute`, filtros de estoque |
+| 11 | `isExternalManual` | `SwapsTable.tsx:1206` | Grupo verde/WhatsApp, botão "Copiar Pedido", esconde "Faturar", badge "📋 Lista:" |
 
 **COMO USAR:** Antes de alterar qualquer função, busque no código por todos os pontos listados na coluna "Impacta" e verifique se a alteração é compatível.
 

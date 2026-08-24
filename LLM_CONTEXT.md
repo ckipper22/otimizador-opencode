@@ -36,6 +36,10 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 | Dedup por preço errado | Ofertas duplicadas na UI | Chave: `${Ean}_${CodDist}_${Condicao}_${Prazo}` (sem preço) | AGENTS.md #16 |
 | Encomendas preço R$ 0.00 | Backend retorna PascalCase (NomeDist, Pliquido), frontend espera lowercase | Normalizar antes de retornar no batch endpoint | server.ts, App.tsx:3165 |
 | Mojibake impedia filtro de "Não Encontrados" | Defaults hardcoded tinham `"NÃ£o Encontrados"` (Latin-1), comparações usavam UTF-8 — nunca casavam | Usar `isNotFoundName()` (helper centralizado) em TODAS as checagens. **NUNCA** fazer `dist.includes("NÃO ENCONTRADOS")` inline | server.ts `isNotFoundName()`, AGENTS.md #19, #31 |
+| Encomendas preço R$ 0.00 | Backend retorna PascalCase (NomeDist, Pliquido), frontend espera lowercase (distribuidora, precoLiquido) | Normalizar campos antes de retornar no batch endpoint | server.ts batch endpoint, App.tsx linhas 3165-3206 |
+| Buscar-lote body errado | Body `{ termos: [...] }` mas API espera `{ itens: [...] }` | Usar `{ itens: [...] }` e parsear response como dict (chaves = termos originais) | server.ts:657 |
+| isExternalManual não reconhece lista_preco | `codDist=0` + `condicao="PROMOCAO"` não casava com checagem `codDist===9999` | Adicionar `it.origem === "lista_preco" \|\| it.motivoAcao === "lista_preco"` ao check | SwapsTable.tsx:1206 |
+| Desconto duplo fornecedor externo | `analisarUmProduto` usava `Pliquido` (já com desconto dist.) como base | Usar `Preco` (tabela/PFAB) como base. `Pliquido` = desconto duplo | AGENTS.md #43, server.ts `analisarUmProduto()` |
 
 ---
 
@@ -101,6 +105,7 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 10. **ALINHAMENTO FRONTEND/BACKEND** — sempre que alterar um lado, confirmar no outro. Ver AGENTS.md #27.
 11. **`resolveCategoria()`** — função normalizadora em `server/parsers.ts`. Fonte: Ferramentinhas `grupo` > SmartPed TipoItem > suffixo Molecula > descrição. Usar em vez de lógica espalhada.
 12. **DEPENDÊNCIAS CRUZADAS** — antes de alterar qualquer função, consultar tabela em AGENTS.md (seção "DEPENDÊNCIAS CRUZADAS"). Cada função lista todos os pontos que precisam ser verificados.
+13. **DOCUMENTAÇÃO — ATUALIZAÇÃO EM AMBOS** — quando pedir "atualizar documentação", SEMPRE atualizar `LLM_CONTEXT.md` + `AGENTS.md`. Nunca um sem o outro. Exceção: bug fix sem nova regra → basta `LLM_CONTEXT.md`. **ALÉM DISSO**, salvar resumo na `supermemory` (mode: add, type: project-config).
 
 ---
 
@@ -1185,3 +1190,145 @@ Distribuidoras fora da SmartPed (ex: Reval) podem ser integradas via listas de p
 - Referência técnica Reval: `docs/reval-api-reference.md`
 - **Promoções do Dia (PRIORIDADE):** `docs/promocoes-do-dia-plan.md`
 - Status: PLANEJAMENTO — aguardando aprovação para implementação
+
+---
+
+## 4.8. Sessão 2026-08-22 — Promoções do Dia: Background Processing e Arquitetura
+
+### Contexto
+Implementação da feature "Promoções do Dia" — análise automática de promoções de WhatsApp/listas externas. Sistema compara preço da promoção com: vendas, estoque por laboratório, histórico de compras, e preço SmartPed.
+
+### Arquitetura Decidida
+
+#### Gatilho Automático
+- `POST /api/external-suppliers` dispara análise em background ao salvar
+- Mesmo endpoint para chatbot (WhatsApp) e tela do projeto
+- Retorna 200 rapidamente, análise roda async
+
+#### Colunas Novas em `external_suppliers`
+| Coluna | Tipo | Descricao |
+|--------|------|-----------|
+| `dados_analise` | TEXT (JSON) | Resultado completo da analise |
+| `status_analise` | TEXT | `pendente` / `analisado` / `erro` / `descartada` |
+| `analyzed_at` | TEXT | Timestamp de quando foi analisada |
+
+#### Auto-Descarte
+| Criterio | Acao |
+|----------|------|
+| Preco > ultimo preco pago (historico) | ❌ status = "descartada" |
+| Preco > melhor preco SmartPed (com estoque) | ❌ status = "descartada" |
+| Sem vendas (produto nao vende) | ❌ status = "descartada" |
+| Preco <= historico E <= SmartPed | ✅ status = "analisado" |
+
+#### Busca Manual vs Automática
+- Campo de busca: filtra por texto no campo `produto`
+- Botão "Buscar": carrega todas ofertas analisadas
+- Botão "Ver todas as ofertas boas": filtra por `boaOferta = true`
+
+#### Origem WhatsApp vs SmartPed
+- `origem: "whatsapp"`: preco exclusivo, nao vai pra SmartPed
+- `origem: "smartped"`: preco normal, fatura pela API
+- Botão "Faturar" (SmartPed) vs "Enviar WhatsApp" conforme origem
+
+#### API Ferramentinhas
+- `preco_tabela`: preco bruto (antes de desconto)
+- `preco_unitario`: custo real (com desconto aplicado)
+- Exemplo: tabela R$ 5,54, custo real R$ 5,18 (desc 6,47%)
+
+#### Estoque por Laboratório
+- `GET /api/produtos/similares/{ean}` retorna TODOS os produtos com mesma composição
+- Estoque total = soma de todos os labs
+- Exibição: barras por lab, * = mesmo EAN da promoção
+
+### O que foi implementado (esta sessão)
+1. ✅ Backend: analise de ofertas com vendas, estoque, historico, SmartPed
+2. ✅ Frontend: card de produto com resumo
+3. ✅ Frontend: modal de detalhes com historico de compras
+4. ✅ Estoque por laboratorio (mesma composicao)
+5. ✅ Historico de compras com preco_tabela + preco_unitario
+6. ✅ Tabela de ofertas com todos os precos comprados + desconto %
+7. ✅ Background processing — `analisarFornecedorEmBackground()` no POST /api/external-suppliers
+8. ✅ Auto-descarte — preco > ultimo pago OU > SmartPed → `status_analise = "descartada"`
+9. ✅ Origem WhatsApp/SmartPed — badge "📋 Lista: {fornecedor}" + botão "Enviar WhatsApp" via `isExternalManual`
+10. ⏳ Busca manual vs automatica (pendente — busca por texto funciona, falta "Ver todas as ofertas boas")
+
+### Bugs corrigidos nesta sessão
+1. **buscar-lote body** — body era `{ termos: [...] }` mas API espera `{ itens: [...] }`. Response parsing corrigido (dict keys = termos originais).
+2. **Termos de busca sujos** — "ATENOLOL 25MG GENÉRICO SANDOZ" buscava "GENÉRICO SANDOZ" no banco. Corrigido: remove "genérico", nomes de marca (Sandoz, Novartis, EMS, etc.) antes de enviar ao buscar-lote.
+3. **Date filter UTC** — filtro de 6 meses usava UTC (Cloud Run) e perdia dados. Corrigido: usa `sv-SE` format (timezone local).
+4. **Price normalization** — produtos de lista tinham `price` mas API esperava `preco`. Mapeamento adicionado.
+5. **Produto field missing** — backend retornava `description` mas frontend usava `produto`. Adicionado ambos.
+6. **isExternalManual para lista_preco** — `codDist=0` + `condicao="PROMOCAO"` não casava com checagem existente. Expandido: `it.origem === "lista_preco" || it.motivoAcao === "lista_preco"`.
+7. **Force refresh** — dados cached no Turso impediam ver novo campo `produto`. Adicionado botão "ATUALIZAR" com `force=true`.
+
+### Arquivos afetados
+- `server.ts` — Endpoint `/api/ofertas-dia/analisar`, `analisarFornecedorEmBackground()`, trigger no POST /api/external-suppliers, buscar-lote com termos limpos
+- `server/database.ts` — Schema ALTER TABLE `external_suppliers` (dados_analise, status_analise, analyzed_at), funções `updateSupplierAnalysis()`, `getSuppliersPendentes()`, `getSuppliersAnalisados()`
+- `src/components/OfertasDoDiaModal.tsx` — Modal com detalhes, historico, estoque por lab, force refresh
+- `src/components/SwapsTable.tsx` — Badge "📋 Lista: {fornecedor}", `isExternalManual` expandido para lista_preco
+- `src/App.tsx` — `handleAddFromOfertasDoDia` com campos completos (origem, motivoAcao, fornecedorLista)
+- `src/hooks/useManualSearch.ts` — Passa origem, motivoAcao, fornecedorLista ao item
+- `src/types.ts` — Campos expandidos em SwapReportItem
+- `docs/promocoes-do-dia-plan.md` — Plano atualizado com arquitetura completa
+
+---
+
+## 4.9. Sessão 2026-08-23 — PFAB vs Pliquido: Preço de Tabela para Desconto
+
+### Contexto
+Ao calcular preço efetivo de fornecedor externo com desconto percentual (ex: Forster 5% sobre Tylenol), o sistema usava `Pliquido` (preço líquido JÁ COM desconto da distribuidora) como base, causando desconto duplo.
+
+### Estrutura de Preços SmartPed (Medicamentos Regulados)
+A API SmartPed retorna três campos principais para medicamentos regulados (Referência/Ético):
+- **`PFAB` / `Preco`**: Preço de fábrica/tabela (definido pela CMED/Anvisa). É a base para negociação.
+- **`PMC`**: Preço Máximo ao Consumidor.
+- **`Pliquido`**: Preço líquido JÁ COM desconto da distribuidora aplicado.
+
+**Fórmula correta:** `Preço Líquido = PFAB × (1 - Desc%Dist / 100)`
+**Exemplo:** PFAB = R$ 36,81, Desc% Dist = 14% → Pliquido = R$ 31,66
+
+### Bug: Desconto Duplo
+- **Código antigo:** `analisarUmProduto` usava `c.Pliquido` como base →31,66 × 0,95 = R$ 30,08 (ERRADO)
+- **Código correto:** Usar `c.Preco` como base → 36,81 × 0,95 = R$ 35,02 (CORRETO)
+- **Arquivo:** `server.ts` `analisarUmProduto()` (linha ~566)
+
+### Regra Derivada
+- **AGENTS.md #43 (novo):** "Para calcular preço efetivo com desconto de fornecedor externo, SEMPRE usar `Preco` (tabela/PFAB) como base, NUNCA `Pliquido`. Para perfumaria/cosméticos, `Preco` pode vir zerado — usar `Pliquido` como fallback."
+- **Impacta:** `analisarUmProduto()` ( Promoções do Dia), `analisarFornecedorEmBackground()`, optimize flow (server.ts:3881)
+
+### Nota sobre Perfumaria/Cosméticos
+Para itens não regulados, `PFAB` e `PMC` retornam zerados. A SmartPed devolve diretamente `Pliquido` (preço líquido praticado). Nesse caso, usar `Pliquido` como fallback é correto.
+
+---
+
+## 4.10. Sessão 2026-08-23 — Correção de Estoque no Modal Promoções do Dia
+
+### Contexto
+Card e detail modal do modal "Promoções do Dia" mostravam "Estoque: 22cx" (apenas GLOBO) quando deveria mostrar "25cx" (GLOBO 22 + NOVARTIS 3). O bug ocorria nos dois fluxos: "Carregar Todas" (analisarFornecedorEmBackground) e busca manual (analisar-referencia).
+
+### Causa Raiz
+O campo `estoqueMesmoEan` era usado pelo frontend para exibir estoque no card (OfertasDoDiaModal.tsx:449) e no detail modal (OfertasDoDiaModal.tsx:705). Esse vinha do `analisarUmProduto()` que contava estoque de **apenas 1 EAN** (o EAN específico do produto), não o total do grupo DCB.
+
+### Correções
+
+#### 1. `analisarFornecedorEmBackground` (server.ts:836-847)
+- Extraído `estoqueGrupo` = `eansGrupo.reduce()` (total do grupo DCB)
+- `estoqueTotal` e `estoqueMesmoEan` agora usam `estoqueGrupo`
+- Antes: `estoqueMesmoEan` vinha de `...analysis` (analisarUmProduto) = 22
+- Depois: `estoqueMesmoEan` = `estoqueGrupo` = 25
+
+#### 2. `analisar-referencia` (server.ts:1329)
+- `estoqueMesmoEan: estoque || 0` → `estoqueMesmoEan: estoqueFinal`
+- `estoqueFinal` já é calculado como `eanList.reduce()` = total do grupo
+- Antes: dependia do request body (`estoque` field)
+- Depois: usa valor já calculado no backend
+
+### Frontend (sem alterações)
+- Card (OfertasDoDiaModal.tsx:449): mostra `oferta.estoqueMesmoEan` — agora correto
+- Detail modal (OfertasDoDiaModal.tsx:705): mostra `detalheAberto.estoqueMesmoEan` — agora correto
+- Detail modal (OfertasDoDiaModal.tsx:625): mostra `detalheAberto.estoqueTotal` — já correto
+
+### Arquivos Afetados
+- `server.ts` — linhas 836-847 (analisarFornecedorEmBackground return), linha 1329 (analisar-referencia return)
+- `docs/ler-primeiro.md` — seção 2.6 e 2.7 atualizadas, seção 3.1 removida (resolvida)
+- `memoryBank/activeContext.md` — estado atualizado
