@@ -721,7 +721,7 @@ EOF \
 - **NÃO** usar `process.env.APP_VERSION` no Cloud Run (não confiável com Dockerfile)
 - Serve para rastreabilidade em testes local e Cloud
 
-**Versão atual:** `v2026-08-24-0000` (deploy `smartped-cli-00062-dft`)
+**Versão atual:** `v2026-08-24-0000` (deploy `smartped-cli-00063-qf4`)
 
 **Estado do deploy:**
 - `runPriceSync` desativado (código comentado)
