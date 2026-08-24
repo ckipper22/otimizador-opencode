@@ -31,6 +31,10 @@
 | 20 | **INSERT OR REPLACE apagava análise de ofertas** | `saveExternalSupplier` usava `INSERT OR REPLACE` — colunas `dados_analise`, `status_analise`, `analyzed_at` viravam NULL a cada save do frontend | `INSERT ... ON CONFLICT(id) DO UPDATE SET ...` preserva colunas de análise | `server/database.ts:776`, LLM_CONTEXT.md #44 |
 | 21 | **Filtro validade em UTC (Cloud Run)** | `new Date().toLocaleDateString('sv-SE')` retornava data UTC — fornecedor com validade "hoje" (UTC-3) era filtrado como expirado | Offset `-3h`: `new Date(Date.now() - 3*60*60*1000)` | `server.ts:897`, `server.ts:4287`, LLM_CONTEXT.md #45 |
 | 22 | **Firebase Auth "Cannot read properties of null"** | `auth` e `googleProvider` exportados como `null` — `initFirebase()` async, módulos importam antes de terminar | Usar `getFirebaseAuth()` (async) que aguarda inicialização. **NUNCA** importar `auth`/`googleProvider` direto de `firebaseClient.ts` | `src/lib/firebaseClient.ts`, `src/hooks/useAuth.ts` |
+| 23 | **SmartPed "visão em túnel" — Promoções do Dia** | `analisarUmProduto` buscava SmartPed com 1 EAN — perdia ofertas de outros labs (Teuto, Germed, etc.) | Expandir EANs via `buscar-lote` (DCB) ANTES de analisar, passar `allEans` para `analisarUmProduto`. Buscar `Condicoes/Ean` para CADA EAN do grupo | `server.ts` `analisarFornecedorEmBackground` ~linha 797, `analisarUmProduto` |
+| 24 | **Tier regex não detectava emojis (💥)** | Character class `[•\-*\s]` não incluía emojis Unicode | Usar ranges Unicode específicos (`\u{1F300}-\u{1FAFF}`) NÃO `\p{Emoji}` (que inclui dígitos) | `ConfigurationPanel.tsx:171` |
+| 25 | **Mojibake em termos de busca causava HTTP 500** | `\udca5Alendronato` (corrupção do 💥) não era limpo antes de enviar à API | Limpar `\udca5\|\udca4\|\udca6\|\ufffd` antes de enviar | `server.ts` `analisarFornecedorEmBackground` |
+| 26 | **Buscar-lote sem "mg" não acha produto** | `ILIKE %ALLENDRONATO 70%` não casa com `ALLENDRONATO SOD 70MG` (SOD no meio) | Buscar por princípio ativo (primeira palavra) + filtrar dosagem no JS | `server.ts` `analisarFornecedorEmBackground` |
 
 **SE O PROBLEMA PARECE NOVO, VERIFIQUE ESTA TABELA ANTES DE INVESTIGAR.**
 Se estiver aqui, a correção já existe. Não reinvente a roda.
@@ -162,6 +166,16 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 42. **DOCUMENTAÇÃO — ATUALIZAÇÃO OBRIGATÓRIA EM AMBOS:** Sempre que o usuário pedir para "atualizar documentação" ou "atualizar docs", o agente é OBRIGADO a atualizar **TANTO** `LLM_CONTEXT.md` **QUANTO** `AGENTS.md`. O `LLM_CONTEXT.md` é o "cérebro" (contexto técnico, arquitetura, sessões). O `AGENTS.md` é o "protocolo" (regras permanentes, bugs resolvidos, dependências). Nunca atualizar um sem o outro. A exceção é quando a mudança é puramente técnica (ex: bug fix sem nova regra de negócio) — aí basta `LLM_CONTEXT.md` + tabela de bugs resolvidos. **ALÉM DISSO**, SEMPRE salvar um resumo na `supermemory` (mode: add, type: project-config) para persistir entre sessões.
 
 43. **PFAB vs PLIQUIDO — PREÇO DE TABELA PARA CÁLCULO DE DESCONTO:** Para medicamentos regulados (Referência/Ético), a SmartPed retorna `PFAB`/`Preco` (preço de fábrica/tabela CMED) e `Pliquido` (preço líquido JÁ COM desconto da distribuidora). Ao calcular preço efetivo com desconto de fornecedor externo, **SEMPRE** usar `Preco` (tabela) como base, **NUNCA** `Pliquido`. Fórmula correta: `precoEfetivo = Preco × (1 - desconto/100)`. Usar `Pliquido` causa desconto duplo (desconto da dist. + desconto do fornecedor). Para perfumaria/cosméticos, `Preco` pode vir zerado — usar `Pliquido` como fallback. **Arquivo:** `server.ts` `analisarUmProduto()` (linha ~566).
+
+44. **PRICE TIERS (QUANTITY BREAKS) — Promoções WhatsApp:** Promoções podem ter preço por faixa (ex: "70und R$2.29, 140und R$2.19"). Parser em `ConfigurationPanel.tsx` detecta padrões `NNund X,XX`, `NN+ X,XX`. Backend calcula `bestTierPrice` (menor tier) para auto-descarte. Frontend mostra banner "PRECO CONDICIONAL" + tabela faixas. `tiers` é opcional em `ExternalProduct` e `SwapReportItem`. **Arquivos:** `ConfigurationPanel.tsx` (parser), `server.ts` (analisarUmProduto), `OfertasDoDiaModal.tsx` (card+detail), `SwapsTable.tsx` (badge).
+
+45. **SMARTPED MULTI-EAN — NUNCA BUSCAR SÓ COM 1 EAN:** Ao analisar promoções, SEMPRE expandir EANs via `buscar-lote` (princípio ativo + filtro dosagem) ANTES de chamar SmartPed. Passar `allEans` para `analisarUmProduto`. SmartPed busca `Condicoes/Ean` para CADA EAN (batches de 10). **Arquivo:** `server.ts` `analisarFornecedorEmBackground` (linha ~801), `analisarUmProduto` (parâmetro `allEans`).
+
+46. **MOJIBAKE EM TERMOS DE BUSCA:** SmartPed pode retornar `\udca5` (corrupção de 💥) em descrições. SEMPRE limpar `\udca5|\udca4|\udca6|\ufffd` antes de enviar termos à API. **Arquivo:** `server.ts` `analisarFornecedorEmBackground`.
+
+47. **BUSCAR-LOTE — PRINCÍPIO ATIVO NÃO FULL DESCRIPTION:** O `buscar-lote` da Ferramentinhas usa `ILIKE %termo%`. Buscar com descrição completa falha porque "ALLENDRONATO SOD 70MG" tem "SOD" entre "ALLENDRONATO" e "70MG". **SEMPRE** buscar com princípio ativo (primeira palavra) + filtrar dosagem no JS. **Arquivo:** `server.ts` `analisarFornecedorEmBackground`.
+
+48. **ANALYSIS CACHE — LIMPAR QUANDO PRODUCTS MUDAM:** POST `/api/external-suppliers` compara oldProducts vs newProducts. Se diferentes → `updateSupplierAnalysis(id, null, "pendente")` para forçar re-análise. **Arquivo:** `server.ts` POST `/api/external-suppliers` (linha ~397).
 
 ---
 

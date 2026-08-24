@@ -305,6 +305,7 @@ export function useManualSearch({
       whatsappDestino: offer.whatsappDestino || "",
       fornecedorLista: offer.fornecedorLista || "",
       fornecedorId: offer.fornecedorId || "",
+      tiers: offer.tiers || [],
       alternatives: [{
         ean: offerEan,
         descricao: offerDesc,

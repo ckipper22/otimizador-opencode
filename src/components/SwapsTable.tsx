@@ -1849,6 +1849,26 @@ export default function SwapsTable({
                                       PMC: {formatCurrency(item.novoPmc)}
                                     </span>
                                   )}
+                                  {item.tiers && item.tiers.length > 0 && (() => {
+                                    const basePrice = item.originalPreco || item.novoPreco;
+                                    const bestTier = item.tiers.filter((t: any) => item.qtd >= t.minQty).sort((a: any, b: any) => b.minQty - a.minQty)[0];
+                                    const nextTier = item.tiers.filter((t: any) => item.qtd < t.minQty).sort((a: any, b: any) => a.minQty - b.minQty)[0];
+                                    if (bestTier) {
+                                      return (
+                                        <span className="text-[8px] text-emerald-700 bg-emerald-50 border border-emerald-300 px-1 py-0.5 mt-0.5 font-bold rounded-sm" title={`Faixa atingida: ${bestTier.minQty}+ und = R$ ${bestTier.price.toFixed(2)}`}>
+                                          FAIXA {bestTier.minQty}+ ★
+                                        </span>
+                                      );
+                                    } else if (nextTier) {
+                                      const gap = nextTier.minQty - item.qtd;
+                                      return (
+                                        <span className="text-[8px] text-amber-700 bg-amber-50 border border-amber-300 px-1 py-0.5 mt-0.5 font-bold rounded-sm" title={`Faltam ${gap} un para faixa de R$ ${nextTier.price.toFixed(2)}`}>
+                                          +{gap} un p/ {formatCurrency(nextTier.price)}
+                                        </span>
+                                      );
+                                    }
+                                    return null;
+                                  })()}
                                 </div>
                               </td>
 

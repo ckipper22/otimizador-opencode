@@ -47,6 +47,7 @@ export interface SwapReportItem {
   whatsappDestino?: string;
   fornecedorLista?: string;
   fornecedorId?: string;
+  tiers?: Array<{ minQty: number; price: number }>;
   alternatives?: Array<{
     ean: string;
     descricao: string;
@@ -167,10 +168,16 @@ export interface DistributorOption {
   StatusAtual: string;
 }
 
+export interface PriceTier {
+  minQty: number;
+  price: number;
+}
+
 export interface ExternalProduct {
   description: string;
   price: number | null;
   discountPercent?: number;
+  tiers?: PriceTier[];
 }
 
 export interface ExternalSupplier {

@@ -31,6 +31,13 @@ interface OfertaDia {
   estoqueMesmoEan: number;
   melhorPrecoSmartPed: number | null;
   melhorDistribuidora: string | null;
+  melhorEanSmartPed?: string | null;
+  melhorLabSmartPed?: string | null;
+  melhorPrecoPromocao?: number | null;
+  melhorDistPromocao?: string | null;
+  melhorCondPromocao?: string | null;
+  melhorQtdMinPromocao?: number;
+  melhorEanPromocao?: string | null;
   melhorPrecoHistorico: number | null;
   melhorFornecedorHistorico: string | null;
   comprasHistorico: CompraHistorico[];
@@ -45,6 +52,8 @@ interface OfertaDia {
   description?: string;
   discountPercent?: number;
   isReferencia?: boolean;
+  tiers?: { minQty: number; price: number }[];
+  bestTierPrice?: number;
 }
 
 interface OfertasDoDiaModalProps {
@@ -401,19 +410,79 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                     )}
                   </div>
 
+                  {/* Tiers de Preco (Preco Condicional) */}
+                  {oferta.tiers && oferta.tiers.length > 0 && (
+                    <div className="mb-3 border-2 border-orange-400 bg-orange-50 rounded-sm overflow-hidden">
+                      <div className="bg-orange-400 text-white text-[9px] font-black uppercase px-2 py-1 flex items-center gap-1">
+                        <Package className="w-3 h-3" />
+                        PRECO CONDICIONAL — Quantidade Minima
+                      </div>
+                      <div className="px-2 py-1.5">
+                        <div className="text-[9px] text-orange-800 font-sans mb-1">
+                          Base: <span className="font-bold">{formatCurrency(oferta.preco)}</span> (sem minimo)
+                        </div>
+                        <div className="space-y-0.5">
+                          {oferta.tiers.map((tier, idx) => {
+                            const isBest = idx === oferta.tiers!.length - 1;
+                            const savingsVsBase = oferta.preco > 0 ? ((oferta.preco - tier.price) / oferta.preco * 100) : 0;
+                            return (
+                              <div key={idx} className={`flex items-center justify-between text-[9px] px-1.5 py-0.5 ${isBest ? 'bg-emerald-100 border border-emerald-300 font-bold' : 'bg-white'}`}>
+                                <span className="font-sans">
+                                  <span className={`inline-block w-12 text-center font-mono font-bold ${isBest ? 'text-emerald-700' : 'text-gray-700'}`}>
+                                    {tier.minQty}+
+                                  </span>
+                                  <span className="text-gray-400 mx-1">und</span>
+                                </span>
+                                <span className={`font-mono font-bold ${isBest ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                  {formatCurrency(tier.price)}
+                                </span>
+                                {savingsVsBase > 0 && (
+                                  <span className={`font-sans ml-1 ${isBest ? 'text-emerald-600' : 'text-gray-500'}`}>
+                                    (-{savingsVsBase.toFixed(0)}%)
+                                  </span>
+                                )}
+                                {isBest && <span className="text-emerald-600 ml-1">★</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Comparacao de Precos */}
                   <div className="mb-3 p-2 bg-gray-50 border border-gray-100 text-[10px] font-sans space-y-1">
                     {oferta.melhorPrecoSmartPed ? (
                       <div className="flex justify-between">
                         <span className="text-gray-600">Melhor SmartPed:</span>
-                        <span className="font-bold text-[#141414]">
-                          {formatCurrency(oferta.melhorPrecoSmartPed)} ({oferta.melhorDistribuidora})
-                        </span>
+                        <div className="text-right">
+                          <span className="font-bold text-[#141414]">
+                            {formatCurrency(oferta.melhorPrecoSmartPed)} ({oferta.melhorDistribuidora})
+                          </span>
+                          {oferta.melhorEanSmartPed && (
+                            <p className="text-[9px] text-gray-500 font-mono">
+                              EAN: {oferta.melhorEanSmartPed}{oferta.melhorLabSmartPed ? ` | ${oferta.melhorLabSmartPed}` : ''}
+                            </p>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       <div className="flex justify-between">
                         <span className="text-gray-600">Melhor SmartPed:</span>
                         <span className="text-gray-400 italic">Não encontrado</span>
+                      </div>
+                    )}
+                    {oferta.melhorPrecoPromocao && oferta.melhorPrecoSmartPed && oferta.melhorPrecoPromocao < oferta.melhorPrecoSmartPed && (
+                      <div className="flex justify-between">
+                        <span className="text-orange-600">Pedido mínimo:</span>
+                        <div className="text-right">
+                          <span className="font-bold text-orange-700">
+                            {formatCurrency(oferta.melhorPrecoPromocao)} ({oferta.melhorDistPromocao})
+                          </span>
+                          <p className="text-[9px] text-orange-500">
+                            {oferta.melhorQtdMinPromocao ? `${oferta.melhorQtdMinPromocao}un min` : ''} ·{oferta.melhorCondPromocao}{oferta.melhorEanPromocao ? ` ·EAN: ${oferta.melhorEanPromocao}` : ''}
+                          </p>
+                        </div>
                       </div>
                     )}
                     {oferta.melhorPrecoHistorico ? (
@@ -565,6 +634,62 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                 </p>
               </div>
 
+              {/* Tiers de Preco (detail modal) */}
+              {detalheAberto.tiers && detalheAberto.tiers.length > 0 && (
+                <div className="p-3 bg-orange-50 border-2 border-orange-400">
+                  <p className="text-[10px] text-orange-700 font-sans uppercase mb-2 font-black flex items-center gap-1">
+                    <Package className="w-3 h-3" />
+                    Faixas de Preco (Preco Condicional)
+                  </p>
+                  <table className="w-full text-[10px] font-sans">
+                    <thead>
+                      <tr className="text-orange-600 uppercase">
+                        <th className="text-left py-1 px-2">Qtd Minima</th>
+                        <th className="text-right py-1 px-2">Preco Unit.</th>
+                        <th className="text-right py-1 px-2">Economia</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-t border-orange-200">
+                        <td className="py-1 px-2 text-gray-600">1+ und (base)</td>
+                        <td className="py-1 px-2 text-right font-bold text-amber-700">{formatCurrency(detalheAberto.preco)}</td>
+                        <td className="py-1 px-2 text-right text-gray-400">—</td>
+                      </tr>
+                      {detalheAberto.tiers.map((tier, idx) => {
+                        const isBest = idx === detalheAberto.tiers!.length - 1;
+                        const savingsVsBase = detalheAberto.preco > 0 ? ((detalheAberto.preco - tier.price) / detalheAberto.preco * 100) : 0;
+                        const savingsVsSmartPed = detalheAberto.melhorPrecoSmartPed ? ((detalheAberto.melhorPrecoSmartPed - tier.price) / detalheAberto.melhorPrecoSmartPed * 100) : 0;
+                        return (
+                          <tr key={idx} className={`border-t border-orange-200 ${isBest ? 'bg-emerald-50 font-bold' : ''}`}>
+                            <td className="py-1 px-2">
+                              <span className={`font-mono font-bold ${isBest ? 'text-emerald-700' : 'text-gray-700'}`}>
+                                {tier.minQty}+ und
+                              </span>
+                              {isBest && <span className="text-emerald-600 ml-1">★ MELHOR</span>}
+                            </td>
+                            <td className={`py-1 px-2 text-right font-mono font-bold ${isBest ? 'text-emerald-700' : 'text-amber-700'}`}>
+                              {formatCurrency(tier.price)}
+                            </td>
+                            <td className="py-1 px-2 text-right">
+                              {savingsVsBase > 0 && (
+                                <span className={isBest ? 'text-emerald-600' : 'text-gray-500'}>
+                                  -{savingsVsBase.toFixed(0)}% vs base
+                                </span>
+                              )}
+                              {savingsVsSmartPed > 0 && (
+                                <span className="text-blue-600 ml-1">
+                                  | -{savingsVsSmartPed.toFixed(0)}% vs SmartPed
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
               {/* Comparacao */}
               <div className="p-3 bg-gray-50 border border-gray-200">
                 <p className="text-[10px] text-gray-500 font-sans uppercase mb-2">Comparacao</p>
@@ -572,9 +697,29 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                   {detalheAberto.melhorPrecoSmartPed && (
                     <div className="flex justify-between">
                       <span className="text-gray-600">Melhor preco SmartPed:</span>
-                      <span className="font-bold text-[#141414]">
-                        {formatCurrency(detalheAberto.melhorPrecoSmartPed)} ({detalheAberto.melhorDistribuidora})
-                      </span>
+                      <div className="text-right">
+                        <span className="font-bold text-[#141414]">
+                          {formatCurrency(detalheAberto.melhorPrecoSmartPed)} ({detalheAberto.melhorDistribuidora})
+                        </span>
+                        {detalheAberto.melhorEanSmartPed && (
+                          <p className="text-[9px] text-gray-500 font-mono">
+                            EAN: {detalheAberto.melhorEanSmartPed}{detalheAberto.melhorLabSmartPed ? ` | ${detalheAberto.melhorLabSmartPed}` : ''}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {detalheAberto.melhorPrecoPromocao && detalheAberto.melhorPrecoSmartPed && detalheAberto.melhorPrecoPromocao < detalheAberto.melhorPrecoSmartPed && (
+                    <div className="flex justify-between">
+                      <span className="text-orange-600">Pedido minimo:</span>
+                      <div className="text-right">
+                        <span className="font-bold text-orange-700">
+                          {formatCurrency(detalheAberto.melhorPrecoPromocao)} ({detalheAberto.melhorDistPromocao})
+                        </span>
+                        <p className="text-[9px] text-orange-500">
+                          {detalheAberto.melhorQtdMinPromocao ? `${detalheAberto.melhorQtdMinPromocao}un min` : ''} ·{detalheAberto.melhorCondPromocao}{detalheAberto.melhorEanPromocao ? ` ·EAN: ${detalheAberto.melhorEanPromocao}` : ''}
+                        </p>
+                      </div>
                     </div>
                   )}
                   {detalheAberto.melhorPrecoHistorico && (

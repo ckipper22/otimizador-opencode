@@ -12,6 +12,7 @@ export const DISTRIBUIDORAS_MAP: Record<number, string> = {
   32: "DISMED",
   34: "Medicamental",
   37: "Navarro",
+  53: "Gauchofarma",
   56: "SIGREDE",
   59: "ANB",
   60: "GAM",

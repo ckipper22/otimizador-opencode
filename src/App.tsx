@@ -71,6 +71,7 @@ export default function App() {
     backendStatus,
     handleToggleDistributor,
     handleUpdateExternalSuppliers,
+    handleRemoveExternalSupplier,
   } = useOptimizerConfig();
 
   // Application State
@@ -328,6 +329,7 @@ export default function App() {
       fornecedorLista: oferta.fornecedorLista || "",
       fornecedorId: oferta.fornecedorId || "",
       motivoAcao: "lista_preco",
+      tiers: oferta.tiers || [],
     };
     handleAddManualItem(fakeOffer, qtd, itemKey);
   };
@@ -1172,6 +1174,7 @@ export default function App() {
                         disabled={!fileContent}
                         externalSuppliers={externalSuppliers}
                         onUpdateExternalSuppliers={handleUpdateExternalSuppliers}
+                        onRemoveExternalSupplier={handleRemoveExternalSupplier}
                         authorizedCompanies={authorizedCompanies}
                         onUpdateAuthorizedCompanies={setAuthorizedCompanies}
                         isAdmin={isAdmin}

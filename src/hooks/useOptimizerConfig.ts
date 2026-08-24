@@ -19,6 +19,14 @@ export function useOptimizerConfig() {
       }
     }
   };
+
+  const handleRemoveExternalSupplier = async (supplierId: string) => {
+    try {
+      await fetch(`/api/external-suppliers/${supplierId}`, { method: "DELETE" });
+    } catch (err) {
+      console.error("Erro ao deletar fornecedor externo:", err);
+    }
+  };
   
   const [distributors, setDistributors] = useState<DistributorOption[]>([]);
   const [disabledDistributors, setDisabledDistributors] = useState<Set<number>>(new Set());
@@ -138,5 +146,6 @@ export function useOptimizerConfig() {
     backendStatus,
     handleToggleDistributor,
     handleUpdateExternalSuppliers,
+    handleRemoveExternalSupplier,
   };
 }

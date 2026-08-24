@@ -28,6 +28,7 @@ const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   32: "DISMED",
   34: "Medicamental",
   37: "Navarro",
+  53: "Gauchofarma",
   56: "SIGREDE",
   59: "ANB",
   60: "GAM",
@@ -397,6 +398,20 @@ app.post("/api/external-suppliers", async (req, res) => {
     if (!id || !cnpj) {
       return res.status(400).json({ error: "id e cnpj são obrigatórios." });
     }
+
+    // Verificar se products mudou (comparar com banco atual)
+    const oldRows = await getExternalSuppliers(cnpj);
+    const oldSupplier = (oldRows as any[]).find(r => r.id === id);
+    const oldProducts = oldSupplier ? JSON.parse(oldSupplier.products || "[]") : [];
+    const newProducts = Array.isArray(products) ? products : [];
+    const productsChanged = JSON.stringify(oldProducts) !== JSON.stringify(newProducts);
+
+    if (productsChanged && oldSupplier) {
+      // Limpar analysis cache → força re-análise
+      console.log(`[OFERTAS-DIA] Products changed for ${id} — clearing analysis cache`);
+      await updateSupplierAnalysis(id, null, "pendente");
+    }
+
     await saveExternalSupplier({ id, name: name || "", rawText: rawText || "", validade: validade || "", products: JSON.stringify(products || []), cnpj });
     
     // Trigger: analise em background (nao bloqueia resposta)
@@ -452,13 +467,23 @@ app.delete("/api/external-suppliers/:id", async (req, res) => {
 
 // ===== OFERTAS DO DIA - FUNCOES DE BACKGROUND PROCESSING =====
 
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
 // Funcao para analisar um unico produto (reutilizada pelo background e pelo endpoint)
-async function analisarUmProduto(product: any, cnpj: string): Promise<any> {
+// allEans: opcional — lista de todos os EANs do mesmo DCB (expansão por principle active)
+async function analisarUmProduto(product: any, cnpj: string, allEans?: string[]): Promise<any> {
   let vendasMensais = 0;
   let estoqueTotal = 0;
   let estoqueMesmoEan = 0;
   let melhorPrecoSmartPed: number | null = null;
   let melhorDistribuidora: string | null = null;
+  let melhorEanSmartPed: string | null = null;
+  let melhorLabSmartPed: string | null = null;
+  let melhorPrecoPromocao: number | null = null;
+  let melhorDistPromocao: string | null = null;
+  let melhorCondPromocao: string | null = null;
+  let melhorQtdMinPromocao: number = 0;
+  let melhorEanPromocao: string | null = null;
   let melhorPrecoHistorico: number | null = null;
   let melhorFornecedorHistorico: string | null = null;
   let comprasHistorico: any[] = [];
@@ -482,8 +507,12 @@ async function analisarUmProduto(product: any, cnpj: string): Promise<any> {
           totalVendas += parseFloat(String(v.qtd_vendida || "0"));
         }
         vendasMensais = totalVendas;
+      } else {
+        console.log(`[ANALISE] vendas HTTP ${vendasRes.status} para EAN ${product.ean}`);
       }
-    } catch {}
+    } catch (err: any) {
+      console.log(`[ANALISE] vendas erro: ${err.message} para EAN ${product.ean}`);
+    }
 
     // Buscar estoque via similares
     try {
@@ -512,7 +541,9 @@ async function analisarUmProduto(product: any, cnpj: string): Promise<any> {
           .map(([nome, dados]) => ({ nome, quantidade: dados.quantidade, eans: dados.eans }))
           .sort((a, b) => b.quantidade - a.quantidade);
       }
-    } catch {}
+    } catch (err: any) {
+      console.log(`[ANALISE] estoque erro: ${err.message} para EAN ${product.ean}`);
+    }
 
     // Buscar historico de compras
     try {
@@ -535,54 +566,285 @@ async function analisarUmProduto(product: any, cnpj: string): Promise<any> {
           ultimaCompra = comprasHistorico[0];
         }
       }
-    } catch {}
+    } catch (err: any) {
+      console.log(`[ANALISE] historico erro: ${err.message} para EAN ${product.ean}`);
+    }
 
-    // Buscar melhor preco SmartPed
+    // Buscar melhor preco SmartPed — Ean como fonte primaria + Molecula para QtdMin
     try {
-      const smartPedUrl = baseUrl.replace(/\/$/, "") + "/api/Condicoes/Ean";
+      const smartPedEanUrl = baseUrl.replace(/\/$/, "") + "/api/Condicoes/Ean";
       const smartPedMolUrl = baseUrl.replace(/\/$/, "") + "/api/Condicoes/Molecula";
-      const [eanRes, moleculaRes] = await Promise.all([
-        fetch(smartPedUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({ Token: token, parametros: { CnpjCLi: cnpj, Ean: product.ean, AceitaOntem: 1 } })
-        }),
-        fetch(smartPedMolUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({ Token: token, parametros: { CnpjCLi: cnpj, Ean: product.ean, ConsideraTipo: 1 } })
-        })
-      ]);
-
+      
+      // Usar todos os EANs do grupo DCB se disponível, senão só o EAN original
+      let eansParaBuscar = (allEans && allEans.length > 0) ? allEans : [product.ean];
+      
+      // PASSO EXTRA: Se poucos EANs, buscar mais via Ferramentinhas por descrição
+      if (eansParaBuscar.length <= 2 && product.description) {
+        try {
+          const descLimpa = (product.description || "")
+            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
+            .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
+            .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
+            .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia)\b/gi, "")
+            .trim();
+          const words = descLimpa.split(/\s+/).filter((w: string) => w.length >= 3 && !/^\d+$/.test(w));
+          const principioAtivo = words[0];
+          if (principioAtivo && principioAtivo.length >= 3) {
+            const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ itens: [principioAtivo] }),
+            });
+            if (buscaRes.ok) {
+              const buscaData = await buscaRes.json();
+              const resultados = buscaData?.resultados || {};
+              let novosEans: string[] = [];
+              for (const key of Object.keys(resultados)) {
+                const prods = resultados[key] || [];
+                for (const p of prods) {
+                  const ean = p.ean || p.cod_barra || "";
+                  if (ean && !eansParaBuscar.includes(ean)) novosEans.push(ean);
+                }
+              }
+              if (novosEans.length > 0) {
+                eansParaBuscar = [...new Set([...eansParaBuscar, ...novosEans])];
+                console.log(`[ANALISE] SmartPed: +${novosEans.length} EANs via descrição (total: ${eansParaBuscar.length})`);
+              }
+            }
+          }
+        } catch {}
+      }
+      
+      console.log(`[ANALISE] SmartPed: buscando ${eansParaBuscar.length} EANs`);
+      
+      // FONTE PRIMARIA: Condicoes/Ean para CADA EAN (precos, estoque, condicoes comerciais)
+      // IMPORTANTE: Chamadas SEQUENCIAIS com delay — API SmartPed contamina dados entre EANs em paralelo
       const allCondicoes: any[] = [];
-      if (eanRes.ok) {
-        const eanData = await eanRes.json();
-        const itens = eanData?.Retorno?.itens || eanData?.Retorno?.Itens || eanData?.itens || eanData?.Itens || [];
-        for (const entry of itens) {
-          allCondicoes.push(...(entry.Condicoes || entry.condicoes || []));
-        }
+      const EAN_DELAY_MS = 500;
+      for (let i = 0; i < eansParaBuscar.length; i++) {
+        const ean = eansParaBuscar[i];
+        try {
+          const eanRes = await fetch(smartPedEanUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify({ Token: token, parametros: { CnpjCLi: cnpj, Ean: ean, AceitaOntem: 1 } })
+          });
+          const eanData = eanRes.ok ? await eanRes.json() : null;
+          if (eanData) {
+            const itens = eanData?.Retorno?.itens || eanData?.Retorno?.Itens || eanData?.itens || eanData?.Itens || [];
+            const distsRaw = eanData?.Retorno?.dists || eanData?.Retorno?.Dists || [];
+            for (const d of distsRaw) {
+              if (d.CodDist && d.NomeDist) DISTRIBUIDORAS_DYNAMIC_CACHE[d.CodDist] = d.NomeDist;
+            }
+            for (const entry of itens) {
+              const conditions = entry.Condicoes || entry.condicoes || [];
+              const condEan = entry.ItemPedido?.Ean || entry.ItemPedido?.ean || ean;
+              const condDesc = entry.ItemPedido?.Descricao || entry.ItemPedido?.descricao || "";
+              const condLab = entry.ItemPedido?.Laboratorio || entry.ItemPedido?.laboratorio || "";
+              for (const cond of conditions) {
+                cond._queryEan = ean;
+                cond._sourceEan = condEan;
+                cond._sourceDesc = condDesc;
+                cond._sourceLab = condLab;
+              }
+              allCondicoes.push(...conditions);
+            }
+          }
+        } catch {}
+        if (i < eansParaBuscar.length - 1) await sleep(EAN_DELAY_MS);
       }
-      if (moleculaRes.ok) {
-        const molData = await moleculaRes.json();
-        const itens = molData?.Retorno?.itens || molData?.Retorno?.Itens || molData?.itens || molData?.Itens || [];
-        for (const entry of itens) {
-          allCondicoes.push(...(entry.Condicoes || entry.condicoes || []));
+      
+      // COMPLEMENTO: Condicoes/Molecula via campo "Molecula" (aceita EAN como molécula)
+      // Testa se retorna condições individuais sem agrupamento mestre
+      const molFromMolecula: any[] = [];
+      try {
+        const molTestEan = eansParaBuscar[0]; // Testar com primeiro EAN
+        const molTestRes = await fetch(smartPedMolUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ Token: token, parametros: { CnpjCLi: cnpj, Molecula: molTestEan, ConsideraTipo: 1 } })
+        });
+        if (molTestRes.ok) {
+          const molTestData = await molTestRes.json();
+          const itens = molTestData?.Retorno?.itens || molTestData?.Retorno?.Itens || molTestData?.itens || molTestData?.Itens || [];
+          for (const entry of itens) {
+            const conditions = entry.Condicoes || entry.condicoes || [];
+            const entryEan = entry.ItemPedido?.Ean || entry.ItemPedido?.ean || molTestEan;
+            const entryDesc = entry.ItemPedido?.Descricao || entry.ItemPedido?.descricao || "";
+            const entryLab = entry.ItemPedido?.Laboratorio || entry.ItemPedido?.laboratorio || "";
+            console.log(`[ANALISE-MOL] Molecula via campo: entryEan=${entryEan} conds=${conditions.length}`);
+            for (const cond of conditions) {
+              cond._queryEan = molTestEan;
+              cond._sourceEan = entryEan;
+              cond._sourceDesc = entryDesc;
+              cond._sourceLab = entryLab;
+              molFromMolecula.push(cond);
+              console.log(`[ANALISE-MOL-COND] dist=${resolveDistName(cond)}(${cond.CodDist}) preco=${cond.Pliquido || cond.Preco} est=${cond.Estoque} ean=${entryEan}`);
+            }
+          }
         }
-      }
-
-      for (const c of allCondicoes) {
-        // USAR PLIQUIDO (preco real que se paga) para comparar com promocoes
-        // Preco (tabela/PFAB) so serve como base pra calcular desconto de fornecedor externo
-        const precoLiquido = c.Pliquido || c.pliquido || c.Preco || c.preco || c.preco_liquido || 0;
-        const estoqueDist = parseInt(String(c.Estoque || "0"));
-        if (precoLiquido > 0 && estoqueDist > 0) {
-          if (!melhorPrecoSmartPed || precoLiquido < melhorPrecoSmartPed) {
-            melhorPrecoSmartPed = precoLiquido;
-            melhorDistribuidora = resolveDistName(c);
+      } catch {}
+      
+      // Enriquecer com condições da Molecula (via campo) se tiver preços melhores
+      for (const mc of molFromMolecula) {
+        const precoMc = mc.Pliquido || mc.pliquido || mc.Preco || mc.preco || 0;
+        const estMc = parseInt(String(mc.Estoque || "0"));
+        if (precoMc > 0 && estMc > 0) {
+          // Verificar se já temos condição desta dist neste EAN
+          const exists = allCondicoes.some(c => c.CodDist === mc.CodDist && c._sourceEan === mc._sourceEan && c.Condicao === mc.Condicao);
+          if (!exists) {
+            allCondicoes.push(mc);
           }
         }
       }
-    } catch {}
+      
+      // FILTRO CRÍTICO: Manter apenas condições cujo _sourceEan pertence ao grupo DCB do produto
+      // A API SmartPed retorna condições para EANs de OUTROS produtos (substitutos) na mesma resposta
+      // Sem esse filtro, o melhor preço pode vir de um EAN de outro produto (cross-contamination)
+      const eansDoGrupo = new Set(eansParaBuscar.map(e => e.replace(/^0+/, '')));
+      const allCondicoesFiltradas = allCondicoes.filter(c => {
+        const srcEan = (c._sourceEan || '').replace(/^0+/, '');
+        return eansDoGrupo.has(srcEan);
+      });
+      const removidas = allCondicoes.length - allCondicoesFiltradas.length;
+      if (removidas > 0) {
+        console.log(`[ANALISE-FILTRO] Removidas ${removidas} condições de EANs externos (group: ${eansDoGrupo.size} EANs)`);
+      }
+      // Usar array filtrado daqui para frente
+      allCondicoes.length = 0;
+      allCondicoes.push(...allCondicoesFiltradas);
+      
+      // Enriquecer QtdMin via Molecula (Ean como parâmetro Ean)
+      // IMPORTANTE: Sequencial com delay — mesma razão do Ean (API contamina em paralelo)
+      const eanMetadata: Record<string, any> = {};
+      try {
+        for (let i = 0; i < eansParaBuscar.length; i++) {
+          const ean = eansParaBuscar[i];
+          try {
+            const molRes = await fetch(smartPedMolUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Accept": "application/json" },
+              body: JSON.stringify({ Token: token, parametros: { CnpjCLi: cnpj, Ean: ean, ConsideraTipo: 1 } })
+            });
+            const molData = molRes.ok ? await molRes.json() : null;
+            if (molData) {
+              const itens = molData?.Retorno?.itens || molData?.Retorno?.Itens || molData?.itens || molData?.Itens || [];
+              for (const entry of itens) {
+                const conditions = entry.Condicoes || entry.condicoes || [];
+                for (const cond of conditions) {
+                  const key = `${ean}_${cond.CodDist}_${cond.Condicao}_${cond.Prazo}`;
+                  if (cond.QtdMin > 0) eanMetadata[key] = { QtdMin: cond.QtdMin, minimos: cond.minimos };
+                }
+              }
+            }
+          } catch {}
+          if (i < eansParaBuscar.length - 1) await sleep(EAN_DELAY_MS);
+        }
+      } catch {}
+      
+      for (const c of allCondicoes) {
+        const meta = eanMetadata[`${c._queryEan}_${c.CodDist}_${c.Condicao}_${c.Prazo}`]
+          || eanMetadata[`${c._sourceEan}_${c.CodDist}_${c.Condicao}_${c.Prazo}`];
+        if (meta) {
+          if (meta.QtdMin && (!c.QtdMin || c.QtdMin === 0)) c.QtdMin = meta.QtdMin;
+          if (meta.minimos && (!c.minimos || c.minimos.length === 0)) c.minimos = meta.minimos;
+        }
+      }
+      
+      // Log resumo por distribuidora (mostra EAN real de cada uma)
+      const distSummary = new Map<string, { preco: number; estoque: number; ean: string; condEan: string }>();
+      for (const c of allCondicoes) {
+        const precoLiquido = c.Pliquido || c.pliquido || c.Preco || c.preco || c.preco_liquido || 0;
+        const estoqueDist = parseSmartPedEstoque(c.Estoque ?? c.estoque ?? 0, precoLiquido > 0);
+        const distName = resolveDistName(c);
+        // Log individual para debugar preço errado
+        console.log(`[ANALISE-COND] queryEan=${c._queryEan} sourceEan=${c._sourceEan} dist=${distName}(${c.CodDist}) preco=${precoLiquido} est=${estoqueDist} cond=${c.Condicao} prazo=${c.Prazo}`);
+        const key = `${distName}(${c.CodDist})`;
+        const existing = distSummary.get(key);
+        if (!existing || precoLiquido < existing.preco) {
+          distSummary.set(key, { preco: precoLiquido, estoque: estoqueDist, ean: c._queryEan || "?", condEan: c._sourceEan || "?" });
+        }
+      }
+      const distList = Array.from(distSummary.entries()).map(([name, d]) => {
+        const swap = d.ean !== d.condEan ? ` [SWAP:${d.ean}→${d.condEan}]` : "";
+        return `${name}=R$${d.preco.toFixed(2)}/est=${d.estoque}${swap}`;
+      }).join(", ");
+      console.log(`[ANALISE-DISTS] Fonte: Ean | ${distList}`);
+      
+      // Encontrar melhor preco SmartPed — PRIORIZAR condição FIXA (padrão)
+      // Condições não-FIXA (ex: 116076 = combo/pedido mínimo) são usadas apenas como fallback
+      // Isso evita que o card mostre preço de combo que o comprador não pode usar isoladamente
+      let melhorPrecoFixa: number | null = null;
+      let melhorDistFixa: string | null = null;
+      let melhorEanFixa: string | null = null;
+      let melhorLabFixa: string | null = null;
+      
+      for (const c of allCondicoes) {
+        const precoLiquido = c.Pliquido || c.pliquido || c.Preco || c.preco || c.preco_liquido || 0;
+        const estoqueRaw = c.Estoque ?? c.estoque ?? 0;
+        const estoqueDist = parseSmartPedEstoque(estoqueRaw, precoLiquido > 0);
+        const distName = resolveDistName(c);
+        const condicao = String(c.Condicao || c.condicao || "").trim().toUpperCase();
+        const isFixa = condicao === "FIXA" || condicao === "";
+        const fitsFilter = precoLiquido > 0 && estoqueDist > 0;
+        
+        if (!fitsFilter) {
+          console.log(`[ANALISE-SKIP] dist=${distName}(${c.CodDist}) preco=${precoLiquido} estRaw=${estoqueRaw} estParsed=${estoqueDist} cond=${c.Condicao} — filtrado`);
+          continue;
+        }
+        
+        // Melhor FIXA (padrão)
+        if (isFixa) {
+          if (!melhorPrecoFixa || precoLiquido < melhorPrecoFixa) {
+            console.log(`[ANALISE-BEST-FIXA] dist=${distName}(${c.CodDist}) preco=${precoLiquido} est=${estoqueDist} ean=${c._sourceEan}`);
+            melhorPrecoFixa = precoLiquido;
+            melhorDistFixa = distName;
+            melhorEanFixa = c._sourceEan || null;
+            melhorLabFixa = c._sourceLab || null;
+          }
+        } else {
+          // Melhor promoção/pedido mínimo (não-FIXA)
+          if (!melhorPrecoPromocao || precoLiquido < melhorPrecoPromocao) {
+            const qtdMinRaw = c.QtdMin ?? c.qtdMin ?? 0;
+            console.log(`[ANALISE-BEST-PROMO] dist=${distName}(${c.CodDist}) preco=${precoLiquido} est=${estoqueDist} cond=${c.Condicao} qtdMin=${qtdMinRaw}`);
+            melhorPrecoPromocao = precoLiquido;
+            melhorDistPromocao = distName;
+            melhorCondPromocao = c.Condicao || c.condicao || "";
+            melhorQtdMinPromocao = qtdMinRaw;
+            melhorEanPromocao = c._sourceEan || null;
+          }
+        }
+      }
+      
+      // Usar preço FIXA se disponível; senão, usar qualquer condição com estoque
+      if (melhorPrecoFixa !== null) {
+        melhorPrecoSmartPed = melhorPrecoFixa;
+        melhorDistribuidora = melhorDistFixa;
+        melhorEanSmartPed = melhorEanFixa;
+        melhorLabSmartPed = melhorLabFixa;
+        console.log(`[ANALISE-SMARTPED] Melhor FIXA: R$${melhorPrecoFixa.toFixed(2)} (${melhorDistFixa})`);
+      } else {
+        // Fallback: qualquer condição com estoque (inclui combos/promoções)
+        for (const c of allCondicoes) {
+          const precoLiquido = c.Pliquido || c.pliquido || c.Preco || c.preco || c.preco_liquido || 0;
+          const estoqueRaw = c.Estoque ?? c.estoque ?? 0;
+          const estoqueDist = parseSmartPedEstoque(estoqueRaw, precoLiquido > 0);
+          if (precoLiquido > 0 && estoqueDist > 0) {
+            if (!melhorPrecoSmartPed || precoLiquido < melhorPrecoSmartPed) {
+              melhorPrecoSmartPed = precoLiquido;
+              melhorDistribuidora = resolveDistName(c);
+              melhorEanSmartPed = c._sourceEan || null;
+              melhorLabSmartPed = c._sourceLab || null;
+            }
+          }
+        }
+        if (melhorPrecoSmartPed) {
+          console.log(`[ANALISE-SMARTPED] Nenhuma FIXA com estoque. Fallback: R$${melhorPrecoSmartPed.toFixed(2)} (${melhorDistribuidora})`);
+        }
+      }
+    } catch (err: any) {
+      console.log(`[ANALISE] SmartPed erro: ${err.message}`);
+    }
   }
 
   // Se produto so tem desconto percentual (sem preco absoluto), calcular preco efetivo
@@ -594,28 +856,37 @@ async function analisarUmProduto(product: any, cnpj: string): Promise<any> {
     console.log(`[ANALISE] Preco calculado via desconto: R$ ${product.preco.toFixed(2)} (base: R$ ${melhorPrecoSmartPed.toFixed(2)}, desconto: ${discountPercent}%)`);
   }
 
-  // Calcular economia vs SmartPed
+  // Para auto-descarte, usar o MENOR preco entre tiers (melhor cenario)
+  let bestTierPrice = product.preco;
+  if (product.tiers && product.tiers.length > 0) {
+    const minTierPrice = Math.min(...product.tiers.map((t: any) => t.price).filter((p: number) => p > 0));
+    if (minTierPrice > 0 && minTierPrice < bestTierPrice) {
+      bestTierPrice = minTierPrice;
+    }
+  }
+
+  // Calcular economia vs SmartPed (usando melhor tier price para comparacao)
   let economiaPercent = 0;
   let economiaValor = 0;
-  if (melhorPrecoSmartPed && melhorPrecoSmartPed > product.preco) {
-    economiaValor = melhorPrecoSmartPed - product.preco;
+  if (melhorPrecoSmartPed && melhorPrecoSmartPed > bestTierPrice) {
+    economiaValor = melhorPrecoSmartPed - bestTierPrice;
     economiaPercent = (economiaValor / melhorPrecoSmartPed) * 100;
   }
 
-  // AUTO-DESCARTE: verificar criterios
+  // AUTO-DESCARTE: verificar criterios (usar bestTierPrice = melhor cenario)
   let descartada = false;
   let motivoDescarte = "";
 
-  // Criterio 1: Preco da promocao > ultimo preco que paguei
-  if (melhorPrecoHistorico && product.preco > melhorPrecoHistorico) {
+  // Criterio 1: Melhor preco da promocao > ultimo preco que paguei
+  if (melhorPrecoHistorico && bestTierPrice > melhorPrecoHistorico) {
     descartada = true;
-    motivoDescarte = `Preco R$ ${product.preco.toFixed(2)} > ultimo pago R$ ${melhorPrecoHistorico.toFixed(2)} (${melhorFornecedorHistorico || "N/A"})`;
+    motivoDescarte = `Preco R$ ${bestTierPrice.toFixed(2)} > ultimo pago R$ ${melhorPrecoHistorico.toFixed(2)} (${melhorFornecedorHistorico || "N/A"})`;
   }
 
-  // Criterio 2: Preco da promocao > melhor preco SmartPed (com estoque)
-  if (!descartada && melhorPrecoSmartPed && product.preco > melhorPrecoSmartPed) {
+  // Criterio 2: Melhor preco da promocao > melhor preco SmartPed (com estoque)
+  if (!descartada && melhorPrecoSmartPed && bestTierPrice > melhorPrecoSmartPed) {
     descartada = true;
-    motivoDescarte = `Preco R$ ${product.preco.toFixed(2)} > melhor SmartPed R$ ${melhorPrecoSmartPed.toFixed(2)} (${melhorDistribuidora || "N/A"})`;
+    motivoDescarte = `Preco R$ ${bestTierPrice.toFixed(2)} > melhor SmartPed R$ ${melhorPrecoSmartPed.toFixed(2)} (${melhorDistribuidora || "N/A"})`;
   }
 
   // Criterio 3: Sem vendas
@@ -631,6 +902,13 @@ async function analisarUmProduto(product: any, cnpj: string): Promise<any> {
     estoquePorLaboratorio,
     melhorPrecoSmartPed,
     melhorDistribuidora,
+    melhorEanSmartPed,
+    melhorLabSmartPed,
+    melhorPrecoPromocao,
+    melhorDistPromocao,
+    melhorCondPromocao,
+    melhorQtdMinPromocao,
+    melhorEanPromocao,
     melhorPrecoHistorico,
     melhorFornecedorHistorico,
     comprasHistorico,
@@ -643,6 +921,7 @@ async function analisarUmProduto(product: any, cnpj: string): Promise<any> {
     motivoDescarte,
     precoCalculadoViaDesconto: product.precoCalculadoViaDesconto || false,
     discountPercent: discountPercent || 0,
+    bestTierPrice: Math.round(bestTierPrice * 100) / 100,
   };
 }
 
@@ -682,39 +961,52 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
     console.log(`[OFERTAS-DIA] ${productsWithoutEan.length} produtos sem EAN para buscar`);
     if (productsWithoutEan.length > 0) {
       try {
+        // Buscar por PRINCÍPIO ATIVO (ex: "ALENDRONATO") — não "70MG" que pode ter "SOD" no meio
         const buscaTermos = productsWithoutEan.map((p: any) => {
           let desc = p.description
-            .replace(/\bgenérico\b/gi, "")
-            .replace(/\bgen\b/gi, "")
-            .replace(/\b(sandoz|medley|biolab|ache|neo\s*quimica|cernosul|cervosul|EMS|Pfizer|Novartis|Eurofarma|Medley)\b/gi, "")
-            .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
-            .trim()
-            .substring(0, 40);
-          return desc;
+            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}\u{1F1E0}-\u{1F1FF}]/gu, "")
+            .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
+            .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
+            .replace(/\b(sandoz|medley|biolab|ache|neo\s*quimica|cernosul|cervosul|EMS|Pfizer|Novartis|Eurofarma|Medley|Delta|Hypera|Torrent|Germed|Prati|Discus|Tommasi|Sanofi|Bayer|Merck|Abbot|Abbott|Vitamedic|Farmoquimica|Cimed|União Quimica|Alten|Bussie|Pharlab|Diméd|Dimed|Anfarm|Emdeplast|Geolab|Mylan|Legrand|Teuto|Pague|Rosário|Andromeda|Biochemiker|Phoenix|Medquimica|Cristália|Cristalia|Aché|Ache)\b/gi, "")
+            .trim();
+          const words = desc.split(/\s+/).filter(w => w.length >= 3 && !/^\d+$/.test(w));
+          const principioAtivo = (words[0] || desc).substring(0, 30);
+          const dosageMatch = desc.match(/(\d+\s*(?:mg|mcg|ml|g|ui|%))/i);
+          const dosageFilter = dosageMatch ? dosageMatch[1].replace(/\s/g, '').toLowerCase() : null;
+          return { principioAtivo, dosageFilter, original: desc };
         });
-        console.log(`[OFERTAS-DIA] buscar-lote termos limpos:`, buscaTermos);
+        const termosBusca = buscaTermos.map(t => t.principioAtivo);
+        console.log(`[OFERTAS-DIA] buscar-lote princípios ativos:`, termosBusca);
         const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ itens: buscaTermos }),
+          body: JSON.stringify({ itens: termosBusca }),
         });
         if (buscaRes.ok) {
           const buscaData = await buscaRes.json();
-          console.log(`[OFERTAS-DIA] buscar-lote resposta: success=${buscaData?.success}, total=${buscaData?.total_itens}, chaves=${Object.keys(buscaData?.resultados || {}).join(', ')}`);
+          console.log(`[OFERTAS-DIA] buscar-lote resposta: success=${buscaData?.success}, total=${buscaData?.total_itens}`);
           const resultados = buscaData?.resultados || {};
           for (let i = 0; i < productsWithoutEan.length; i++) {
-            const termo = buscaTermos[i];
+            const termo = termosBusca[i];
             const produtosEncontrados = resultados[termo] || [];
-            console.log(`[OFERTAS-DIA] "${termo}" → ${produtosEncontrados.length} resultados`);
+            const { dosageFilter } = buscaTermos[i];
+            console.log(`[OFERTAS-DIA] "${termo}" → ${produtosEncontrados.length} resultados (filtro dosagem: ${dosageFilter || "nenhum"})`);
             if (produtosEncontrados.length > 0) {
-              const bestMatch = produtosEncontrados.find((p: any) => p.qtd_estoque > 0) || produtosEncontrados[0];
-              console.log(`[OFERTAS-DIA] bestMatch ean=${bestMatch?.ean}, estoque=${bestMatch?.qtd_estoque}`);
+              let candidatos = produtosEncontrados;
+              if (dosageFilter) {
+                candidatos = produtosEncontrados.filter((p: any) => {
+                  const nome = (p.nom_produto || "").toLowerCase();
+                  return nome.includes(dosageFilter);
+                });
+                if (candidatos.length === 0) candidatos = produtosEncontrados;
+              }
+              const bestMatch = candidatos.find((p: any) => p.qtd_estoque > 0) || candidatos[0];
               if (bestMatch?.ean) {
                 const product = productsWithoutEan[i];
                 const idx = uniqueProducts.findIndex(p => p.description === product.description && !p.ean);
                 if (idx >= 0) {
                   uniqueProducts[idx].ean = bestMatch.ean;
-                  console.log(`[OFERTAS-DIA] EAN atribuído: ${bestMatch.ean} → "${product.description}"`);
+                  console.log(`[OFERTAS-DIA] EAN: ${bestMatch.ean} → "${product.description}" (${bestMatch.nom_produto})`);
                 }
               }
             }
@@ -735,104 +1027,150 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
       const batch = uniqueProducts.slice(i, i + CONCURRENCY);
       const results = await Promise.allSettled(
         batch.map(async (product) => {
-          const analysis = await analisarUmProduto(product, cnpj);
-          
-          // Se tem EAN, buscar todos EANs do mesmo DCB via Trier e agregar vendas/compras
-          let vendasAgregadas = analysis.vendasMensais;
-          let comprasAgregadas = analysis.comprasHistorico || [];
+          // PASSO 1: Descobrir TODOS os EANs do mesmo DCB ANTES de analisar
           let eansGrupo: any[] = [];
+          let eanList: string[] = product.ean ? [product.ean] : [];
+          console.log(`[OFERTAS-DIA] DCB: product.ean=${product.ean}, description=${(product.description || "").substring(0, 30)}`);
           
           if (product.ean) {
             try {
-              // Buscar todos produtos do mesmo DCB via buscar-lote
-              const cleanDesc = (product.description || product.produto || "")
+              // Extrair princípio ativo (primeira palavra significativa) para busca
+              const descLimpa = (product.description || product.produto || "")
+                .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
+                .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
                 .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
-                .replace(/\b(sandoz|medley|biolab|ache|neo\s*quimica|cernosul|cervosul|EMS|Pfizer|Novartis|Eurofarma|Medley)\b/gi, "")
-                .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
-                .trim().substring(0, 40);
+                .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia)\b/gi, "")
+                .trim();
+              const words = descLimpa.split(/\s+/).filter((w: string) => w.length >= 3 && !/^\d+$/.test(w));
+              const principioAtivo = (words[0] || "").substring(0, 30);
+              // Extrair dosagem para filtrar depois
+              const dosageMatch = descLimpa.match(/(\d+\s*(?:mg|mcg|ml|g|ui|%))/i);
+              const dosageFilter = dosageMatch ? dosageMatch[1].replace(/\s/g, '').toLowerCase() : null;
               
-              if (cleanDesc.length >= 3) {
+              if (principioAtivo.length >= 3) {
                 const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ itens: [cleanDesc] }),
+                  body: JSON.stringify({ itens: [principioAtivo] }),
                 });
-                
                 if (buscaRes.ok) {
                   const buscaData = await buscaRes.json();
                   const resultados = buscaData?.resultados || {};
-                  const cleanLower = cleanDesc.toLowerCase();
-                  const foundKey = Object.keys(resultados).find(k => k.toLowerCase() === cleanLower);
-                  const allProdutos = (foundKey ? resultados[foundKey] : []) as any[];
-                  
-                  // Filtrar apenas produtos com mesmo DCB
+                  // Pegar TODOS os produtos de TODAS as chaves
+                  let allProdutos: any[] = [];
+                  for (const key of Object.keys(resultados)) {
+                    if (Array.isArray(resultados[key])) allProdutos.push(...resultados[key]);
+                  }
+                  // Filtrar por dosagem se especificada
+                  if (dosageFilter && allProdutos.length > 0) {
+                    const filtered = allProdutos.filter((p: any) => (p.nom_produto || "").toLowerCase().includes(dosageFilter));
+                    if (filtered.length > 0) allProdutos = filtered;
+                  }
+                  // Filtrar por DCB do EAN original
                   const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
                   if (dcb) {
                     eansGrupo = allProdutos
                       .filter((p: any) => p.cod_dcb === dcb && (p.ean || p.cod_barra))
-                      .map((p: any) => ({
-                        ean: p.ean || p.cod_barra || "",
-                        lab: (p.nom_laborat || p.laboratorio || "").trim(),
-                        estoque: p.qtd_estoque || 0,
-                      }));
-                    
-                    // Deduplicar EANs
-                    const uniqueEans = [...new Map(eansGrupo.filter((e: any) => e.ean).map((e: any) => [e.ean, e])).values()];
-                    
-                    // Buscar vendas-semanais de TODOS os EANs UNICOS
-                    let totalVendas = 0;
-                    const vendasPromises = uniqueEans.map(async (e: any) => {
-                      try {
-                        const vendasRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-semanais/${e.ean}`);
-                        if (vendasRes.ok) {
-                          const vendasData = await vendasRes.json();
-                          const vendasArray = vendasData?.data || [];
-                          const ultimas13 = vendasArray.slice(0, 13);
-                          let soma = 0;
-                          for (const v of ultimas13) {
-                            soma += parseFloat(String(v.qtd_vendida || "0"));
-                          }
-                          return ultimas13.length > 0 ? (soma / ultimas13.length) * 4.33 : 0;
-                        }
-                      } catch {}
-                      return 0;
-                    });
-                    const vendasResults = await Promise.all(vendasPromises);
-                    totalVendas = vendasResults.reduce((a, b) => a + b, 0);
-                    vendasAgregadas = Math.round(totalVendas);
-                    
-                    // Buscar compras-historico de TODOS os EANs UNICOS
-                    const allCompras: any[] = [];
-                    const comprasPromises = uniqueEans.map(async (e: any) => {
-                      try {
-                        const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${e.ean}?meses=6`);
-                        if (histRes.ok) {
-                          const histData = await histRes.json();
-                          return (histData?.compras || []).map((c: any) => ({
-                            preco: c.preco_unitario || c.preco || 0,
-                            precoTabela: c.preco_tabela || 0,
-                            fornecedor: c.fornecedor || "",
-                            data: c.data || "",
-                            quantidade: c.quantidade || 0,
-                            notaFiscal: c.nota_fiscal || null,
-                            laboratorio: e.lab || "",
-                          }));
-                        }
-                      } catch {}
-                      return [];
-                    });
-                    const comprasResults = await Promise.all(comprasPromises);
-                    for (const compras of comprasResults) {
-                      allCompras.push(...compras);
-                    }
-                    allCompras.sort((a: any, b: any) => (b.data || "").localeCompare(a.data || ""));
-                    comprasAgregadas = allCompras.slice(0, 10);
+                      .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0 }));
+                    eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
+                    console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (princípio: ${principioAtivo})`);
                   }
                 }
               }
             } catch {}
           }
+
+          // PASSO 1.5: Buscar EANs extras via SmartPed Produtos/Buscar com wildcards
+          // O buscar-lote só tem EANs do ERP local. Produtos/Buscar descobre EANs
+          // de TODOS os distribuidores da SmartPed (Gauchofarma, CervoSul, etc.)
+          if (product.ean && product.description) {
+            try {
+              const smartPedToken = process.env.SMARTPED_PRODUCTION_TOKEN;
+              const smartPedBaseUrl = (process.env.SMARTPED_PRODUCTION_URL || "https://api.smartped.com.br").replace(/\/$/, "");
+              const wildcards = getWildcardQueries(product.description);
+              if (wildcards.length > 0 && smartPedToken) {
+                const smartPedEans = new Set<string>();
+                for (const wildcard of wildcards.slice(0, 3)) {
+                  try {
+                    const buscarRes = await fetch(`${smartPedBaseUrl}/api/Produtos/Buscar`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                      body: JSON.stringify({ Token: smartPedToken, parametros: { CnpjCLi: cnpj, Texto: wildcard } })
+                    });
+                    if (buscarRes.ok) {
+                      const buscarData = await buscarRes.json();
+                      const produtos = buscarData?.Retorno || [];
+                      for (const prod of Array.isArray(produtos) ? produtos : []) {
+                        const ean = cleanEan(prod.Ean || prod.ean || prod.CodBarra || "");
+                        if (ean && ean.length >= 8) smartPedEans.add(ean);
+                      }
+                    }
+                  } catch {}
+                }
+                // Adicionar EANs descobertos que não estão na lista atual
+                const newEans = Array.from(smartPedEans).filter(ean => !eanList.includes(ean));
+                if (newEans.length > 0) {
+                  for (const ean of newEans) {
+                    eansGrupo.push({ ean, lab: "", estoque: 0, origem: "smartped_buscar" });
+                  }
+                  eanList = [...new Set([...eanList, ...newEans])];
+                  console.log(`[OFERTAS-DIA] SMARTPED-BUSCAR: +${newEans.length} EANs via wildcards [${wildcards[0]}] (total: ${eanList.length})`);
+                }
+              }
+            } catch {}
+          }
+
+          // PASSO 2: Analisar com TODOS os EANs do grupo
+          const analysis = await analisarUmProduto(product, cnpj, eanList);
           
+          // PASSO 3: Agregar vendas/compras de TODOS os EANs
+          let vendasAgregadas = analysis.vendasMensais;
+          let comprasAgregadas = analysis.comprasHistorico || [];
+          
+          if (eanList.length > 1) {
+            try {
+              let totalVendas = 0;
+              const vendasPromises = eanList.map(async (ean: string) => {
+                try {
+                  const vendasRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-semanais/${ean}`);
+                  if (vendasRes.ok) {
+                    const vendasData = await vendasRes.json();
+                    const vendasArray = vendasData?.data || [];
+                    const ultimas13 = vendasArray.slice(0, 13);
+                    let soma = 0;
+                    for (const v of ultimas13) { soma += parseFloat(String(v.qtd_vendida || "0")); }
+                    return ultimas13.length > 0 ? (soma / ultimas13.length) * 4.33 : 0;
+                  }
+                } catch {}
+                return 0;
+              });
+              const vendasResults = await Promise.all(vendasPromises);
+              totalVendas = vendasResults.reduce((a, b) => a + b, 0);
+              vendasAgregadas = Math.round(totalVendas);
+              
+              // Compras de todos os EANs
+              const allCompras: any[] = [];
+              const comprasPromises = eanList.map(async (ean: string) => {
+                try {
+                  const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${ean}?meses=6`);
+                  if (histRes.ok) {
+                    const histData = await histRes.json();
+                    return (histData?.compras || []).map((c: any) => ({
+                      preco: c.preco_unitario || c.preco || 0, precoTabela: c.preco_tabela || 0,
+                      fornecedor: c.fornecedor || "", data: c.data || "", quantidade: c.quantidade || 0,
+                      notaFiscal: c.nota_fiscal || null, laboratorio: "", ean,
+                    }));
+                  }
+                } catch {}
+                return [];
+              });
+              const comprasResults = await Promise.all(comprasPromises);
+              for (const compras of comprasResults) { allCompras.push(...compras); }
+              allCompras.sort((a: any, b: any) => (b.data || "").localeCompare(a.data || ""));
+              comprasAgregadas = allCompras.slice(0, 10);
+            } catch {}
+          }
+
           const estoqueGrupo = eansGrupo.length > 0
             ? eansGrupo.reduce((sum: number, e: any) => sum + (e.estoque || 0), 0)
             : analysis.estoqueTotal;

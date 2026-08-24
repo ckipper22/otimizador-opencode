@@ -83,13 +83,20 @@
 
 ## 4. O que FALTA corrigir (próxima sessão)
 
-### 4.1. Vendas não aparece para produtos novos
-- **Problema:** Vendas mostra 0/mês para produtos sem histórico no Trier
-- **Solução possível:** Buscar vendas por descrição (não só por EAN)
+### 4.1. SmartPed — EANs extras (Gauchofarma, CervoSul, etc.)
+- **Problema:** A Ferramentinhas (ERP local) só tem EANs que a farmácia já comprou. A SmartPed tem EANs de TODOS os distribuidores do mercado que não existem no ERP.
+- **Solução:** Buscar EANs extras via `buscar-lote` por princípio ativo (já implementado parcialmente). Se ≤2 EANs, expandir via descrição. Se a SmartPed tiver busca textual (futuro), usar direto.
+- **Status:** Implementado — `analisarFornecedorEmBackground` busca por princípio ativo + filtro dosagem. `analisarUmProduto` aceita `allEans`. Precisa de teste completo.
 
-### 4.2. Performance lenta
-- **Problema:** "Carregar Todas" demora porque chama muitas APIs em sequência
-- **Solução possível:** Batch de vendas-semanais, cache de resultados
+### 4.2. Deploy pendente
+- **Todas as mudanças desta sessão** precisam de deploy: price tiers, timestamps UTC-3, botões CRUD, analysis cache, EAN lookup, multi-EAN expansion.
+- **Comando:** `gcloud run deploy smartped-cli --source . --region us-east1 --env-vars-file cloud-env.yaml --build-env-vars-file build-env.yaml`
+
+### 4.3. Teste completo do fluxo
+- Validar que `eansGrupo` aparece no `dados_analise` (DCB expansion)
+- Validar que SmartPed retorna ofertas de múltiplos labs
+- Validar tiers no card e detail modal
+- Validar dirty tracking na aba Tabelas
 
 ---
 
@@ -103,13 +110,17 @@
 │  1. Buscar fornecedores no Turso (external_suppliers)    │
 │  2. Para cada fornecedor:                                │
 │     a. Ler products[] do JSON                            │
-│     b. Buscar EANs via buscar-lote (produtos sem EAN)    │
+│     b. Buscar EANs via buscar-lote (princípio ativo)     │
 │     c. Para cada produto:                                │
-│        - analisarUmProduto(product) → SmartPed/vendas    │
-│        - buscar-lote(description) → todos EANs do DCB    │
-│        - vendas-semanais(CADA EAN) → somar               │
-│        - compras-historico(CADA EAN) → merge com lab     │
-│        - Montar eansGrupo com estoque/labs               │
+│        1. buscar-lote(princípio ativo) → EANs do ERP     │
+│        2. Se ≤2 EANs → buscar mais via descrição         │
+│        3. analisarUmProduto(product, cnpj, allEans)      │
+│           → SmartPed Condicoes/Ean para CADA EAN         │
+│           → SmartPed Condicoes/Molecula com EAN original │
+│           → menor preço com estoque de TODOS os labs     │
+│        4. vendas-semanais(CADA EAN) → somar              │
+│        5. compras-historico(CADA EAN) → merge com lab    │
+│        6. Montar eansGrupo com estoque/labs              │
 │     d. Retornar produto com dados agregados              │
 │  3. Salvar em external_suppliers.dados_analise           │
 │  4. Frontend renderiza cards                             │

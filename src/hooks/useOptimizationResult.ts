@@ -334,10 +334,27 @@ export function useOptimizationResult({
         report: prev.report.map((item: any) => {
           if (item.codInterno === codInterno) {
             const qty = Math.max(1, newQty);
+            let novoPreco = item.novoPreco;
+            let economiaUnit = item.economiaUnit;
+
+            // Tier-aware pricing: recalcular preco se item tem tiers
+            if (item.tiers && item.tiers.length > 0) {
+              // Encontrar o maior tier onde qty >= minQty
+              const applicableTier = item.tiers
+                .filter((t: any) => qty >= t.minQty)
+                .sort((a: any, b: any) => b.minQty - a.minQty)[0];
+              if (applicableTier && applicableTier.price > 0) {
+                novoPreco = applicableTier.price;
+                economiaUnit = (item.originalPreco || 0) - novoPreco;
+              }
+            }
+
             return {
               ...item,
               qtd: qty,
-              economiaTotal: (item.economiaUnit || 0) * qty
+              novoPreco,
+              economiaUnit,
+              economiaTotal: economiaUnit * qty
             };
           }
           return item;

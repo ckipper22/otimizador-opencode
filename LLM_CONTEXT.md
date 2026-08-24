@@ -42,6 +42,81 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 | Desconto duplo fornecedor externo | `analisarUmProduto` usava `Pliquido` (já com desconto dist.) como base | Usar `Preco` (tabela/PFAB) como base. `Pliquido` = desconto duplo | AGENTS.md #43, server.ts `analisarUmProduto()` |
 | INSERT OR REPLACE apagava análise | `saveExternalSupplier` usava `INSERT OR REPLACE` — colunas `dados_analise`, `status_analise`, `analyzed_at` viravam NULL a cada save do frontend | `INSERT ... ON CONFLICT(id) DO UPDATE SET ...` preserva colunas de análise | `server/database.ts:776` |
 | Filtro validade em UTC | Cloud Run calculava "hoje" em UTC (`new Date().toLocaleDateString('sv-SE')`), mas validade era salva em UTC-3 → fornecedor filtrado como expirado | Offset `-3h`: `new Date(Date.now() - 3*60*60*1000)` | `server.ts:897`, `server.ts:4287` |
+| SmartPed "visão em túnel" | Promoções do Dia buscava SmartPed com 1 EAN — perdia ofertas de outros labs | Expandir EANs via `buscar-lote` (DCB) ANTES de analisar, passar `allEans` para `analisarUmProduto` | `server.ts` `analisarFornecedorEmBackground`, `analisarUmProduto` |
+| Tier regex não detectava emojis | `💥70und 2,29` virava produto separado em vez de tier | Limpar emojis Unicode antes de testar tier regex ( ranges específicos, NÃO `\p{Emoji}`) | `ConfigurationPanel.tsx:171` |
+| Mojibake em termos de busca | `\udca5Alendronato` causava HTTP 500 no buscar-lote | Limpar `\udca5\|\udca4\|\udca6\|\ufffd` antes de enviar à API | `server.ts` `analisarFornecedorEmBackground` |
+| Buscar-lote sem mg não acha | `ILIKE %ALLENDRONATO 70%` não casa com `ALLENDRONATO SOD 70MG` | Buscar por princípio ativo (primeira palavra) + filtrar dosagem no JS | `server.ts` `analisarFornecedorEmBackground` |
+
+---
+
+## 1.1. PRICE TIERS (QUANTITY BREAKS) — Promoções WhatsApp (2026-08-24)
+
+### O que é
+Promoções WhatsApp podem ter preço por faixa de quantidade (ex: "70und R$2.29, 140und R$2.19"). O sistema agora detecta, armazena e exibe essas faixas.
+
+### Modelo de dados
+```typescript
+interface PriceTier { minQty: number; price: number; }
+// Adicionado em: ExternalProduct.tiers?, SwapReportItem.tiers?
+```
+
+### Parser (`ConfigurationPanel.tsx:171`)
+Detecta padrões: `70und 2,29`, `50+ 5,00`, `a partir de 100: 3,50`. Limpa emojis Unicode ANTES de testar (ranges específicos, NÃO `\p{Emoji}`).
+
+### Backend (`server.ts`)
+- `analisarUmProduto()`: Calcula `bestTierPrice` (menor tier) para auto-descarte
+- `bestTierPrice` retornado no resultado da análise
+
+### Frontend
+- **Card** (`OfertasDoDiaModal.tsx`): Banner laranja "PRECO CONDICIONAL" + tabela faixas
+- **Detail**: Seção "Faixas de Preço" com economia vs base e vs SmartPed
+- **SwapsTable**: Badge "FAIXA X+ ★" (verde) ou "+N un p/ R$" (amarelo)
+- **handleUpdateQty**: Recalcula `novoPreco` quando qty atinge tier
+
+### Retrocompatibilidade
+`tiers` é opcional — produtos antigos sem tiers continuam funcionando.
+
+---
+
+## 1.2. SMARTPED MULTI-EAN EXPANSION — Promoções do Dia (2026-08-24)
+
+### Problema
+`analisarUmProduto` buscava SmartPed com 1 EAN → perdia ofertas de outros labs.
+
+### Solução (3 etapas)
+1. **buscar-lote por princípio ativo** (ex: "ALENDRONATO") → EANs do ERP local
+2. **Enriquecimento por descrição** se ≤2 EANs → mais EANs via Ferramentinhas
+3. **SmartPed `Condicoes/Ean` para CADA EAN** (batches paralelos) → ofertas de todos os labs
+
+### Fluxo corrigido
+```
+buscar-lote("ALENDRONATO") → 4 EANs (ERP local)
+  ↓ (se ≤2 EANs, buscar mais)
+analisarUmProduto(ean, cnpj, [4+ EANs])
+  → Condicoes/Ean para CADA EAN (paralelo)
+  → Condicoes/Molecula com EAN original
+  → menor preço com estoque de TODOS os labs
+```
+
+### Limitação
+Ferramentinhas só tem EANs do ERP local. SmartPed tem EANs extras (Gauchofarma, CervoSul) que não estão no ERP. API SmartPed não suporta busca textual por descrição.
+
+---
+
+## 1.3. TURSO UTC-3 + BOTÕES CRUD LISTAS (2026-08-24)
+
+### Timestamps
+- Todos `datetime('now')` → `datetime('now', '-3 hours')` (~30 ocorrências)
+- `validade` comparison: `new Date(Date.now() - 3*60*60*1000).toISOString()`
+
+### Botões Salvar/Editar/Excluir
+- Aba "Tabelas" agora tem dirty tracking + botão "Salvar Listas" / "Salvo ✓"
+- Exclusão chama `DELETE /api/external-suppliers/:id` (não só filtra state)
+- Confirmação antes de excluir
+
+### Analysis Cache Clearing
+- POST `/api/external-suppliers` compara oldProducts vs newProducts
+- Se diferentes → `updateSupplierAnalysis(id, null, "pendente")` → re-análise
 
 ---
 

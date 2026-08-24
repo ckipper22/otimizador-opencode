@@ -5,6 +5,9 @@ const TURSO_URL = process.env.TURSO_DATABASE_URL;
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
 export const USE_TURSO = !!TURSO_URL && !!TURSO_TOKEN;
 
+// Timestamp UTC-3 (Panambi/RS) — usar em TODOS os datetime() do banco
+const NOW_PANAMBI = "datetime('now', '-3 hours')";
+
 let tursoClient: any = null;
 let db: any = null;
 let dbFailed = false;
@@ -79,8 +82,8 @@ const SCHEMA_SQL = `
     status TEXT DEFAULT 'pending',
     payload_json TEXT,
     response_json TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now', '-3 hours')),
+    updated_at TEXT DEFAULT (datetime('now', '-3 hours'))
   );
   CREATE TABLE IF NOT EXISTS order_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,13 +100,13 @@ const SCHEMA_SQL = `
     is_swap INTEGER DEFAULT 0,
     origem TEXT DEFAULT 'manual',
     id_encomenda TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now', '-3 hours')),
     FOREIGN KEY (num_pedido) REFERENCES orders(num_pedido)
   );
   CREATE TABLE IF NOT EXISTS api_cache (
     cache_key TEXT PRIMARY KEY,
     data_json TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now', '-3 hours')),
     expires_at TEXT
   );
   CREATE TABLE IF NOT EXISTS faturados (
@@ -116,7 +119,7 @@ const SCHEMA_SQL = `
     nome_dist TEXT,
     qtd INTEGER,
     preco_liquido REAL,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now', '-3 hours'))
   );
   CREATE TABLE IF NOT EXISTS itens_confirmados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,8 +138,8 @@ const SCHEMA_SQL = `
     data_confirmacao TEXT,
     origem TEXT DEFAULT 'manual',
     id_encomenda TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now', '-3 hours')),
+    updated_at TEXT DEFAULT (datetime('now', '-3 hours')),
     UNIQUE(num_pedido, ean, cod_dist)
   );
   CREATE INDEX IF NOT EXISTS idx_orders_cnpj ON orders(cnpj);
@@ -162,8 +165,8 @@ const SCHEMA_SQL = `
     cnpj TEXT,
     status TEXT DEFAULT 'adicionado',
     data_adicao TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now', '-3 hours')),
+    updated_at TEXT DEFAULT (datetime('now', '-3 hours')),
     origem TEXT DEFAULT 'manual',
     id_encomenda TEXT
   );
@@ -180,7 +183,7 @@ const SCHEMA_SQL = `
     nome_dist TEXT,
     qtd_min INTEGER DEFAULT 0,
     tipo_item TEXT,
-    ultima_atualizacao TEXT DEFAULT (datetime('now')),
+    ultima_atualizacao TEXT DEFAULT (datetime('now', '-3 hours')),
     PRIMARY KEY (ean, cod_dist, condicao, prazo)
   );
   CREATE INDEX IF NOT EXISTS idx_precos_cache_ean ON precos_cache(ean);
@@ -194,7 +197,7 @@ const SCHEMA_SQL = `
     concentracao TEXT,
     apresentacao TEXT,
     tipo_item TEXT,
-    ultima_atualizacao TEXT DEFAULT (datetime('now'))
+    ultima_atualizacao TEXT DEFAULT (datetime('now', '-3 hours'))
   );
   CREATE INDEX IF NOT EXISTS idx_produtos_cache_dcb ON produtos_cache(dcb);
   CREATE INDEX IF NOT EXISTS idx_produtos_cache_molecula ON produtos_cache(molecula);
@@ -209,8 +212,8 @@ const SCHEMA_SQL = `
     observacao TEXT,
     origem TEXT DEFAULT 'lista',
     cnpj TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now', '-3 hours')),
+    updated_at TEXT DEFAULT (datetime('now', '-3 hours'))
   );
   CREATE INDEX IF NOT EXISTS idx_pedidos_whatsapp_cnpj ON pedidos_whatsapp(cnpj);
   CREATE INDEX IF NOT EXISTS idx_pedidos_whatsapp_status ON pedidos_whatsapp(status);
@@ -225,8 +228,8 @@ const SCHEMA_SQL = `
     ocultar_precos INTEGER DEFAULT 0,
     ativo INTEGER DEFAULT 1,
     cnpj TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now', '-3 hours')),
+    updated_at TEXT DEFAULT (datetime('now', '-3 hours'))
   );
   CREATE INDEX IF NOT EXISTS idx_whatsapp_rules_cnpj ON whatsapp_rules(cnpj);
 
@@ -240,8 +243,8 @@ const SCHEMA_SQL = `
     dados_analise TEXT,
     status_analise TEXT DEFAULT 'pendente',
     analyzed_at TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now', '-3 hours')),
+    updated_at TEXT DEFAULT (datetime('now', '-3 hours'))
   );
   CREATE INDEX IF NOT EXISTS idx_external_suppliers_cnpj ON external_suppliers(cnpj);
   CREATE INDEX IF NOT EXISTS idx_external_suppliers_validade ON external_suppliers(validade);
@@ -270,7 +273,7 @@ export async function saveOrder(numPedido: string, cnpj: string, dataPedido: str
   const d = getDb();
   if (!d) return;
   try {
-    const sql = `INSERT OR REPLACE INTO orders (num_pedido, cnpj, data_pedido, payload_json, response_json, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`;
+    const sql = `INSERT OR REPLACE INTO orders (num_pedido, cnpj, data_pedido, payload_json, response_json, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now', '-3 hours'))`;
     const args = [numPedido, cnpj, dataPedido, JSON.stringify(payload), response ? JSON.stringify(response) : null];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
@@ -280,7 +283,7 @@ export async function updateOrderResponse(numPedido: string, response: any) {
   const d = getDb();
   if (!d) return;
   try {
-    const sql = `UPDATE orders SET response_json = ?, status = 'completed', updated_at = datetime('now') WHERE num_pedido = ?`;
+    const sql = `UPDATE orders SET response_json = ?, status = 'completed', updated_at = datetime('now', '-3 hours') WHERE num_pedido = ?`;
     const args = [JSON.stringify(response), numPedido];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
@@ -365,7 +368,7 @@ export async function purgeExpiredCache() {
   const d = getDb();
   if (!d) return 0;
   try {
-    const sql = `DELETE FROM api_cache WHERE expires_at < datetime('now')`;
+    const sql = `DELETE FROM api_cache WHERE expires_at < datetime('now', '-3 hours')`;
     if (USE_TURSO) {
       const result = await d.run(sql);
       return result.rowsAffected ?? 0;
@@ -408,12 +411,12 @@ export async function saveItemConfirmado(item: {
   if (!d) return;
   try {
     const sql = `INSERT INTO itens_confirmados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd_solicitada, qtd_faturada, preco_liquido, status, motivo, cnpj, data_confirmacao, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))
       ON CONFLICT(num_pedido, ean, cod_dist) DO UPDATE SET
         qtd_faturada = excluded.qtd_faturada,
         status = excluded.status,
         motivo = excluded.motivo,
-        updated_at = datetime('now')`;
+        updated_at = datetime('now', '-3 hours')`;
     const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
@@ -452,11 +455,11 @@ export async function saveItemManual(item: {
   if (!d) return;
   try {
     const sql = `INSERT INTO itens_manuais (cod_interno, ean, descricao, laboratorio, distribuidora, cod_dist, qtd, preco_liquido, preco_fabrica, condicao, prazo, cnpj, status, data_adicao, updated_at, origem, id_encomenda)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'), ?, ?)
       ON CONFLICT(cod_interno) DO UPDATE SET
         qtd = excluded.qtd,
         status = excluded.status,
-        updated_at = datetime('now)`;
+        updated_at = datetime('now', '-3 hours')`;
     const args = [item.codInterno, item.ean, item.descricao, item.laboratorio, item.distribuidora, item.codDist, item.qtd, item.precoLiquido, item.precoFabrica || 0, item.condicao || "", item.prazo || 0, item.cnpj, item.status || "adicionado", item.dataAdicao, item.origem || "manual", item.idEncomenda || null];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
@@ -542,7 +545,7 @@ export async function saveProdutoCache(item: {
   if (!d) return;
   try {
     const sql = `INSERT OR REPLACE INTO produtos_cache (ean, descricao, laboratorio, dcb, molecula, concentracao, apresentacao, tipo_item, ultima_atualizacao)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`;
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))`;
     const args = [item.ean, item.descricao || null, item.laboratorio || null, item.dcb || null, item.molecula || null, item.concentracao || null, item.apresentacao || null, item.tipoItem || null];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
@@ -569,7 +572,7 @@ export async function savePrecosCacheBatch(items: Array<{
   if (!d || items.length === 0) return;
   try {
     const sql = `INSERT OR REPLACE INTO precos_cache (ean, cod_dist, condicao, prazo, preco_liquido, estoque, nome_dist, qtd_min, tipo_item, ultima_atualizacao)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`;
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))`;
     for (const item of items) {
       const args = [item.ean, item.codDist, item.condicao, item.prazo, item.precoLiquido, item.estoque, item.nomeDist, item.qtdMin || 0, item.tipoItem || null];
       if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
@@ -656,7 +659,7 @@ export async function saveEansFixos(eans: Array<{ ean: string; descricao?: strin
   const d = getDb();
   if (!d || eans.length === 0) return;
   try {
-    const sql = `INSERT OR REPLACE INTO sugestoes_eans (ean, descricao, laboratorio, cod_dist, nome_dist, ultima_atualizacao) VALUES (?, ?, ?, ?, ?, datetime('now'))`;
+    const sql = `INSERT OR REPLACE INTO sugestoes_eans (ean, descricao, laboratorio, cod_dist, nome_dist, ultima_atualizacao) VALUES (?, ?, ?, ?, ?, datetime('now', '-3 hours'))`;
     for (const e of eans) {
       const args = [e.ean, e.descricao || null, e.laboratorio || null, e.codDist || null, e.nomeDist || null];
       if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
@@ -696,7 +699,7 @@ export async function savePedidoWhatsApp(item: {
   if (!d) return;
   try {
     const sql = `INSERT INTO pedidos_whatsapp (data_pedido, fornecedor, telefone, itens, status, observacao, origem, cnpj, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`;
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))`;
     const args = [item.dataPedido, item.fornecedor, item.telefone || null, JSON.stringify(item.itens), item.status || "Pendente", item.observacao || null, item.origem || "lista", item.cnpj];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
@@ -716,7 +719,7 @@ export async function updatePedidoWhatsAppStatus(id: number, status: string) {
   const d = getDb();
   if (!d) return;
   try {
-    const sql = `UPDATE pedidos_whatsapp SET status = ?, updated_at = datetime('now') WHERE id = ?`;
+    const sql = `UPDATE pedidos_whatsapp SET status = ?, updated_at = datetime('now', '-3 hours') WHERE id = ?`;
     const args = [status, id];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
@@ -741,7 +744,7 @@ export async function saveWhatsAppRule(rule: {
   if (!d) return;
   try {
     const sql = `INSERT OR REPLACE INTO whatsapp_rules (id, nome_regra, termo_filtro, nome_representante, telefone, tipo_filtro, ocultar_precos, ativo, cnpj, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`;
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))`;
     const args = [rule.id, rule.nomeRegra, rule.termoFiltro, rule.nomeRepresentante || null, rule.telefone || null, rule.tipoFiltro || "todos", rule.ocultarPrecos ? 1 : 0, rule.ativo !== false ? 1 : 0, rule.cnpj];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
@@ -774,7 +777,7 @@ export async function saveExternalSupplier(supplier: {
   if (!d) return;
   try {
     const sql = `INSERT INTO external_suppliers (id, name, raw_text, validade, products, cnpj, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         raw_text = excluded.raw_text,
@@ -810,8 +813,8 @@ export async function updateSupplierAnalysis(id: string, dadosAnalise: any, stat
   const d = getDb();
   if (!d) return;
   try {
-    const sql = `UPDATE external_suppliers SET dados_analise = ?, status_analise = ?, analyzed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`;
-    const args = [JSON.stringify(dadosAnalise), status, id];
+    const sql = `UPDATE external_suppliers SET dados_analise = ?, status_analise = ?, analyzed_at = datetime('now', '-3 hours'), updated_at = datetime('now', '-3 hours') WHERE id = ?`;
+    const args = [dadosAnalise != null ? JSON.stringify(dadosAnalise) : null, status, id];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
 }

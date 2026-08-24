@@ -10,6 +10,7 @@ interface ConfigurationPanelProps {
   disabled: boolean;
   externalSuppliers: ExternalSupplier[];
   onUpdateExternalSuppliers: (suppliers: ExternalSupplier[]) => void;
+  onRemoveExternalSupplier?: (supplierId: string) => void;
   authorizedCompanies?: AuthorizedCompany[];
   onUpdateAuthorizedCompanies?: (companies: AuthorizedCompany[]) => void;
   isAdmin?: boolean;
@@ -23,6 +24,7 @@ export default function ConfigurationPanel({
   disabled,
   externalSuppliers,
   onUpdateExternalSuppliers,
+  onRemoveExternalSupplier,
   authorizedCompanies = [],
   onUpdateAuthorizedCompanies,
   isAdmin = false
@@ -37,6 +39,10 @@ export default function ConfigurationPanel({
   const [rulesDirty, setRulesDirty] = React.useState(() => {
     try { return localStorage.getItem("whatsapp_rules_dirty") === "true"; } catch { return false; }
   });
+
+  // Tabelas de Preço — dirty tracking
+  const [tabelasDirty, setTabelasDirty] = React.useState(false);
+  const markTabelasDirty = () => setTabelasDirty(true);
 
   const markDirty = () => {
     setRulesDirty(true);
@@ -155,13 +161,31 @@ export default function ConfigurationPanel({
 
   const parsePriceList = (text: string) => {
     const lines = text.split("\n");
-    const products: { description: string; price: number; discountPercent?: number }[] = [];
+    const products: { description: string; price: number; discountPercent?: number; tiers?: { minQty: number; price: number }[] }[] = [];
     let pendingDescription = "";
 
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      
+
+      // Padrão 0: Faixa de quantidade (70und 2,29 | 50+ 5,00 | a partir de 100: 3,50)
+      // Limpar emojis antes de testar — 💥, ⭐, 📦, etc. são bullets válidos
+      // IMPORTANTE: NÃO usar \p{Emoji} pois inclui dígitos 0-9 no Unicode Modern
+      const cleanTier = trimmed.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}\u{1F1E0}-\u{1F1FF}]/gu, "").trim();
+      const tierRegex = /^\D*(\d+)\s*(?:und|un|unid|cx|caixa|\+)\s+(?:r\$)?\s*(\d+[\d\s]*[,.]\d{2})\s*$/i;
+      const tierMatch = cleanTier.match(tierRegex);
+      if (tierMatch && products.length > 0) {
+        const minQty = parseInt(tierMatch[1], 10);
+        const tierPrice = parseFloat(tierMatch[2].replace(/\s/g, "").replace(",", "."));
+        if (!isNaN(minQty) && !isNaN(tierPrice) && tierPrice > 0) {
+          const lastProd = products[products.length - 1];
+          if (!lastProd.tiers) lastProd.tiers = [];
+          lastProd.tiers.push({ minQty, price: tierPrice });
+          lastProd.tiers.sort((a, b) => a.minQty - b.minQty);
+          continue;
+        }
+      }
+
       // Padrão 1: Preço fixo (R$ 5,99 ou 5.99)
       const priceRegex = /(?:r\$)?\s*(\d+[\d\s]*[,.]\d{2})(?:\s*[^0-9\r\n]*)?\s*$/i;
       const match = trimmed.match(priceRegex);
@@ -208,7 +232,7 @@ export default function ConfigurationPanel({
 
   const handleAddSupplier = () => {
     const newId = `sup_${Date.now()}`;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date(Date.now() - 3*60*60*1000).toISOString().slice(0, 10);
     const newSupplier: ExternalSupplier = {
       id: newId,
       name: `Fornecedor ${externalSuppliers.length + 1}`,
@@ -219,13 +243,19 @@ export default function ConfigurationPanel({
     onUpdateExternalSuppliers([...externalSuppliers, newSupplier]);
     setExpandedSupplierId(newId);
     setWhatsappTab("tabelas");
+    markTabelasDirty();
   };
 
-  const handleRemoveSupplier = (id: string) => {
+  const handleRemoveSupplier = async (id: string) => {
+    if (!window.confirm("Excluir esta lista de preços?")) return;
+    if (onRemoveExternalSupplier) {
+      await onRemoveExternalSupplier(id);
+    }
     onUpdateExternalSuppliers(externalSuppliers.filter(s => s.id !== id));
     if (expandedSupplierId === id) {
       setExpandedSupplierId(null);
     }
+    markTabelasDirty();
   };
 
   const handleUpdateSupplier = (id: string, name: string, rawText: string) => {
@@ -241,6 +271,21 @@ export default function ConfigurationPanel({
       return s;
     });
     onUpdateExternalSuppliers(updated);
+    markTabelasDirty();
+  };
+
+  const productToRawText = (p: { description: string; price: number | null; discountPercent?: number; tiers?: { minQty: number; price: number }[] }) => {
+    const lines: string[] = [];
+    const priceLine = p.discountPercent && p.discountPercent > 0
+      ? `${p.description} ${p.discountPercent}%`
+      : `${p.description} ${p.price != null && p.price > 0 ? p.price.toFixed(2).replace(".", ",") : ""}`;
+    lines.push(priceLine);
+    if (p.tiers && p.tiers.length > 0) {
+      for (const t of p.tiers) {
+        lines.push(`${t.minQty}und ${t.price.toFixed(2).replace(".", ",")}`);
+      }
+    }
+    return lines.join("\n");
   };
 
   // Deletar um produto individual de um fornecedor do WhatsApp
@@ -248,7 +293,7 @@ export default function ConfigurationPanel({
     const updated = externalSuppliers.map(s => {
       if (s.id === supplierId) {
         const updatedProds = s.products.filter((_, idx) => idx !== index);
-        const newRawText = updatedProds.map(p => `${p.description} ${p.price.toFixed(2).replace(".", ",")}`).join("\n");
+        const newRawText = updatedProds.map(p => productToRawText(p)).join("\n");
         return {
           ...s,
           products: updatedProds,
@@ -258,6 +303,7 @@ export default function ConfigurationPanel({
       return s;
     });
     onUpdateExternalSuppliers(updated);
+    markTabelasDirty();
   };
 
   // Salvar a edição de um produto individual
@@ -271,12 +317,7 @@ export default function ConfigurationPanel({
           }
           return p;
         });
-        const newRawText = updatedProds.map(p => {
-          if (p.discountPercent && p.discountPercent > 0) {
-            return `${p.description} ${p.discountPercent}%`;
-          }
-          return `${p.description} ${p.price != null && p.price > 0 ? p.price.toFixed(2).replace(".", ",") : ""}`;
-        }).join("\n");
+        const newRawText = updatedProds.map(p => productToRawText(p)).join("\n");
         return {
           ...s,
           products: updatedProds,
@@ -287,6 +328,7 @@ export default function ConfigurationPanel({
     });
     onUpdateExternalSuppliers(updated);
     setEditingProductId(null);
+    markTabelasDirty();
   };
 
   // Adicionar produto manual/avulso
@@ -309,6 +351,7 @@ export default function ConfigurationPanel({
     setNewProdDesc("");
     setNewProdPrice("");
     setShowAddFormSupplierId(null);
+    markTabelasDirty();
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -631,7 +674,7 @@ export default function ConfigurationPanel({
                         {externalSuppliers.map((sup) => {
                           const isExpanded = expandedSupplierId === sup.id;
                           const activeTab = supplierTabs[sup.id] || "text";
-                          const today = new Date().toISOString().slice(0, 10);
+                          const today = new Date(Date.now() - 3*60*60*1000).toISOString().slice(0, 10);
                           const isExpired = sup.validade && sup.validade < today;
                           const hasPriceItems = sup.products.some(p => p.price != null && p.price > 0);
                           return (
@@ -722,12 +765,21 @@ export default function ConfigurationPanel({
                                                   <>
                                                     <div className="flex-1 min-w-0 pr-2">
                                                       <p className="font-semibold text-slate-700 truncate" title={prod.description}>{prod.description}</p>
+                                                      {prod.tiers && prod.tiers.length > 0 && (
+                                                        <div className="flex flex-wrap gap-0.5 mt-0.5">
+                                                          {prod.tiers.map((tier, tIdx) => (
+                                                            <span key={tIdx} className="text-[8px] font-mono font-bold text-orange-700 bg-orange-50 border border-orange-200 px-1 py-0.5 rounded-sm">
+                                                              {tier.minQty}+ = R$ {tier.price.toFixed(2).replace(".", ",")}
+                                                            </span>
+                                                          ))}
+                                                        </div>
+                                                      )}
                                                     </div>
                                                     <div className="flex items-center space-x-1.5 shrink-0">
                                                       {prod.discountPercent && prod.discountPercent > 0 ? (
                                                         <span className="font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[10px] border border-amber-200">{prod.discountPercent}% desc</span>
                                                       ) : prod.price != null && prod.price > 0 ? (
-                                                        <span className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded text-[10px]">R$ {prod.price.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                                        <span className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded text-[10px]">R$ {prod.price.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{prod.tiers && prod.tiers.length > 0 ? "*" : ""}</span>
                                                       ) : (
                                                         <span className="font-bold text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded text-[10px] border border-slate-200 italic">só item</span>
                                                       )}
@@ -777,6 +829,17 @@ export default function ConfigurationPanel({
                       <Plus className="w-3.5 h-3.5" />
                       <span>Adicionar Fornecedor</span>
                     </button>
+
+                    <div className="flex gap-2 pt-1">
+                      <button type="button" onClick={handleAddSupplier} className="flex-1 py-2 bg-white hover:bg-indigo-50 text-indigo-700 border border-dashed border-indigo-300 font-bold text-[11px] rounded transition-all flex items-center justify-center gap-1 cursor-pointer">
+                        <Plus className="w-3.5 h-3.5" />
+                        Nova Lista
+                      </button>
+                      <button type="button" onClick={() => setTabelasDirty(false)} className={`flex-1 py-2 font-bold text-[11px] rounded transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm ${tabelasDirty ? "bg-indigo-600 hover:bg-indigo-700 text-white" : "bg-indigo-100 text-indigo-500 cursor-default"}`}>
+                        <Save className="w-3.5 h-3.5" />
+                        {tabelasDirty ? "Salvar Listas" : "Salvo ✓"}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
