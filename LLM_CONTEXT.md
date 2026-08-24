@@ -40,6 +40,8 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 | Buscar-lote body errado | Body `{ termos: [...] }` mas API espera `{ itens: [...] }` | Usar `{ itens: [...] }` e parsear response como dict (chaves = termos originais) | server.ts:657 |
 | isExternalManual não reconhece lista_preco | `codDist=0` + `condicao="PROMOCAO"` não casava com checagem `codDist===9999` | Adicionar `it.origem === "lista_preco" \|\| it.motivoAcao === "lista_preco"` ao check | SwapsTable.tsx:1206 |
 | Desconto duplo fornecedor externo | `analisarUmProduto` usava `Pliquido` (já com desconto dist.) como base | Usar `Preco` (tabela/PFAB) como base. `Pliquido` = desconto duplo | AGENTS.md #43, server.ts `analisarUmProduto()` |
+| INSERT OR REPLACE apagava análise | `saveExternalSupplier` usava `INSERT OR REPLACE` — colunas `dados_analise`, `status_analise`, `analyzed_at` viravam NULL a cada save do frontend | `INSERT ... ON CONFLICT(id) DO UPDATE SET ...` preserva colunas de análise | `server/database.ts:776` |
+| Filtro validade em UTC | Cloud Run calculava "hoje" em UTC (`new Date().toLocaleDateString('sv-SE')`), mas validade era salva em UTC-3 → fornecedor filtrado como expirado | Offset `-3h`: `new Date(Date.now() - 3*60*60*1000)` | `server.ts:897`, `server.ts:4287` |
 
 ---
 
@@ -719,7 +721,7 @@ EOF \
 - **NÃO** usar `process.env.APP_VERSION` no Cloud Run (não confiável com Dockerfile)
 - Serve para rastreabilidade em testes local e Cloud
 
-**Versão atual:** `v2026-08-23` (deploy `smartped-cli-00058-zgp`)
+**Versão atual:** `v2026-08-23` (deploy `smartped-cli-00061-x74`)
 
 **Estado do deploy:**
 - `runPriceSync` desativado (código comentado)

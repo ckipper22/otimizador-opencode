@@ -1,7 +1,7 @@
 # LEIA PRIMEIRO — Referência Rápida do Sistema
 
 > **Data:** 2026-08-23
-> **Última sessão:** Correção de estoque no modal Promoções do Dia
+> **Última sessão:** Correções de Ofertas do Dia (timezone + INSERT OR REPLACE + nome fornecedor)
 
 ---
 
@@ -15,97 +15,85 @@
 
 ---
 
-## 2. Sessão 2026-08-23 — O que foi feito
+## 2. Sessão 2026-08-23 (noite) — Ofertas do Dia: 3 Bugs Corrigidos
 
-### 2.1. Botão de Busca (Lupa) no Modal Promoções do Dia
+### 2.1. INSERT OR REPLACE apagava dados de análise (CRÍTICO)
 
-**Problema:** Usuário buscava produtos que não tinham promoção no Turso e não encontrava nada.
+**Problema:** `saveExternalSupplier` usava `INSERT OR REPLACE` que substituía a linha inteira — colunas `dados_analise`, `status_analise`, `analyzed_at` ficavam NULL a cada save. O frontend re-salvava todos os fornecedores a cada alteração de config, destruindo análises.
 
-**Solução implementada:**
-- Botão lupa 🔍 no header do modal (ao lado do X)
-- Painel de busca com input, botão Buscar, e lista de resultados
-- **Backend** `GET /api/ofertas-dia/buscar-produto?q=...`:
-  - Se termo numérico (EAN): usa `GET /api/produtos/buscar-por-ean/{ean}` (novo endpoint Trier)
-  - Se texto: usa `POST /api/produtos/buscar-lote` (limpa termos de busca)
-- **Backend** `POST /api/ofertas-dia/analisar-referencia`:
-  - Recebe EAN + dados do grupo (estoque, melhorPreco, labs, eans[])
-  - Chama `analisarUmProduto` para SmartPed
-  - Busca vendas/compras de TODOS os EANs do grupo
-  - Retorna card com dados consolidados
+**Sequência do bug:**
+1. Usuário salva fornecedor → background analysis grava `dados_analise` ✅
+2. Qualquer mudança no config → frontend re-POSTa fornecedores → `INSERT OR REPLACE` apaga `dados_analise` ❌
+3. "Carregar Todas" vê `status_analise = NULL` → precisa re-analisar tudo
 
-**Endpoints novos no Ferramentinhas (main.py):**
-- `GET /api/produtos/buscar-por-ean/{ean}` — busca produto por EAN com todos os dados
+**Correção:** `INSERT ... ON CONFLICT(id) DO UPDATE SET ...` preserva colunas de análise.
 
-### 2.2. Agrupamento por DCB (Genéricos)
+**Arquivo:** `server/database.ts:776`
 
-**Problema:** Ao buscar "ENALAPRIL 10MG 30CP", apareciam 3 cards separados (BELFAR, BIOLAB, TEUTO).
+### 2.2. Filtro de validade em UTC (Cloud Run)
 
-**Solução:** `buscar-produto` agrupa por `cod_dcb + cod_concentracao`:
-- Retorna 1 card por grupo terapêutico
-- Mostra total de estoque, melhor preço, todos os labs
-- `eans[]` array com todos os EANs do grupo
+**Problema:** `new Date().toLocaleDateString('sv-SE')` no Cloud Run retornava data UTC. Usuário (UTC-3) definia validade "2026-08-23", mas servidor já calculava "2026-08-24" → fornecedor filtrado como expirado.
 
-### 2.3. Vendas Agregadas (últimos 3 meses)
+**Correção:** Offset `-3h`: `new Date(Date.now() - 3*60*60*1000)` em dois pontos:
+- `GET /api/ofertas-dia/analisar` (server.ts:897)
+- Fluxo de otimização (server.ts:4287)
 
-**Problema:** Vendas mostravam apenas 1 EAN.
+### 2.3. Nome do fornecedor sem destaque visual
 
-**Solução:** `analisar-referencia` chama `vendas-semanais` para CADA EAN do grupo:
-- Média baseada no período real (não 4 semanas fixas)
-- EANs sem movimentação nos últimos 3 meses são excluídos do cálculo de vendas
-- Estoque NÃO é filtrado por movimentação
+**Problema:** Nome do fornecedor aparecia pequeno e cinza (`text-[10px] text-gray-500`), misturado com validade.
 
-### 2.4. Compras com Nome do Laboratório
+**Correção:** `OfertasDoDiaModal.tsx` — card e detail modal:
+- Card: `text-xs font-black text-amber-700` (grande, negrito, laranja)
+- Detail modal: mesmo tratamento
+- Validade separada em linha menor
 
-**Problema:** "Seus Preços" mostrava fornecedor mas não o lab.
-
-**Solução:** `compras-historico` chamado para CADA EAN, com `laboratorio: e.lab` em cada compra.
-
-### 2.5. Melhor SmartPed com Nome da Distribuidora
-
-**Problema:** Mostrava "R$ 3,00 (SmartPed)" em vez do nome real.
-
-**Solução:** `analisarUmProduto` usa `resolveDistName(c)` com fallbacks em cascata.
-
-### 2.6. Correções de Bugs
-
-| Bug | Correção |
-|-----|----------|
-| Vendas somava última semana × 4 | Agora usa média 3 meses (últimas 13 semanas) |
-| Estoque filtrava por movimentação | Estoque soma TODOS os EANs com estoque > 0 |
-| Compras filtravam por vendas | Compras usam `uniqueEans` (todos os EANs) |
-| Estoque mostrava 22cx em vez de 25cx | `estoqueMesmoEan` agora usa total do grupo DCB (`eansGrupo.reduce()`) em vez de 1 EAN |
-| Card não mostrava "Melhor SmartPed" | Frontend mostra fallback "Não encontrado" |
-| Lab não aparecia nas compras | Coluna "Lab" adicionada na tabela |
-
-### 2.7. Detalhe da Correção de Estoque (2026-08-23)
-
-**Problema:** Card e detail modal mostravam "Estoque: 22cx" (apenas GLOBO) em vez de "25cx" (GLOBO 22 + NOVARTIS 3).
-
-**Causa raiz:** `estoqueMesmoEan` vinha do `analisarUmProduto()` que contava estoque de **apenas 1 EAN** (o EAN do produto da lista). O frontend usava esse campo no card (linha 449) e no detail modal (linha 705).
-
-**Correções:**
-1. **`analisarFornecedorEmBackground`** (server.ts:836-847): Extraído `estoqueGrupo` do `eansGrupo.reduce()`. Agora `estoqueTotal` E `estoqueMesmoEan` usam o mesmo valor (total do grupo DCB).
-2. **`analisar-referencia`** (server.ts:1329): `estoqueMesmoEan` agora usa `estoqueFinal` (soma de `eanList`) em vez de `estoque || 0` (request body).
-
-**Arquivos:** `server.ts` (linhas 836-847, 1329)
+**Deploy:** `smartped-cli-00061-x74`
 
 ---
 
-## 3. O que FALTA corrigir (próxima sessão)
+## 3. Sessão 2026-08-23 (tarde) — Estoque no Modal Promoções do Dia
 
-### 3.1. Vendas não aparece para produtos novos
+### 3.1. Correção de Estoque (2026-08-23)
+
+**Problema:** Card e detail modal mostravam "Estoque: 22cx" (apenas GLOBO) em vez de "25cx" (GLOBO 22 + NOVARTIS 3).
+
+**Causa raiz:** `estoqueMesmoEan` vinha do `analisarUmProduto()` que contava estoque de **apenas 1 EAN**. O frontend usava esse campo no card (linha 449) e no detail modal (linha 705).
+
+**Correções:**
+1. **`analisarFornecedorEmBackground`** (server.ts:836-847): Extraído `estoqueGrupo` do `eansGrupo.reduce()`.
+2. **`analisar-referencia`** (server.ts:1329): `estoqueMesmoEan` agora usa `estoqueFinal` (soma de `eanList`).
+
+### 3.2. Botão de Busca (Lupa) no Modal Promoções do Dia
+
+- Botão lupa 🔍 no header do modal
+- **Backend** `GET /api/ofertas-dia/buscar-produto?q=...`
+- **Backend** `POST /api/ofertas-dia/analisar-referencia`
+- Agrupamento por DCB, vendas agregadas (3 meses), compras com lab
+
+### 3.3. Correções de Bugs anteriores
+
+| Bug | Correção |
+|-----|----------|
+| Vendas somava última semana × 4 | Agora usa média 3 meses |
+| Estoque filtrava por movimentação | Estoque soma TODOS os EANs com estoque > 0 |
+| Estoque mostrava 22cx em vez de 25cx | `estoqueMesmoEan` usa total do grupo DCB |
+| Card não mostrava "Melhor SmartPed" | Frontend mostra fallback "Não encontrado" |
+
+---
+
+## 4. O que FALTA corrigir (próxima sessão)
+
+### 4.1. Vendas não aparece para produtos novos
 - **Problema:** Vendas mostra 0/mês para produtos sem histórico no Trier
-- **Causa:** API `vendas-semanais` retorna vazio para EANs sem vendas
 - **Solução possível:** Buscar vendas por descrição (não só por EAN)
 
-### 3.2. Performance lenta
+### 4.2. Performance lenta
 - **Problema:** "Carregar Todas" demora porque chama muitas APIs em sequência
-- **Causa:** Cada produto do Turso → `buscar-lote` + `vendas-semanais` × N EANs + `compras-historico` × N EANs
 - **Solução possível:** Batch de vendas-semanais, cache de resultados
 
 ---
 
-## 4. Fluxo Atual dos Dados
+## 5. Fluxo Atual dos Dados
 
 ```
 ┌─────────────────────────────────────────────────────────┐
