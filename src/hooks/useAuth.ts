@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { AuthorizedCompany } from "../types";
-import { auth, googleProvider } from "../lib/firebaseClient";
+import { getFirebaseAuth } from "../lib/firebaseClient";
 import { signInWithPopup, signOut } from "firebase/auth";
 
 export function useAuth() {
@@ -60,7 +60,8 @@ export function useAuth() {
   const handleGoogleLogin = async () => {
     try {
       setLoginError("");
-      const result = await signInWithPopup(auth, googleProvider);
+      const { auth: fbAuth, googleProvider: fbProvider } = await getFirebaseAuth();
+      const result = await signInWithPopup(fbAuth, fbProvider);
       const user = result.user;
       const verifiedEmail = user.email?.toLowerCase();
 
@@ -82,7 +83,7 @@ export function useAuth() {
             setLoginError("");
             return;
           } else {
-            await signOut(auth);
+            await signOut(fbAuth);
             setLoginError(`Acesso negado. A conta Google autenticada ("${verifiedEmail}") não está cadastrada. Solicite ao administrador (ckipper22@gmail.com) o cadastro.`);
           }
         }
@@ -101,7 +102,8 @@ export function useAuth() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      const { auth: fbAuth } = await getFirebaseAuth();
+      await signOut(fbAuth);
     } catch (e) {
       // ignore
     }

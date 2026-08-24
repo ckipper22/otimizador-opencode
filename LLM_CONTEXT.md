@@ -721,7 +721,7 @@ EOF \
 - **NÃO** usar `process.env.APP_VERSION` no Cloud Run (não confiável com Dockerfile)
 - Serve para rastreabilidade em testes local e Cloud
 
-**Versão atual:** `v2026-08-23` (deploy `smartped-cli-00061-x74`)
+**Versão atual:** `v2026-08-24-0000` (deploy `smartped-cli-00062-dft`)
 
 **Estado do deploy:**
 - `runPriceSync` desativado (código comentado)
@@ -1334,3 +1334,38 @@ O campo `estoqueMesmoEan` era usado pelo frontend para exibir estoque no card (O
 - `server.ts` — linhas 836-847 (analisarFornecedorEmBackground return), linha 1329 (analisar-referencia return)
 - `docs/ler-primeiro.md` — seção 2.6 e 2.7 atualizadas, seção 3.1 removida (resolvida)
 - `memoryBank/activeContext.md` — estado atualizado
+
+---
+
+## 4.11. Sessão 2026-08-24 — Botão P (EanPromoButton) + Firebase Auth Fix
+
+### Feature: Botão P ao lado do olhinho
+Adicionado botão "P" ao lado de cada `EanEyeButton` (olhinho) em todas as 5 ocorrências no `SwapsTable.tsx`. Ao clicar, abre análise de Promoções do Dia daquele EAN específico.
+
+**Fluxo (2 passos):**
+1. Busca EAN na Trier (`buscar-produto?q={ean}`) → pega a descrição exata
+2. Busca por descrição (`buscar-produto?q={descricaoTrier}`) → pega grupo DCB completo (todos EANs de todas as labs)
+3. Chama `analisar-referencia` com o grupo completo → vendas somadas de todos os EANs
+4. Abre card (réplica exata do OfertasDoDiaModal) com botão "DETALHES"
+5. "DETALHES" abre modal completo (estoque por lab, histórico de compras, última compra, economia)
+
+**Arquivos criados:**
+- `src/components/EanPromoButton.tsx` — componente com card + detail modal
+
+**Arquivos modificados:**
+- `src/components/SwapsTable.tsx` — import + 5 inserções de `<EanPromoButton>`
+
+**Commits:**
+- `f9a74c7` — feat: botao P (EanPromoButton) ao lado do olhinho
+- Deploy: `smartped-cli-00062-dft` (v2026-08-24-0000)
+
+### Bug Fix: Firebase Auth "Cannot read properties of null"
+**Problema:** `auth` e `googleProvider` eram exportados como `null` em `firebaseClient.ts` porque `initFirebase()` era async e outros módulos importavam antes de terminar.
+
+**Correção:**
+- `src/lib/firebaseClient.ts`: Nova função `getFirebaseAuth()` que aguarda inicialização antes de retornar `auth`/`googleProvider`
+- `src/hooks/useAuth.ts`: Usa `await getFirebaseAuth()` em vez de import direto
+
+### Configuração Firebase Console
+- Google Auth já estava ativado no Firebase Console
+- Domínio `localhost` adicionado à lista de domínios autorizados (requisito para dev local)

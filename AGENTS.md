@@ -30,6 +30,7 @@
 | 19 | **Mojibake impedia filtro de "Não Encontrados"** | Defaults hardcoded tinham `"NÃ£o Encontrados"` (encoding Latin-1), comparações usavam UTF-8 (`"não encontrados"`) — nunca casavam | Usar `isNotFoundName()` (helper centralizado) em TODAS as checagens. **NUNCA** fazer `dist.includes("NÃO ENCONTRADOS")` inline | server.ts `isNotFoundName()`, LLM_CONTEXT.md #42 |
 | 20 | **INSERT OR REPLACE apagava análise de ofertas** | `saveExternalSupplier` usava `INSERT OR REPLACE` — colunas `dados_analise`, `status_analise`, `analyzed_at` viravam NULL a cada save do frontend | `INSERT ... ON CONFLICT(id) DO UPDATE SET ...` preserva colunas de análise | `server/database.ts:776`, LLM_CONTEXT.md #44 |
 | 21 | **Filtro validade em UTC (Cloud Run)** | `new Date().toLocaleDateString('sv-SE')` retornava data UTC — fornecedor com validade "hoje" (UTC-3) era filtrado como expirado | Offset `-3h`: `new Date(Date.now() - 3*60*60*1000)` | `server.ts:897`, `server.ts:4287`, LLM_CONTEXT.md #45 |
+| 22 | **Firebase Auth "Cannot read properties of null"** | `auth` e `googleProvider` exportados como `null` — `initFirebase()` async, módulos importam antes de terminar | Usar `getFirebaseAuth()` (async) que aguarda inicialização. **NUNCA** importar `auth`/`googleProvider` direto de `firebaseClient.ts` | `src/lib/firebaseClient.ts`, `src/hooks/useAuth.ts` |
 
 **SE O PROBLEMA PARECE NOVO, VERIFIQUE ESTA TABELA ANTES DE INVESTIGAR.**
 Se estiver aqui, a correção já existe. Não reinvente a roda.
