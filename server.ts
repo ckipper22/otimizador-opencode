@@ -894,7 +894,8 @@ app.get("/api/ofertas-dia/analisar", async (req, res) => {
 
     // 1. Buscar fornecedores do banco
     const rows = await getExternalSuppliers(cnpj);
-    const today = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD no fuso local
+    const todayUtc3 = new Date(Date.now() - 3 * 60 * 60 * 1000); // UTC-3 (Panambi/RS)
+    const today = todayUtc3.toLocaleDateString('sv-SE'); // YYYY-MM-DD
     console.log(`[OFERTAS-DIA] GET suppliers: ${(rows as any[]).length} total for CNPJ ${cnpj}`);
 
     // Filtrar apenas listas ativas (validade >= hoje)
@@ -4283,7 +4284,7 @@ condicoesEnriched = condicoes.map((c: any) => {
           let bestExternalMatch: any = null;
           let bestExternalScore = 0;
 
-          const todayStr = new Date().toISOString().slice(0, 10);
+          const todayStr = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10); // UTC-3
           for (const supplier of externalSuppliers) {
             // Filtrar: só fornecedores analisados (não descartados) e com validade não expirada
             if (supplier.status_analise === "descartada") continue;

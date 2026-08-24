@@ -773,8 +773,15 @@ export async function saveExternalSupplier(supplier: {
   const d = getDb();
   if (!d) return;
   try {
-    const sql = `INSERT OR REPLACE INTO external_suppliers (id, name, raw_text, validade, products, cnpj, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`;
+    const sql = `INSERT INTO external_suppliers (id, name, raw_text, validade, products, cnpj, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        raw_text = excluded.raw_text,
+        validade = excluded.validade,
+        products = excluded.products,
+        cnpj = excluded.cnpj,
+        updated_at = excluded.updated_at`;
     const args = [supplier.id, supplier.name, supplier.rawText, supplier.validade, supplier.products, supplier.cnpj];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}

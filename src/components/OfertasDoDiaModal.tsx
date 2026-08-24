@@ -393,10 +393,12 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                         {oferta.discountPercent ? ` (${oferta.discountPercent}% off)` : ""}
                       </span>
                     </div>
-                    <p className="text-[10px] text-gray-500 font-sans">
-                      Fornecedor: {oferta.fornecedorLista || oferta.fornecedor || "N/A"}
-                      {oferta.validade && ` | Ate: ${oferta.validade}`}
+                    <p className="text-xs font-black text-amber-700 font-sans mt-1">
+                      {oferta.fornecedorLista || oferta.fornecedor || "N/A"}
                     </p>
+                    {oferta.validade && (
+                      <p className="text-[9px] text-gray-400 font-sans">Ate: {oferta.validade}</p>
+                    )}
                   </div>
 
                   {/* Comparacao de Precos */}
@@ -558,8 +560,8 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                     (valido ate {detalheAberto.validade || "N/A"})
                   </span>
                 </div>
-                <p className="text-[10px] text-gray-600 font-sans mt-1">
-                  Fornecedor: {detalheAberto.fornecedorLista || detalheAberto.fornecedor || "N/A"}
+                <p className="text-xs font-black text-amber-700 font-sans mt-1">
+                  {detalheAberto.fornecedorLista || detalheAberto.fornecedor || "N/A"}
                 </p>
               </div>
 
