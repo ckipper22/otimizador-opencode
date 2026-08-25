@@ -545,7 +545,7 @@ export default function App() {
     const offerCondicao = oferta.condicao || oferta.Condicao || oferta.NomeCondicao || "FIXA";
     const offerPrazo = Number(oferta.prazo !== undefined ? oferta.prazo : (oferta.Prazo !== undefined ? oferta.Prazo : 0));
     const offerCodProdDist = oferta.codProdutoDist || oferta.CodProdutoDist || oferta.cod_produtodist || "";
-    const offerCodProd = oferta.codProduto || oferta.CodProduto || "";
+    const offerCodProd = oferta.codProduto || oferta.CodProduto || offerCodProdDist || "";
 
     // Calcular pedido mínimo da distribuidora
     let offerPedMin = 150;
@@ -728,7 +728,7 @@ export default function App() {
         const offerCondicao = oferta.condicao || oferta.Condicao || oferta.NomeCondicao || "FIXA";
         const offerPrazo = Number(oferta.prazo !== undefined ? oferta.prazo : (oferta.Prazo !== undefined ? oferta.Prazo : 0));
         const offerCodProdDist = oferta.codProdutoDist || oferta.CodProdutoDist || oferta.cod_produtodist || "";
-        const offerCodProd = oferta.codProduto || oferta.CodProduto || "";
+        const offerCodProd = oferta.codProduto || oferta.CodProduto || offerCodProdDist || "";
 
         // Calcular pedido mínimo da distribuidora
         let offerPedMin = 150;

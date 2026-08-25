@@ -400,11 +400,19 @@ app.post("/api/external-suppliers", async (req, res) => {
     }
 
     // Verificar se products mudou (comparar com banco atual)
+    // Normalizar: ordenar por description+price antes de comparar para evitar falsos positivos
+    const normalizeProducts = (arr: any[]) => {
+      return arr.map((p: any) => ({
+        d: (p.description || p.produto || "").trim().toLowerCase(),
+        p: parseFloat(String(p.price || p.preco || 0)).toFixed(2),
+        t: p.tiers ? JSON.stringify(p.tiers.sort((a: any, b: any) => a.minQty - b.minQty)) : "",
+      })).sort((a, b) => a.d.localeCompare(b.d) || a.p.localeCompare(b.p));
+    };
     const oldRows = await getExternalSuppliers(cnpj);
     const oldSupplier = (oldRows as any[]).find(r => r.id === id);
     const oldProducts = oldSupplier ? JSON.parse(oldSupplier.products || "[]") : [];
     const newProducts = Array.isArray(products) ? products : [];
-    const productsChanged = JSON.stringify(oldProducts) !== JSON.stringify(newProducts);
+    const productsChanged = JSON.stringify(normalizeProducts(oldProducts)) !== JSON.stringify(normalizeProducts(newProducts));
 
     if (productsChanged && oldSupplier) {
       // Limpar analysis cache → força re-análise
@@ -494,19 +502,36 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
     const baseUrl = process.env.SMARTPED_PRODUCTION_URL || "https://api.smartped.com.br";
     const token = process.env.SMARTPED_PRODUCTION_TOKEN;
 
-    // Buscar vendas semanais
+    // Buscar vendas via vendas-detalhadas (mais confiável que vendas-semanais)
     try {
-      const vendasUrl = `${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-semanais/${product.ean}`;
+      const vendasUrl = `${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-detalhadas/${product.ean}`;
       const vendasRes = await fetch(vendasUrl);
       if (vendasRes.ok) {
         const vendasData = await vendasRes.json();
         const vendasArray = vendasData?.data || [];
-        const ultimas4Semanas = vendasArray.slice(0, 4);
-        let totalVendas = 0;
-        for (const v of ultimas4Semanas) {
-          totalVendas += parseFloat(String(v.qtd_vendida || "0"));
+        if (vendasArray.length > 0) {
+          // Filtrar apenas últimos 4 meses
+          const hoje = new Date();
+          const quatroMesesAtras = new Date(hoje.getFullYear(), hoje.getMonth() - 4, hoje.getDate());
+          const vendasFiltradas = vendasArray.filter((v: any) => {
+            const parts = (v.data_venda || "").split("/");
+            const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+            return !isNaN(d.getTime()) && d >= quatroMesesAtras;
+          });
+          if (vendasFiltradas.length > 0) {
+            const dates = vendasFiltradas.map((v: any) => {
+              const parts = (v.data_venda || "").split("/");
+              return new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+            }).filter((d: Date) => !isNaN(d.getTime()));
+            if (dates.length > 0) {
+              const primeira = new Date(Math.min(...dates.map(d => d.getTime())));
+              const ultima = new Date(Math.max(...dates.map(d => d.getTime())));
+              const mesesDiff = Math.max(1, (ultima.getFullYear() - primeira.getFullYear()) * 12 + (ultima.getMonth() - primeira.getMonth()) + 1);
+              const totalVendas = vendasFiltradas.reduce((s: number, v: any) => s + parseFloat(String(v.quantidade || "1")), 0);
+              vendasMensais = Math.round(totalVendas / mesesDiff);
+            }
+          }
         }
-        vendasMensais = totalVendas;
       } else {
         console.log(`[ANALISE] vendas HTTP ${vendasRes.status} para EAN ${product.ean}`);
       }
@@ -514,16 +539,44 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
       console.log(`[ANALISE] vendas erro: ${err.message} para EAN ${product.ean}`);
     }
 
-    // Buscar estoque via similares
+    // Buscar estoque via similares (com filtro de apresentação — padrão SICF)
     try {
       const estoqueUrl = `${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${product.ean}`;
       const estoqueRes = await fetch(estoqueUrl);
       if (estoqueRes.ok) {
         const estoqueData = await estoqueRes.json();
-        const produtos = estoqueData?.produtos || [];
+        const produtosRaw = estoqueData?.produtos || [];
+
+        // Filtro de apresentação (mesmo padrão do SICF server.ts:3610-3640)
+        const _PRES_KW = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG", "AMP", "AMPOLA", "SUSP", "SUSPENSAO", "GTS", "INJ", "INJETAVEL"];
+        const _PRES_GRUPOS = [
+          ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
+          ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
+          ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"],
+          ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
+        ];
+        const origDesc = (product.description || product.produto || "").toUpperCase();
+        const origPresSet = new Set(_PRES_KW.filter(k => origDesc.includes(k)));
+        const getGrupoIndex = (pres: Set<string>): number[] => {
+          const indices: number[] = [];
+          for (let i = 0; i < _PRES_GRUPOS.length; i++) {
+            if (_PRES_GRUPOS[i].some(k => pres.has(k))) indices.push(i);
+          }
+          return indices;
+        };
+        const origGrupos = getGrupoIndex(origPresSet);
+
+        const produtos = origGrupos.length > 0
+          ? produtosRaw.filter((p: any) => {
+              const pDesc = (p.nom_produto || p.descricao || "").toUpperCase();
+              const pPres = new Set(_PRES_KW.filter(k => pDesc.includes(k)));
+              const pGrupos = getGrupoIndex(pPres);
+              return origGrupos.some(g => pGrupos.includes(g));
+            })
+          : produtosRaw;
+
         estoqueTotal = produtos.reduce((sum: number, p: any) => sum + (p.qtd_estoque || 0), 0);
         
-        // Estoque apenas do mesmo EAN da promocao
         const eanLimpo = (product.ean || "").replace(/\D/g, "");
         estoqueMesmoEan = produtos
           .filter((p: any) => (p.ean || "").replace(/\D/g, "") === eanLimpo)
@@ -554,6 +607,13 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           melhorPrecoHistorico = historicoData.resumo.melhor_preco || null;
           melhorFornecedorHistorico = historicoData.resumo.melhor_fornecedor || null;
         }
+        // Mapa EAN → lab a partir de estoquePorLaboratorio
+        const eanToLabMap = new Map<string, string>();
+        for (const lab of estoquePorLaboratorio) {
+          for (const ean of lab.eans) {
+            if (ean && !eanToLabMap.has(ean)) eanToLabMap.set(ean, lab.nome);
+          }
+        }
         comprasHistorico = (historicoData?.compras || []).map((c: any) => ({
           preco: parseFloat(c.preco_unitario || c.preco || "0"),
           precoTabela: parseFloat(c.preco_tabela || "0"),
@@ -561,6 +621,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           data: c.data || "",
           quantidade: parseInt(c.quantidade || "0"),
           notaFiscal: c.nota_fiscal || null,
+          laboratorio: eanToLabMap.get(product.ean) || "",
         }));
         if (comprasHistorico.length > 0) {
           ultimaCompra = comprasHistorico[0];
@@ -617,17 +678,26 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
       
       console.log(`[ANALISE] SmartPed: buscando ${eansParaBuscar.length} EANs`);
       
-      // FONTE PRIMARIA: Condicoes/Ean para CADA EAN (precos, estoque, condicoes comerciais)
-      // IMPORTANTE: Chamadas SEQUENCIAIS com delay — API SmartPed contamina dados entre EANs em paralelo
+      // FONTE PRIMARIA: Condicoes/Ean em BATCH (lotes de ate 40 EANs separados por virgula)
+      // INFO DIOGO (CTO SmartPed): endpoint JÁ aceita múltiplos EANs — não precisa chamar um por um
+      // IMPORTANTE: Chamadas SEQUENCIAIS com delay — API usa tabela temporária que é sobrescrita
       const allCondicoes: any[] = [];
-      const EAN_DELAY_MS = 500;
-      for (let i = 0; i < eansParaBuscar.length; i++) {
-        const ean = eansParaBuscar[i];
+      const BATCH_SIZE = 40;
+      const BATCH_DELAY_MS = 500;
+      const eanChunks: string[][] = [];
+      for (let i = 0; i < eansParaBuscar.length; i += BATCH_SIZE) {
+        eanChunks.push(eansParaBuscar.slice(i, i + BATCH_SIZE));
+      }
+      console.log(`[ANALISE] SmartPed: ${eanChunks.length} batch(es) de ate ${BATCH_SIZE} EANs`);
+      
+      for (let chunkIdx = 0; chunkIdx < eanChunks.length; chunkIdx++) {
+        const chunk = eanChunks[chunkIdx];
+        const eanParam = chunk.join(",");
         try {
           const eanRes = await fetch(smartPedEanUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json", "Accept": "application/json" },
-            body: JSON.stringify({ Token: token, parametros: { CnpjCLi: cnpj, Ean: ean, AceitaOntem: 1 } })
+            body: JSON.stringify({ Token: token, parametros: { CnpjCLi: cnpj, Ean: eanParam, AceitaOntem: 1 } })
           });
           const eanData = eanRes.ok ? await eanRes.json() : null;
           if (eanData) {
@@ -636,22 +706,32 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
             for (const d of distsRaw) {
               if (d.CodDist && d.NomeDist) DISTRIBUIDORAS_DYNAMIC_CACHE[d.CodDist] = d.NomeDist;
             }
+            let condsNoBatch = 0;
+            const sourceEansDebug = new Set<string>();
             for (const entry of itens) {
               const conditions = entry.Condicoes || entry.condicoes || [];
-              const condEan = entry.ItemPedido?.Ean || entry.ItemPedido?.ean || ean;
-              const condDesc = entry.ItemPedido?.Descricao || entry.ItemPedido?.descricao || "";
-              const condLab = entry.ItemPedido?.Laboratorio || entry.ItemPedido?.laboratorio || "";
+              // Batch: EAN vem em CodBarra (não ItemPedido.Ean como em chamada individual)
+              const condEan = entry.ItemPedido?.Ean || entry.ItemPedido?.ean || entry.CodBarra || entry.codBarra || entry.CodProduto || "";
+              const condEanStr = String(condEan);
+              const condDesc = entry.ItemPedido?.Descricao || entry.ItemPedido?.descricao || entry.Descricao || "";
+              const condLab = entry.ItemPedido?.Laboratorio || entry.ItemPedido?.laboratorio || entry.Laboratorio || "";
+              sourceEansDebug.add(condEanStr);
               for (const cond of conditions) {
-                cond._queryEan = ean;
-                cond._sourceEan = condEan;
+                cond._queryEan = eanParam; // batch — todos os EANs consultados
+                cond._sourceEan = condEanStr;
                 cond._sourceDesc = condDesc;
                 cond._sourceLab = condLab;
               }
               allCondicoes.push(...conditions);
+              condsNoBatch += conditions.length;
             }
+          } else {
+            // Batch failed
           }
-        } catch {}
-        if (i < eansParaBuscar.length - 1) await sleep(EAN_DELAY_MS);
+        } catch {
+          // Batch error
+        }
+        if (chunkIdx < eanChunks.length - 1) await sleep(BATCH_DELAY_MS);
       }
       
       // COMPLEMENTO: Condicoes/Molecula via campo "Molecula" (aceita EAN como molécula)
@@ -672,14 +752,12 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
             const entryEan = entry.ItemPedido?.Ean || entry.ItemPedido?.ean || molTestEan;
             const entryDesc = entry.ItemPedido?.Descricao || entry.ItemPedido?.descricao || "";
             const entryLab = entry.ItemPedido?.Laboratorio || entry.ItemPedido?.laboratorio || "";
-            console.log(`[ANALISE-MOL] Molecula via campo: entryEan=${entryEan} conds=${conditions.length}`);
             for (const cond of conditions) {
               cond._queryEan = molTestEan;
               cond._sourceEan = entryEan;
               cond._sourceDesc = entryDesc;
               cond._sourceLab = entryLab;
               molFromMolecula.push(cond);
-              console.log(`[ANALISE-MOL-COND] dist=${resolveDistName(cond)}(${cond.CodDist}) preco=${cond.Pliquido || cond.Preco} est=${cond.Estoque} ean=${entryEan}`);
             }
           }
         }
@@ -706,10 +784,6 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const srcEan = (c._sourceEan || '').replace(/^0+/, '');
         return eansDoGrupo.has(srcEan);
       });
-      const removidas = allCondicoes.length - allCondicoesFiltradas.length;
-      if (removidas > 0) {
-        console.log(`[ANALISE-FILTRO] Removidas ${removidas} condições de EANs externos (group: ${eansDoGrupo.size} EANs)`);
-      }
       // Usar array filtrado daqui para frente
       allCondicoes.length = 0;
       allCondicoes.push(...allCondicoesFiltradas);
@@ -738,7 +812,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
               }
             }
           } catch {}
-          if (i < eansParaBuscar.length - 1) await sleep(EAN_DELAY_MS);
+          if (i < eansParaBuscar.length - 1) await sleep(500);
         }
       } catch {}
       
@@ -1029,51 +1103,45 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
         batch.map(async (product) => {
           // PASSO 1: Descobrir TODOS os EANs do mesmo DCB ANTES de analisar
           let eansGrupo: any[] = [];
+          let allProdutos: any[] = [];
           let eanList: string[] = product.ean ? [product.ean] : [];
           console.log(`[OFERTAS-DIA] DCB: product.ean=${product.ean}, description=${(product.description || "").substring(0, 30)}`);
           
           if (product.ean) {
             try {
-              // Extrair princípio ativo (primeira palavra significativa) para busca
-              const descLimpa = (product.description || product.produto || "")
+              // Usar descrição completa para busca (mesmo método do buscar-produto)
+              // que agrupa corretamente por DCB
+              const descCompleta = (product.description || product.produto || "")
                 .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
                 .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
                 .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
                 .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia)\b/gi, "")
-                .trim();
-              const words = descLimpa.split(/\s+/).filter((w: string) => w.length >= 3 && !/^\d+$/.test(w));
-              const principioAtivo = (words[0] || "").substring(0, 30);
-              // Extrair dosagem para filtrar depois
-              const dosageMatch = descLimpa.match(/(\d+\s*(?:mg|mcg|ml|g|ui|%))/i);
-              const dosageFilter = dosageMatch ? dosageMatch[1].replace(/\s/g, '').toLowerCase() : null;
+                .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
+                .trim()
+                .substring(0, 40);
               
-              if (principioAtivo.length >= 3) {
+              if (descCompleta.length >= 3) {
                 const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ itens: [principioAtivo] }),
+                  body: JSON.stringify({ itens: [descCompleta] }),
                 });
                 if (buscaRes.ok) {
                   const buscaData = await buscaRes.json();
                   const resultados = buscaData?.resultados || {};
                   // Pegar TODOS os produtos de TODAS as chaves
-                  let allProdutos: any[] = [];
+                  allProdutos = [];
                   for (const key of Object.keys(resultados)) {
                     if (Array.isArray(resultados[key])) allProdutos.push(...resultados[key]);
-                  }
-                  // Filtrar por dosagem se especificada
-                  if (dosageFilter && allProdutos.length > 0) {
-                    const filtered = allProdutos.filter((p: any) => (p.nom_produto || "").toLowerCase().includes(dosageFilter));
-                    if (filtered.length > 0) allProdutos = filtered;
                   }
                   // Filtrar por DCB do EAN original
                   const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
                   if (dcb) {
                     eansGrupo = allProdutos
                       .filter((p: any) => p.cod_dcb === dcb && (p.ean || p.cod_barra))
-                      .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0 }));
+                      .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
                     eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                    console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (princípio: ${principioAtivo})`);
+                    console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (busca: "${descCompleta}")`);
                   }
                 }
               }
@@ -1123,34 +1191,102 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
           // PASSO 2: Analisar com TODOS os EANs do grupo
           const analysis = await analisarUmProduto(product, cnpj, eanList);
           
-          // PASSO 3: Agregar vendas/compras de TODOS os EANs
+          // PASSO 3: Agregar vendas/compras de TODOS os EANs (com filtro de apresentação)
           let vendasAgregadas = analysis.vendasMensais;
           let comprasAgregadas = analysis.comprasHistorico || [];
           
+          fs.appendFileSync('debug-vendas.log', `[${new Date().toISOString()}] PRE-CHECK eanList.length=${eanList.length} analysis.vendasMensais=${analysis.vendasMensais}\n`);
           if (eanList.length > 1) {
             try {
-              let totalVendas = 0;
-              const vendasPromises = eanList.map(async (ean: string) => {
+              // Filtrar eans por apresentação usando descrições do allProdutos (resultados buscar-lote)
+              const _PRES_KW_V = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG"];
+              const _PRES_GRUPOS_V = [
+                ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
+                ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
+                ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"]
+              ];
+              const origDescV = (product.description || product.produto || "").toUpperCase();
+              const origPresSetV = new Set(_PRES_KW_V.filter(k => origDescV.includes(k)));
+              const getGrupoIdxV = (pres: Set<string>): number[] => {
+                const idx: number[] = [];
+                for (let i = 0; i < _PRES_GRUPOS_V.length; i++) {
+                  if (_PRES_GRUPOS_V[i].some(k => pres.has(k))) idx.push(i);
+                }
+                return idx;
+              };
+              const origGruposV = getGrupoIdxV(origPresSetV);
+
+              // Mapa EAN → nom_produto de TODAS as fontes (buscar-lote + eansGrupo)
+              const eanToDesc = new Map<string, string>();
+              for (const p of allProdutos) {
+                const e = p.ean || p.cod_barra || "";
+                if (e && p.nom_produto) eanToDesc.set(e, p.nom_produto);
+              }
+              for (const e of eansGrupo) {
+                if (e.ean && e.nom_produto) eanToDesc.set(e.ean, e.nom_produto);
+              }
+              if (product.ean) eanToDesc.set(product.ean, product.description || product.produto || "");
+
+              const eanListFiltrado: string[] = [];
+              for (const ean of eanList) {
+                if (origGruposV.length === 0) { eanListFiltrado.push(ean); continue; }
+                const pDesc = (eanToDesc.get(ean) || "").toUpperCase();
+                if (!pDesc) continue; // sem descrição = excluir (SmartPed wildcards sem dados locais)
+                const pPres = new Set(_PRES_KW_V.filter(k => pDesc.includes(k)));
+                const pGrupos = getGrupoIdxV(pPres);
+                if (origGruposV.some(g => pGrupos.includes(g))) eanListFiltrado.push(ean);
+              }
+
+              // Somar vendas dos EANs filtrados e dividir por meses reais
+              let totalVendasRaw = 0;
+              let primeiraData: Date | null = null;
+              let ultimaData: Date | null = null;
+              const vendasPromises = eanListFiltrado.map(async (ean: string) => {
                 try {
-                  const vendasRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-semanais/${ean}`);
+                  const vendasRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-detalhadas/${ean}`);
                   if (vendasRes.ok) {
                     const vendasData = await vendasRes.json();
                     const vendasArray = vendasData?.data || [];
-                    const ultimas13 = vendasArray.slice(0, 13);
-                    let soma = 0;
-                    for (const v of ultimas13) { soma += parseFloat(String(v.qtd_vendida || "0")); }
-                    return ultimas13.length > 0 ? (soma / ultimas13.length) * 4.33 : 0;
+                    const hoje = new Date();
+                    const quatroMesesAtras = new Date(hoje.getFullYear(), hoje.getMonth() - 4, hoje.getDate());
+                    const vendasFiltradas = vendasArray.filter((v: any) => {
+                      const parts = (v.data_venda || "").split("/");
+                      const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+                      return !isNaN(d.getTime()) && d >= quatroMesesAtras;
+                    });
+                    if (vendasFiltradas.length === 0) return 0;
+                    // Rastrear primeira/ultima data para calcular mesesDiff real
+                    for (const v of vendasFiltradas) {
+                      const parts = (v.data_venda || "").split("/");
+                      const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+                      if (!isNaN(d.getTime())) {
+                        if (!primeiraData || d < primeiraData) primeiraData = d;
+                        if (!ultimaData || d > ultimaData) ultimaData = d;
+                      }
+                    }
+                    return vendasFiltradas.reduce((s: number, v: any) => s + parseFloat(String(v.quantidade || "1")), 0);
                   }
                 } catch {}
                 return 0;
               });
               const vendasResults = await Promise.all(vendasPromises);
-              totalVendas = vendasResults.reduce((a, b) => a + b, 0);
-              vendasAgregadas = Math.round(totalVendas);
+              totalVendasRaw = vendasResults.reduce((a, b) => a + b, 0);
+              // Calcular mesesDiff das datas reais (mesmo método do SICF server.ts:3611)
+              const mesesDiff = (primeiraData && ultimaData)
+                ? Math.max(1, (ultimaData.getFullYear() - primeiraData.getFullYear()) * 12 + (ultimaData.getMonth() - primeiraData.getMonth()) + 1)
+                : 4;
+
+              vendasAgregadas = Math.round(totalVendasRaw / mesesDiff);
+              fs.appendFileSync('debug-vendas.log', `[${new Date().toISOString()}] RESULTado total=${totalVendasRaw} meses=${mesesDiff} media=${vendasAgregadas}\n`);
               
               // Compras de todos os EANs
               const allCompras: any[] = [];
-              const comprasPromises = eanList.map(async (ean: string) => {
+              // Mapa EAN → lab para enriquecer compras
+              const eanToLab = new Map<string, string>();
+              for (const e of eansGrupo) {
+                if (e.ean && e.lab) eanToLab.set(e.ean, e.lab);
+              }
+              const comprasPromises = eanListFiltrado.map(async (ean: string) => {
                 try {
                   const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${ean}?meses=6`);
                   if (histRes.ok) {
@@ -1158,7 +1294,7 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
                     return (histData?.compras || []).map((c: any) => ({
                       preco: c.preco_unitario || c.preco || 0, precoTabela: c.preco_tabela || 0,
                       fornecedor: c.fornecedor || "", data: c.data || "", quantidade: c.quantidade || 0,
-                      notaFiscal: c.nota_fiscal || null, laboratorio: "", ean,
+                      notaFiscal: c.nota_fiscal || null, laboratorio: eanToLab.get(ean) || "", ean,
                     }));
                   }
                 } catch {}
@@ -1171,9 +1307,16 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
             } catch {}
           }
 
-          const estoqueGrupo = eansGrupo.length > 0
+          const estoqueGrupoCalc = eansGrupo.length > 0
             ? eansGrupo.reduce((sum: number, e: any) => sum + (e.estoque || 0), 0)
-            : analysis.estoqueTotal;
+            : 0;
+          // Se eansGrupo não tem estoque (ERPs locais sem cadastro), usar estoque do similares API
+          const estoqueGrupo = estoqueGrupoCalc > 0 ? estoqueGrupoCalc : analysis.estoqueTotal;
+          
+          // Extrair laboratórios únicos do grupo DCB para o campo "laboratorio" do card
+          const labsUnicos = [...new Set(eansGrupo.map((e: any) => e.lab).filter(Boolean))];
+          const laboratorioStr = labsUnicos.length > 0 ? labsUnicos.join(", ") : (product.laboratorio || "");
+          
           return {
             ...product,
             ...analysis,
@@ -1182,6 +1325,7 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
             eansGrupo,
             estoqueTotal: estoqueGrupo,
             estoqueMesmoEan: estoqueGrupo,
+            laboratorio: laboratorioStr,
           };
         })
       );
@@ -1446,7 +1590,7 @@ app.get("/api/ofertas-dia/buscar-produto", async (req, res) => {
       return res.json({ produtos: [] });
     }
 
-    // Se termo numerico (EAN), usar endpoint buscar-por-ean
+    // Se termo numerico (EAN), buscar produto e expandir via descrição
     if (/^\d{7,14}$/.test(q)) {
       const eanRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-por-ean/${q}`);
       if (!eanRes.ok) {
@@ -1457,14 +1601,82 @@ app.get("/api/ofertas-dia/buscar-produto", async (req, res) => {
         return res.json({ produtos: [] });
       }
       const p = eanData.produto;
+      const desc = p.nom_produto || "";
+      
+      // Expandir: buscar por descrição para pegar TODOS os EANs do grupo DCB
+      const cleanDesc = desc
+        .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
+        .replace(/\b(sandoz|medley|biolab|ache|neo\s*quimica|cernosul|cervosul|EMS|Pfizer|Novartis|Eurofarma|Medley)\b/gi, "")
+        .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
+        .trim().substring(0, 40);
+      
+      if (cleanDesc.length >= 3) {
+        const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ itens: [cleanDesc] }),
+        });
+        if (buscaRes.ok) {
+          const buscaData = await buscaRes.json();
+          const resultados = buscaData?.resultados || {};
+          const cleanLower = cleanDesc.toLowerCase();
+          const foundKey = Object.keys(resultados).find(k => k.toLowerCase() === cleanLower);
+          const rawProdutos = (foundKey ? resultados[foundKey] : []) as any[];
+          
+          if (rawProdutos.length > 0) {
+            // Agrupar por DCB + concentração
+            const groups = new Map<string, any[]>();
+            for (const rp of rawProdutos) {
+              const dcb = rp.cod_dcb || "";
+              const conc = rp.cod_concentracao || "";
+              const key = `${dcb}_${conc}`;
+              if (!groups.has(key)) groups.set(key, []);
+              groups.get(key)!.push(rp);
+            }
+            const produtos: any[] = [];
+            for (const [key, items] of groups) {
+              const withPrice = items.filter((rp: any) => rp.vlr_custopersonalizado && parseFloat(String(rp.vlr_custopersonalizado)) > 0);
+              withPrice.sort((a: any, b: any) => parseFloat(String(a.vlr_custopersonalizado)) - parseFloat(String(b.vlr_custopersonalizado)));
+              const best = withPrice[0] || items[0];
+              const totalEstoque = items.reduce((sum: number, rp: any) => sum + (rp.qtd_estoque || 0), 0);
+              const labs = [...new Set(items.map((rp: any) => (rp.nom_laborat || rp.laboratorio || "").trim()).filter(Boolean))];
+              const eans = items
+                .filter((rp: any) => rp.ean || rp.cod_barra)
+                .map((rp: any) => ({
+                  ean: rp.ean || rp.cod_barra || "",
+                  lab: (rp.nom_laborat || rp.laboratorio || "").trim(),
+                  estoque: rp.qtd_estoque || 0,
+                  preco: rp.vlr_custopersonalizado ? parseFloat(String(rp.vlr_custopersonalizado)) : 0,
+                }));
+              produtos.push({
+                ean: best.ean || best.cod_barra || q,
+                descricao: best.nom_produto || best.descricao || desc,
+                laboratorio: labs.join(", "),
+                grupo: best.grupo || best.classificacao || "",
+                estoque: totalEstoque,
+                labs,
+                eans,
+                qtdLabs: labs.length,
+                dcb: best.cod_dcb || "",
+                codConcentracao: best.cod_concentracao || "",
+                melhorPreco: withPrice.length > 0 ? parseFloat(String(withPrice[0].vlr_custopersonalizado)) : 0,
+              });
+            }
+            console.log(`[OFERTAS-DIA] Busca EAN: ${produtos.length} grupo(s) para "${q}" (${rawProdutos.length} produtos)`);
+            return res.json({ produtos });
+          }
+        }
+      }
+      
+      // Fallback: retornar só o EAN sem expansão
       const produtos = [{
         ean: p.ean || q,
-        descricao: p.nom_produto || "",
+        descricao: desc,
         laboratorio: p.nom_laborat || "",
         grupo: p.grupo || p.classificacao || "",
         estoque: p.qtd_estoque || 0,
       }];
-      console.log(`[OFERTAS-DIA] Busca EAN: ${produtos.length} resultado para "${q}"`);
+      console.log(`[OFERTAS-DIA] Busca EAN (sem expansão): ${produtos.length} resultado para "${q}"`);
       return res.json({ produtos });
     }
 
@@ -1572,34 +1784,51 @@ app.post("/api/ofertas-dia/analisar-referencia", async (req, res) => {
     // Deduplicar EANs (mesmo EAN pode aparecer em mais de 1 lab)
     const uniqueEans = [...new Map(eanList.filter((e: any) => e.ean).map((e: any) => [e.ean, e])).values()];
 
-    // Buscar vendas-semanais de TODOS os EANs UNICOS e somar (média 3 meses)
-    // EANs sem movimentação nos últimos 3 meses são excluídos
+    // Buscar vendas de TODOS os EANs UNICOS via vendas-detalhadas (últimos 4 meses)
+    // AGREGAR vendas e depois dividir por 4 meses (mesmo método do SICF)
+    let totalVendasRaw = 0;
     let totalVendas = 0;
+    let primeiraDataRef: Date | null = null;
+    let ultimaDataRef: Date | null = null;
     const eansComMovimento: any[] = [];
     const vendasPromises = uniqueEans
       .map(async (e: any) => {
         try {
-          const vendasRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-semanais/${e.ean}`);
+          const vendasRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-detalhadas/${e.ean}`);
           if (vendasRes.ok) {
             const vendasData = await vendasRes.json();
             const vendasArray = vendasData?.data || [];
-            const ultimas13 = vendasArray.slice(0, 13);
-            let somaVendas = 0;
-            for (const v of ultimas13) {
-              somaVendas += parseFloat(String(v.qtd_vendida || "0"));
+            const hoje = new Date();
+            const quatroMesesAtras = new Date(hoje.getFullYear(), hoje.getMonth() - 4, hoje.getDate());
+            const vendasFiltradas = vendasArray.filter((v: any) => {
+              const parts = (v.data_venda || "").split("/");
+              const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+              return !isNaN(d.getTime()) && d >= quatroMesesAtras;
+            });
+            if (vendasFiltradas.length === 0) return 0;
+            eansComMovimento.push(e);
+            // Rastrear primeira/ultima data para mesesDiff real
+            for (const v of vendasFiltradas) {
+              const parts = (v.data_venda || "").split("/");
+              const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+              if (!isNaN(d.getTime())) {
+                if (!primeiraDataRef || d < primeiraDataRef) primeiraDataRef = d;
+                if (!ultimaDataRef || d > ultimaDataRef) ultimaDataRef = d;
+              }
             }
-            // Se tem vendas nos últimos 3 meses, incluir no grupo
-            if (somaVendas > 0) {
-              eansComMovimento.push(e);
-            }
-            const mediaMensal = ultimas13.length > 0 ? (somaVendas / ultimas13.length) * 4.33 : 0;
-            return Math.round(mediaMensal);
+            const totalVendasEan = vendasFiltradas.reduce((s: number, v: any) => s + parseFloat(String(v.quantidade || "1")), 0);
+            return totalVendasEan;
           }
         } catch {}
         return 0;
       });
     const vendasResults = await Promise.all(vendasPromises);
-    totalVendas = vendasResults.reduce((a, b) => a + b, 0);
+    totalVendasRaw = vendasResults.reduce((a, b) => a + b, 0);
+    // Calcular mesesDiff das datas reais (mesmo método do SICF server.ts:3611)
+    const mesesDiffRef = (primeiraDataRef && ultimaDataRef)
+      ? Math.max(1, (ultimaDataRef.getFullYear() - primeiraDataRef.getFullYear()) * 12 + (ultimaDataRef.getMonth() - primeiraDataRef.getMonth()) + 1)
+      : 4;
+    totalVendas = Math.round(totalVendasRaw / mesesDiffRef);
 
     // Buscar compras-historico de TODOS os EANs UNICOS (não só os com movimentação)
     const allCompras: any[] = [];
@@ -1643,8 +1872,9 @@ app.post("/api/ofertas-dia/analisar-referencia", async (req, res) => {
       }
     }
 
-    // Chamar analisarUmProduto para SmartPed (com melhor EAN)
-    const analysis = await analisarUmProduto(product, cnpj);
+    // Chamar analisarUmProduto para SmartPed (com TODOS os EANs do grupo)
+    const eanListStrs = eanList.map((e: any) => e.ean).filter(Boolean);
+    const analysis = await analisarUmProduto(product, cnpj, eanListStrs);
 
     // Usar melhorPrecoHistorico como preco se nao tem preco de promocao
     let preco = melhorPrecoHistorico || melhorPreco || 0;
@@ -1928,6 +2158,29 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
           return true;
         });
 
+        // Enriquecer CodProdutoDist: Substitutos do Molecula NÃO têm CodProdutoDist
+        // Copiar de Condicoes/Ean que tenham mesmo EAN + CodDist
+        const cpdMap = new Map<string, string>();
+        for (const o of ofertasDedup) {
+          const cpd = o.CodProdutoDist || o.codProdutoDist || "";
+          const eanKey = String(o.Ean || o.ean || "").replace(/^0+/, "");
+          const codDistKey = String(o.CodDist || o.codDist || "0");
+          if (cpd && eanKey && codDistKey !== "0") {
+            cpdMap.set(`${eanKey}_${codDistKey}`, cpd);
+          }
+        }
+        for (const o of ofertasDedup) {
+          if (!o.CodProdutoDist && !o.codProdutoDist) {
+            const eanKey = String(o.Ean || o.ean || "").replace(/^0+/, "");
+            const codDistKey = String(o.CodDist || o.codDist || "0");
+            const match = cpdMap.get(`${eanKey}_${codDistKey}`);
+            if (match) {
+              o.CodProdutoDist = match;
+              o.codProdutoDist = match;
+            }
+          }
+        }
+
         // Ordenar: mesmo EAN primeiro, depois preço
         const originalEanClean = (ean || "").replace(/^0+/, "");
         ofertasDedup.sort((a: any, b: any) => {
@@ -1942,17 +2195,23 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
           return aPrice - bPrice;
         });
 
-        const ofertasNormalizadas = ofertasDedup.map((o: any) => ({
-          ...o,
-          distribuidora: o.NomeDist || o.nomeDist || o.distribuidora || "",
-          codDist: o.CodDist || o.codDist || 0,
-          precoLiquido: o.PliquidoUni || o.pliquidoUni || o.Pliquido || o.pliquido || o.precoLiquido || 0,
-          preco: o.Preco || o.preco || 0,
-          estoque: o.Estoque !== undefined ? o.Estoque : (o.estoque !== undefined ? o.estoque : 0),
-          condicao: o.Condicao || o.condicao || "FIXA",
-          prazo: o.Prazo !== undefined ? o.Prazo : (o.prazo !== undefined ? o.prazo : 0),
-          ean: o.Ean || o.ean || "",
-        }));
+        const ofertasNormalizadas = ofertasDedup.map((o: any) => {
+          const cpd = o.CodProdutoDist || o.codProdutoDist || "";
+          const cp = o.CodProduto || o.codProduto || "";
+          return {
+            ...o,
+            distribuidora: o.NomeDist || o.nomeDist || o.distribuidora || "",
+            codDist: o.CodDist || o.codDist || 0,
+            precoLiquido: o.PliquidoUni || o.pliquidoUni || o.Pliquido || o.pliquido || o.precoLiquido || 0,
+            preco: o.Preco || o.preco || 0,
+            estoque: o.Estoque !== undefined ? o.Estoque : (o.estoque !== undefined ? o.estoque : 0),
+            condicao: o.Condicao || o.condicao || "FIXA",
+            prazo: o.Prazo !== undefined ? o.Prazo : (o.prazo !== undefined ? o.prazo : 0),
+            ean: o.Ean || o.ean || "",
+            codProdutoDist: cpd,
+            codProduto: cp || cpd || "",
+          };
+        });
 
         return {
           encomenda: enc,
@@ -2438,6 +2697,100 @@ app.post("/api/optimize", async (req, res) => {
         }
       });
     });
+
+    // ===== EXPANSÃO DE EANs VIA BUSCAR-LOTE (Ferramentinhas) =====
+    // Para cada item do SICF, buscar mais EANs equivalentes via princípio ativo + dosagem
+    // Genéricos: encontra todos os EANs de outros labs
+    // Éticos/Ref/Perfumaria: encontra o mesmo produto com EANs diferentes
+    {
+      const DESCRICOES_PARA_BUSCAR: Array<{ item: any; termo: string }> = [];
+      for (const item of parsedItems) {
+        const origEan = cleanEan(item.ean);
+        if (!item.descricao) continue;
+        const descLimpa = (item.descricao || "")
+          .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
+          .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
+          .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
+          .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia|neo\s*quimica|e\.jefferson|e jefferson|ems)\b/gi, "")
+          .trim();
+        const words = descLimpa.split(/\s+/).filter((w: string) => w.length >= 3 && !/^\d+$/.test(w));
+        if (words.length === 0) continue;
+        const termo = words.join(" ");
+        if (termo.length < 3) continue;
+        DESCRICOES_PARA_BUSCAR.push({ item, termo });
+      }
+
+      if (DESCRICOES_PARA_BUSCAR.length > 0) {
+        logs.push(`[BUSCAR-LOTE-SICF] Buscando ${DESCRICOES_PARA_BUSCAR.length} termos via buscar-lote para expansão de EANs...`);
+        try {
+          const termos = DESCRICOES_PARA_BUSCAR.map(d => d.termo);
+          const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ itens: termos }),
+          });
+          if (buscaRes.ok) {
+            const buscaData = await buscaRes.json();
+            const resultados = buscaData?.resultados || {};
+            let novosEansAdicionados = 0;
+            let rejeitados = 0;
+            for (const desc of DESCRICOES_PARA_BUSCAR) {
+              const prods = resultados[desc.termo] || [];
+              const origDescUpper = (desc.item.descricao || "").toUpperCase();
+              // Extrair indicadores de apresentação do produto original
+              const PRESKeywords = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG", "AMP", "AMPOLA", "SUSP", "SUSPENSAO", "GTS", " gotas", "INJ", "INJETAVEL"];
+              const PRES_GRUPOS = [
+                ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
+                ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
+                ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"],
+                ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
+              ];
+              const getGrupoIdx = (pres: string[]): number[] => {
+                const idx: number[] = [];
+                for (let i = 0; i < PRES_GRUPOS.length; i++) {
+                  if (PRES_GRUPOS[i].some(k => pres.includes(k))) idx.push(i);
+                }
+                return idx;
+              };
+              const origPresTerms = PRESKeywords.filter(k => origDescUpper.includes(k));
+              const origDosMatch = origDescUpper.match(/\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i);
+              const origDosage = origDosMatch ? origDosMatch[0].toUpperCase().replace(/\s+/g, "") : "";
+              const origGrupos = getGrupoIdx(origPresTerms);
+              for (const p of prods) {
+                const ean = cleanEan(p.ean || p.cod_barra || "");
+                if (ean && !eansToQuoteSet.has(ean)) {
+                  const prodDescUpper = (p.nom_produto || p.descricao || "").toUpperCase();
+                  if (origGrupos.length > 0 || origDosage) {
+                    const prodPresTerms = PRESKeywords.filter(k => prodDescUpper.includes(k));
+                    const prodGrupos = getGrupoIdx(prodPresTerms);
+                    let hasPresDivergence = false;
+                    for (const g of origGrupos) {
+                      if (!prodGrupos.includes(g)) { hasPresDivergence = true; break; }
+                    }
+                    if (hasPresDivergence) { rejeitados++; continue; }
+                    if (origDosage) {
+                      const prodDosMatch = prodDescUpper.match(/\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i);
+                      const prodDosage = prodDosMatch ? prodDosMatch[0].toUpperCase().replace(/\s+/g, "") : "";
+                      if (prodDosage && origDosage !== prodDosage) { rejeitados++; continue; }
+                    }
+                  }
+                  const dbRec = getEanDatabaseRecord(ean);
+                  if (!dbRec || validateSwapEquivalence(desc.item, p)) {
+                    eansToQuoteSet.add(ean);
+                    novosEansAdicionados++;
+                  } else {
+                    rejeitados++;
+                  }
+                }
+              }
+            }
+            logs.push(`[BUSCAR-LOTE-SICF] ${novosEansAdicionados} novos EANs adicionados via buscar-lote (${rejeitados} rejeitados por apresentação/equivalência).`);
+          }
+        } catch (err: any) {
+          logs.push(`[BUSCAR-LOTE-SICF] Erro: ${err.message}`);
+        }
+      }
+    }
 
     const eansToQuote = Array.from(eansToQuoteSet);
     logs.push(`[MOTOR AGRUPAMENTO] Ampliado o leque de cotaÃ§Ã£o de ${uniqueEans.length} EANs originais para ${eansToQuote.length} EANs totais de concorrentes.`);
@@ -3288,6 +3641,148 @@ app.post("/api/optimize", async (req, res) => {
     // Conjunto de EANs já consultados via API neste request (deduplicação cross-item no RUPTURA-REGEX)
     const queriedEanSet = new Set<string>();
 
+    // ===== VENDAS + ESTOQUE (Ferramentinhas) — Batch para todos os EANs do SICF + similares =====
+    const vendasEstoqueMap: Record<string, { vendasMensais: number; estoqueTotal: number }> = {};
+    {
+      // 1. Mapear cada EAN expandido → EAN original do SICF (filtrado por apresentação)
+      const _PRES_KW_VENDAS = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL"];
+      const _PRES_GRUPOS_VENDAS = [
+        ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
+        ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"]
+      ];
+      const _getGrupoIdxVendas = (pres: string[]): number[] => {
+        const idx: number[] = [];
+        for (let i = 0; i < _PRES_GRUPOS_VENDAS.length; i++) {
+          if (_PRES_GRUPOS_VENDAS[i].some(k => pres.includes(k))) idx.push(i);
+        }
+        return idx;
+      };
+      const eanToOriginal = new Map<string, string>();
+      for (const item of parsedItems) {
+        const origEan = cleanEan(item.ean);
+        if (!origEan) continue;
+        eanToOriginal.set(origEan, origEan);
+        const origDesc = (item.descricao || "").toUpperCase();
+        const origPres = _PRES_KW_VENDAS.filter(k => origDesc.includes(k));
+        const origGrupos = _getGrupoIdxVendas(origPres);
+        const similares = marketSimilarMap[origEan] || [];
+        for (const s of similares) {
+          const sEan = cleanEan(s.cod_barra || s.Ean || s.ean || "");
+          if (sEan && !eanToOriginal.has(sEan)) {
+            // Filtrar por apresentação: só adicionar se mesmo grupo
+            const sDesc = (s.nom_produto || s.descricao || "").toUpperCase();
+            const sPres = _PRES_KW_VENDAS.filter(k => sDesc.includes(k));
+            const sGrupos = _getGrupoIdxVendas(sPres);
+            if (origGrupos.length > 0) {
+              const match = origGrupos.some(g => sGrupos.includes(g));
+              if (!match) continue;
+            }
+            eanToOriginal.set(sEan, origEan);
+          }
+        }
+      }
+      const allEansForVendas = Array.from(eanToOriginal.keys());
+      logs.push(`[METRICAS] Buscando vendas para ${allEansForVendas.length} EANs (${parsedItems.filter(i => i.ean).length} originais + ${allEansForVendas.length - parsedItems.filter(i => i.ean).length} similares)...`);
+
+      // 2. Buscar vendas de TODOS os EANs (expandidos) via vendas-detalhadas
+      const vendasByOriginal: Record<string, { total: number; meses: number }> = {};
+      const vendasPromises = allEansForVendas.map(async (ean) => {
+        try {
+          const vendasRes = await fetchWithRetry(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-detalhadas/${ean}`, {}, 10000, 1).catch(() => null);
+          if (vendasRes?.ok) {
+            const vendasData = await vendasRes.json().catch(() => ({}));
+            const vendasArray = vendasData?.data || [];
+            if (vendasArray.length === 0) return { ean, totalVendas: 0, meses: 0 };
+            // Filtrar apenas últimos 4 meses
+            const hoje = new Date();
+            const quatroMesesAtras = new Date(hoje.getFullYear(), hoje.getMonth() - 4, hoje.getDate());
+            const vendasFiltradas = vendasArray.filter((v: any) => {
+              const parts = (v.data_venda || "").split("/");
+              const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+              return !isNaN(d.getTime()) && d >= quatroMesesAtras;
+            });
+            if (vendasFiltradas.length === 0) return { ean, totalVendas: 0, meses: 0 };
+            const dates = vendasFiltradas.map((v: any) => {
+              const parts = (v.data_venda || "").split("/");
+              return new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+            }).filter((d: Date) => !isNaN(d.getTime()));
+            if (dates.length === 0) return { ean, totalVendas: 0, meses: 0 };
+            const primeira = new Date(Math.min(...dates.map(d => d.getTime())));
+            const ultima = new Date(Math.max(...dates.map(d => d.getTime())));
+            const mesesDiff = Math.max(1, (ultima.getFullYear() - primeira.getFullYear()) * 12 + (ultima.getMonth() - primeira.getMonth()) + 1);
+            const totalVendas = vendasFiltradas.reduce((s: number, v: any) => s + parseFloat(String(v.quantidade || "1")), 0);
+            return { ean, totalVendas, meses: mesesDiff };
+          }
+        } catch {}
+        return { ean, totalVendas: 0, meses: 0 };
+      });
+      const vendasResults = await Promise.all(vendasPromises);
+      // Agregar por EAN original
+      for (const r of vendasResults) {
+        const origEan = eanToOriginal.get(r.ean) || r.ean;
+        if (!vendasByOriginal[origEan]) vendasByOriginal[origEan] = { total: 0, meses: 0 };
+        vendasByOriginal[origEan].total += r.totalVendas;
+        vendasByOriginal[origEan].meses = Math.max(vendasByOriginal[origEan].meses, r.meses);
+      }
+      for (const [origEan, data] of Object.entries(vendasByOriginal)) {
+        const mediaMensal = data.meses > 0 ? Math.round(data.total / data.meses) : 0;
+        vendasEstoqueMap[origEan] = { vendasMensais: mediaMensal, estoqueTotal: vendasEstoqueMap[origEan]?.estoqueTotal || 0 };
+      }
+
+      // 3. Buscar estoque apenas dos EANs originais (com filtro de apresentação)
+      const uniqueOriginalEans = Array.from(new Set(parsedItems.map(item => cleanEan(item.ean)).filter(Boolean)));
+      const estPromises = uniqueOriginalEans.map(async (ean) => {
+        let estoqueTotal = 0;
+        try {
+          const itemOrig = parsedItems.find(it => cleanEan(it.ean) === ean);
+          const origDesc = (itemOrig?.descricao || "").toUpperCase();
+          const _PRES_KW2 = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL"];
+          const origPresSet = new Set(_PRES_KW2.filter(k => origDesc.includes(k)));
+          const PRES_GRUPOS = [
+            ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
+            ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
+            ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"],
+            ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
+          ];
+          const getGrupoIndex = (pres: Set<string>): number[] => {
+            const indices: number[] = [];
+            for (let i = 0; i < PRES_GRUPOS.length; i++) {
+              if (PRES_GRUPOS[i].some(k => pres.has(k))) indices.push(i);
+            }
+            return indices;
+          };
+          const estRes = await fetchWithRetry(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${ean}`, {}, 10000, 1).catch(() => null);
+          if (estRes?.ok) {
+            const estData = await estRes.json().catch(() => ({}));
+            const produtos = estData?.produtos || [];
+            const produtosFiltrados = origPresSet.size > 0
+              ? produtos.filter((p: any) => {
+                  const pDesc = (p.nom_produto || p.descricao || "").toUpperCase();
+                  const pPres = new Set(_PRES_KW2.filter(k => pDesc.includes(k)));
+                  const origGrupos = getGrupoIndex(origPresSet);
+                  const pGrupos = getGrupoIndex(pPres);
+                  for (const g of origGrupos) {
+                    if (!pGrupos.includes(g)) return false;
+                  }
+                  return true;
+                })
+              : produtos;
+            estoqueTotal = produtosFiltrados.reduce((s: number, p: any) => s + (p.qtd_estoque || 0), 0);
+          }
+        } catch {}
+        return { ean, estoqueTotal };
+      });
+      const estResults = await Promise.all(estPromises);
+      for (const r of estResults) {
+        if (!vendasEstoqueMap[r.ean]) vendasEstoqueMap[r.ean] = { vendasMensais: 0, estoqueTotal: 0 };
+        vendasEstoqueMap[r.ean].estoqueTotal = r.estoqueTotal;
+      }
+
+      const comVendas = Object.values(vendasEstoqueMap).filter(v => v.vendasMensais > 0).length;
+      const comEstoque = Object.values(vendasEstoqueMap).filter(v => v.estoqueTotal > 0).length;
+      logs.push(`[METRICAS] ${comVendas}/${uniqueOriginalEans.length} EANs com vendas, ${comEstoque} com estoque.`);
+    }
+
     for (const item of parsedItems) {
       // ===== WHATSAPP: Item com regra de laboratório → vai direto pro WhatsApp =====
       const waMatch = whatsappItemsMap.get(item.lineIndex);
@@ -3298,6 +3793,7 @@ app.post("/api/optimize", async (req, res) => {
         const rulePhone = rule.telefone || "";
         logs.push(`[WHATSAPP-REPORT] Item "${item.descricao}" → WhatsApp via regra "${ruleName}"`);
 
+        const _metricasWa = vendasEstoqueMap[cleanEan(item.ean)] || { vendasMensais: 0, estoqueTotal: 0 };
         report.push({
           codInterno: item.codInterno,
           originalEan: item.ean,
@@ -3329,6 +3825,8 @@ app.post("/api/optimize", async (req, res) => {
           originalSemEstoque: false,
           isRupturaSubstitution: false,
           alertaConfirmarQtd: false,
+          vendasMensais: _metricasWa.vendasMensais,
+          estoqueTotal: _metricasWa.estoqueTotal,
           alternatives: []
         });
 
@@ -3943,9 +4441,50 @@ app.post("/api/optimize", async (req, res) => {
               logs.push(`[RUPTURA-REGEX] Produtos/Buscar retornou ${descProdutos.length} produtos`);
               console.log(`[RUPTURA-REGEX] Produtos/Buscar retornou ${descProdutos.length} produtos`);
               
-              if (Array.isArray(descProdutos) && descProdutos.length > 0) {
+              // FILTRO DE APRESENTAÇÃO: remover produtos com forma farmacêutica diferente
+              const _origDescUpper = (item.descricao || "").toUpperCase();
+              const _PRES_KW = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG", "AMP", "AMPOLA", "SUSP", "SUSPENSAO", "GTS", "INJ", "INJETAVEL"];
+              const _PRES_GRUPOS = [
+                ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
+                ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
+                ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"],
+                ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
+              ];
+              const _getGrupoIdx = (pres: Set<string>): number[] => {
+                const idx: number[] = [];
+                for (let i = 0; i < _PRES_GRUPOS.length; i++) {
+                  if (_PRES_GRUPOS[i].some(k => pres.has(k))) idx.push(i);
+                }
+                return idx;
+              };
+              const _origPres = new Set(_PRES_KW.filter(k => _origDescUpper.includes(k)));
+              const _origDosMatch = _origDescUpper.match(/\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i);
+              const _origDosage = _origDosMatch ? _origDosMatch[0].toUpperCase().replace(/\s+/g, "") : "";
+              let _descProdutosFiltrados = descProdutos;
+              if (_origPres.size > 0 || _origDosage) {
+                _descProdutosFiltrados = descProdutos.filter((p: any) => {
+                  const pDesc = (p.Descricao || p.descricao || p.Nome || "").toUpperCase();
+                  const pPres = new Set(_PRES_KW.filter(k => pDesc.includes(k)));
+                  const origGrupos = _getGrupoIdx(_origPres);
+                  const pGrupos = _getGrupoIdx(pPres);
+                  for (const g of origGrupos) {
+                    if (!pGrupos.includes(g)) return false;
+                  }
+                  if (_origDosage) {
+                    const pDosMatch = pDesc.match(/\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i);
+                    const pDosage = pDosMatch ? pDosMatch[0].toUpperCase().replace(/\s+/g, "") : "";
+                    if (pDosage && _origDosage !== pDosage) return false;
+                  }
+                  return true;
+                });
+                if (_descProdutosFiltrados.length < descProdutos.length) {
+                  logs.push(`[RUPTURA-REGEX] Filtro apresentação: ${descProdutos.length} → ${_descProdutosFiltrados.length} produtos (removidos ${descProdutos.length - _descProdutosFiltrados.length} com apresentação/dosagem diferente)`);
+                }
+              }
+
+              if (Array.isArray(_descProdutosFiltrados) && _descProdutosFiltrados.length > 0) {
                 const descEans = Array.from(new Set(
-                  descProdutos.map((p: any) => cleanEan(p.Ean || p.ean || p.CodBarra || p.codBarra)).filter(Boolean)
+                  _descProdutosFiltrados.map((p: any) => cleanEan(p.Ean || p.ean || p.CodBarra || p.codBarra)).filter(Boolean)
                 ));
                 
                 logs.push(`[RUPTURA-REGEX] EANs extraídos: [${descEans.join(', ')}]`);
@@ -3958,7 +4497,7 @@ app.post("/api/optimize", async (req, res) => {
                 
                 // Adicionar ofertas do cache (sem chamada API)
                 for (const [cachedEan, precos] of cachedPrices) {
-                  const produtoInfo = descProdutos.find((p: any) => cleanEan(p.Ean || p.ean || p.CodBarra || p.codBarra) === cachedEan);
+                  const produtoInfo = _descProdutosFiltrados.find((p: any) => cleanEan(p.Ean || p.ean || p.CodBarra || p.codBarra) === cachedEan);
                   const descFromProd = produtoInfo?.Descricao || produtoInfo?.descricao || '';
                   const labFromProd = produtoInfo?.Laboratorio || produtoInfo?.laboratorio || '';
                   
@@ -4985,6 +5524,8 @@ condicoesEnriched = condicoes.map((c: any) => {
             observacao: stripHtmlTags(melhor.Mensagem || melhor.mensagem || melhor.Restricao || melhor.restricao || melhor.Observacao || melhor.observacao || melhor.Obs || melhor.obs || melhor.Motivo || melhor.motivo || ""),
             alertaConfirmarQtd: alertResult.alertaConfirmarQtd,
             motivoAlerta: alertResult.motivoAlerta,
+            vendasMensais: (vendasEstoqueMap[cleanEan(item.ean)] || {}).vendasMensais || 0,
+            estoqueTotal: (vendasEstoqueMap[cleanEan(item.ean)] || {}).estoqueTotal || 0,
             alternatives: (() => {
               const chosen = finalAlternatives.length > 0 ? finalAlternatives : (rawSubstitutosForAlternatives.length > 0 ? rawSubstitutosForAlternatives : (substitutos.length > 0 ? substitutos : []));
               // ENRICH-ALL-ALTS: Construir mapa global Ean_CodDist → CodProdutoDist a partir de TODAS as fontes
@@ -5183,6 +5724,8 @@ condicoesEnriched = condicoes.map((c: any) => {
             originalRupturaPreco: undefined,
             alertaConfirmarQtd: alertResult.alertaConfirmarQtd,
             motivoAlerta: alertResult.motivoAlerta,
+            vendasMensais: (vendasEstoqueMap[cleanEan(item.ean)] || {}).vendasMensais || 0,
+            estoqueTotal: (vendasEstoqueMap[cleanEan(item.ean)] || {}).estoqueTotal || 0,
             alternatives: (() => {
               const chosen = finalAlternatives.length > 0 ? finalAlternatives : (rawSubstitutosForAlternatives.length > 0 ? rawSubstitutosForAlternatives : (substitutos.length > 0 ? substitutos : []));
               // ENRICH-ALL-ALTS: Construir mapa global Ean_CodDist → CodProdutoDist a partir de TODAS as fontes
@@ -5280,6 +5823,8 @@ condicoesEnriched = condicoes.map((c: any) => {
           observacao: "Sem retorno comercial da SmartPed",
           alertaConfirmarQtd: false,
           originalSemEstoque: true,
+          vendasMensais: (vendasEstoqueMap[cleanEan(item.ean)] || {}).vendasMensais || 0,
+          estoqueTotal: (vendasEstoqueMap[cleanEan(item.ean)] || {}).estoqueTotal || 0,
           alternatives: []
         });
       }
@@ -5663,6 +6208,34 @@ app.post("/api/faturar", async (req, res) => {
       });
     }
 
+    // Salvar pedido no Turso ANTES de responder ao frontend (garante persistência)
+    let orderSaved = false;
+    try {
+      saveOrder(String(numPedidoSmartPed), apiCnpj, new Date().toISOString(), { totalValor, totalEconomia }, { protocoloLote, distribuidorasBloqueadas });
+      for (const it of validatedItems) {
+        saveOrderItem({
+          numPedido: String(numPedidoSmartPed),
+          ean: it.novoEan || it.originalEan || "",
+          descricao: it.novaDescricao || it.originalDescricao || "",
+          laboratorio: it.novoLaboratorio || it.originalLaboratorio || "",
+          codDist: Number(it.codDist || 2),
+          nomeDist: it.distribuidora || "",
+          qtd: Number(it.qtd || 1),
+          precoLiquido: Number(it.novoPreco || 0),
+          precoOriginal: Number(it.originalPreco || 0),
+          economia: Number(it.economiaTotal || 0),
+          isSwap: it.novoEan !== it.originalEan,
+          origem: it.origem || 'manual',
+          idEncomenda: it.idEncomenda || null
+        });
+      }
+      orderSaved = true;
+      logs.push(`[TURSO] Pedido ${numPedidoSmartPed} salvo com sucesso.`);
+    } catch (saveErr: any) {
+      console.error(`[TURSO] Erro ao salvar pedido ${numPedidoSmartPed}:`, saveErr.message);
+      logs.push(`[TURSO ERRO] Falha ao salvar pedido: ${saveErr.message}`);
+    }
+
     res.json({
       sucesso: true,
       protocoloLote,
@@ -5688,52 +6261,35 @@ app.post("/api/faturar", async (req, res) => {
       logs
     });
 
-    try {
-      saveOrder(String(numPedidoSmartPed), apiCnpj, new Date().toISOString(), { totalValor, totalEconomia }, { protocoloLote, distribuidorasBloqueadas });
-      for (const it of validatedItems) {
-        saveOrderItem({
-          numPedido: String(numPedidoSmartPed),
-          ean: it.novoEan || it.originalEan || "",
-          descricao: it.novaDescricao || it.originalDescricao || "",
-          laboratorio: it.novoLaboratorio || it.originalLaboratorio || "",
-          codDist: Number(it.codDist || 2),
-          nomeDist: it.distribuidora || "",
-          qtd: Number(it.qtd || 1),
-          precoLiquido: Number(it.novoPreco || 0),
-          precoOriginal: Number(it.originalPreco || 0),
-          economia: Number(it.economiaTotal || 0),
-          isSwap: it.novoEan !== it.originalEan,
-          origem: it.origem || 'manual',
-          idEncomenda: it.idEncomenda || null
-        });
-      }
-    } catch {}
-
-    // Confirmar encomendas no sistema externo pós-faturamento
-    try {
-      const encomendasItens = validatedItems.filter((it: any) => it.origem === "encomenda" && it.idEncomenda);
-      if (encomendasItens.length > 0) {
-        const idsEncomenda = [...new Set(encomendasItens.map((it: any) => String(it.idEncomenda)))];
-        const itensConfirmar = idsEncomenda.map((id) => ({
-          id,
-          fornecedor: encomendasItens.find((it: any) => String(it.idEncomenda) === id)?.distribuidora || "",
-          dataPrevisao: new Date().toISOString().split("T")[0]
-        }));
-        console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando ${itensConfirmar.length} encomenda(s) no sistema externo...`);
-        const respConfirmar = await fetch(`${ENCOMENDAS_API_URL}/api/integracao/encomendas/confirmar-pedido`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-api-key": ENCOMENDAS_API_KEY },
-          body: JSON.stringify({ itens: itensConfirmar })
-        });
-        if (respConfirmar.ok) {
-          console.log(`[ENCOMENDAS-CONFIRMACAO] Encomendas confirmadas com sucesso.`);
-        } else {
-          const errText = await respConfirmar.text().catch(() => "Sem detalhes");
-          console.error(`[ENCOMENDAS-CONFIRMACAO] Falha ao confirmar: ${respConfirmar.status} - ${errText}`);
+    // Confirmar encomendas no sistema externo APENAS se pedido foi salvo no Turso
+    if (orderSaved) {
+      try {
+        const encomendasItens = validatedItems.filter((it: any) => it.origem === "encomenda" && it.idEncomenda);
+        if (encomendasItens.length > 0) {
+          const idsEncomenda = [...new Set(encomendasItens.map((it: any) => String(it.idEncomenda)))];
+          const itensConfirmar = idsEncomenda.map((id) => ({
+            id,
+            fornecedor: encomendasItens.find((it: any) => String(it.idEncomenda) === id)?.distribuidora || "",
+            dataPrevisao: new Date().toISOString().split("T")[0]
+          }));
+          console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando ${itensConfirmar.length} encomenda(s) no sistema externo...`);
+          const respConfirmar = await fetch(`${ENCOMENDAS_API_URL}/api/integracao/encomendas/confirmar-pedido`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": ENCOMENDAS_API_KEY },
+            body: JSON.stringify({ itens: itensConfirmar })
+          });
+          if (respConfirmar.ok) {
+            console.log(`[ENCOMENDAS-CONFIRMACAO] Encomendas confirmadas com sucesso.`);
+          } else {
+            const errText = await respConfirmar.text().catch(() => "Sem detalhes");
+            console.error(`[ENCOMENDAS-CONFIRMACAO] Falha ao confirmar: ${respConfirmar.status} - ${errText}`);
+          }
         }
+      } catch (encErr: any) {
+        console.error(`[ENCOMENDAS-CONFIRMACAO] Erro ao confirmar encomendas: ${encErr.message}`);
       }
-    } catch (encErr: any) {
-      console.error(`[ENCOMENDAS-CONFIRMACAO] Erro ao confirmar encomendas: ${encErr.message}`);
+    } else {
+      logs.push(`[ENCOMENDAS-CONFIRMACAO] Pulado — pedido não salvo no Turso.`);
     }
   } catch (err: any) {
     console.error("Erro no faturamento do servidor:", err);

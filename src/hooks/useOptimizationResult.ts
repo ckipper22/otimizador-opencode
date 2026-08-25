@@ -400,7 +400,8 @@ export function useOptimizationResult({
               codProduto: (() => {
                 const finalCodProdutoDist = selectedAlt.codProdutoDist !== undefined ? selectedAlt.codProdutoDist : (item.codProdutoDist || "");
                 const rawCodProduto = selectedAlt.codProduto !== undefined ? selectedAlt.codProduto : (item.codProduto || "");
-                return (rawCodProduto === "0" || !rawCodProduto) ? finalCodProdutoDist : rawCodProduto;
+                const resolved = (rawCodProduto === "0" || !rawCodProduto) ? finalCodProdutoDist : rawCodProduto;
+                return resolved || finalCodProdutoDist || "";
               })()
             };
           }

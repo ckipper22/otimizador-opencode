@@ -267,7 +267,7 @@ export function useManualSearch({
     const offerCondicao = offer.condicao || offer.Condicao || offer.NomeCondicao || "FIXA";
     const offerPrazo = Number(offer.prazo !== undefined ? offer.prazo : (offer.Prazo !== undefined ? offer.Prazo : 0));
     const offerCodProdDist = offer.codProdutoDist || offer.CodProdutoDist || offer.cod_produtodist || "";
-    const offerCodProd = offer.codProduto || offer.CodProduto || "";
+    const offerCodProd = offer.codProduto || offer.CodProduto || offerCodProdDist || "";
     const offerPedMin = getManualDistMinimo(offerCodDist, offerCondicao, offerPrazo, offerDist);
 
     const randomCod = "MANUAL-" + Date.now() + "-" + Math.floor(1000 + Math.random() * 9000);

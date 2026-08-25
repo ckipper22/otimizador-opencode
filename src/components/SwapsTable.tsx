@@ -603,6 +603,21 @@ export default function SwapsTable({
                             )}
                             <span className="mx-1">|</span> Unit: {formatCurrency(item.isRupturaSubstitution ? item.novoPreco : item.originalPreco)}
                           </div>
+                          {/* Vendas + Estoque badge (Painel de Escolhas) */}
+                          {((item.vendasMensais ?? 0) > 0 || (item.estoqueTotal ?? 0) > 0) && (
+                            <div className="flex items-center gap-2 mt-1">
+                               {(item.vendasMensais ?? 0) > 0 && (
+                                <span className="text-[9px] font-sans font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
+                                  📊 {item.vendasMensais} un/mês (4m)
+                                </span>
+                              )}
+                              {(item.estoqueTotal ?? 0) > 0 && (
+                                <span className="text-[9px] font-sans font-bold text-teal-700 bg-teal-50 px-1.5 py-0.5 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
+                                  📦 {item.estoqueTotal} cx
+                                </span>
+                              )}
+                            </div>
+                          )}
                           {item.isRupturaSubstitution && item.originalRupturaEan && (
                             <div className="mt-1.5 p-2 bg-yellow-50 border border-yellow-400 rounded-sm">
                               <div className="flex items-center gap-1 text-[10px] font-black text-yellow-800 mb-1">
@@ -1581,6 +1596,22 @@ export default function SwapsTable({
                                     )}
                                   </div>
                                   
+                                  {/* Vendas + Estoque badge */}
+                                  {((item.vendasMensais ?? 0) > 0 || (item.estoqueTotal ?? 0) > 0) && (
+                                    <div className="flex items-center gap-2 mt-1">
+                                      {(item.vendasMensais ?? 0) > 0 && (
+                                        <span className="text-[9px] font-sans font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
+                                          📊 {item.vendasMensais} un/mês (4m)
+                                        </span>
+                                      )}
+                                      {(item.estoqueTotal ?? 0) > 0 && (
+                                        <span className="text-[9px] font-sans font-bold text-teal-700 bg-teal-50 px-1.5 py-0.5 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
+                                          📦 {item.estoqueTotal} cx
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+
                                   {/* Badges */}
                                   <div className="flex flex-wrap items-center gap-1.5 mt-1">
                                     {item.originalSemEstoque && (

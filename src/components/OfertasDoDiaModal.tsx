@@ -76,7 +76,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [analyzingRef, setAnalyzingRef] = useState<string | null>(null);
-  const [addingQtd, setAddingQtd] = useState<{ ean: string; qtd: string } | null>(null);
+  const [addingQtd, setAddingQtd] = useState<{ ean: string; qtd: string; selectedPrice?: number } | null>(null);
 
   const fetchOfertas = async (force = false, search = "") => {
     setLoading(true);
@@ -512,12 +512,12 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                   {/* Metricas */}
                   <div className="grid grid-cols-2 gap-2 mb-3">
                     <div className="text-center p-2 bg-gray-50">
-                      <p className="text-[10px] text-gray-500 font-sans uppercase">Vendas</p>
-                      <p className="text-xs font-bold text-[#141414] font-sans">{oferta.vendasMensais}/mes</p>
+                      <p className="text-[10px] text-gray-500 font-sans uppercase">Vendas (4m)</p>
+                      <p className="text-xs font-bold text-[#141414] font-sans">{oferta.vendasMensais}/mês</p>
                     </div>
                     <div className="text-center p-2 bg-gray-50">
                       <p className="text-[10px] text-gray-500 font-sans uppercase">Estoque</p>
-                      <p className="text-xs font-bold text-[#141414] font-sans">{oferta.estoqueMesmoEan} cx</p>
+                      <p className="text-xs font-bold text-[#141414] font-sans">{oferta.estoqueTotal} cx</p>
                     </div>
                   </div>
 
@@ -572,13 +572,44 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                             </button>
                           </div>
                         ) : (
-                          <button
-                            onClick={() => setAddingQtd({ ean: oferta.ean, qtd: '1' })}
-                            className="flex-1 py-2 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-colors"
-                          >
-                            <ShoppingCart className="w-3 h-3" />
-                            Adicionar
-                          </button>
+                          <div className="flex-1 flex items-center gap-1">
+                            <select
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val === '') return;
+                                if (val === 'base') {
+                                  setAddingQtd({ ean: oferta.ean, qtd: '1', selectedPrice: oferta.preco });
+                                } else if (val === 'smartped') {
+                                  setAddingQtd({ ean: oferta.melhorEanSmartPed || oferta.ean, qtd: '1', selectedPrice: oferta.melhorPrecoSmartPed || 0 });
+                                } else {
+                                  const idx = parseInt(val);
+                                  const tier = oferta.tiers![idx];
+                                  setAddingQtd({ ean: oferta.ean, qtd: String(tier.minQty), selectedPrice: tier.price });
+                                }
+                              }}
+                              defaultValue=""
+                              className="flex-1 bg-white border border-amber-400 text-[10px] font-bold text-gray-800 rounded-sm px-2 py-2 focus:ring-1 focus:ring-amber-500 focus:outline-none cursor-pointer"
+                            >
+                              <option value="" disabled>Adicionar ▼</option>
+                              <optgroup label="PROMOCAO">
+                                <option value="base">{oferta.fornecedorLista || oferta.fornecedor} | {formatCurrency(oferta.preco)} | Sem minimo</option>
+                                {oferta.tiers && oferta.tiers.map((tier, idx) => {
+                                  const isBest = idx === oferta.tiers!.length - 1;
+                                  const savings = oferta.preco > 0 ? ((oferta.preco - tier.price) / oferta.preco * 100) : 0;
+                                  return (
+                                    <option key={idx} value={idx}>
+                                      {oferta.fornecedorLista || oferta.fornecedor} | {formatCurrency(tier.price)} | {tier.minQty}+ und{isBest ? ' ★' : ''}{savings > 0 ? ` (-${savings.toFixed(0)}%)` : ''}
+                                    </option>
+                                  );
+                                })}
+                              </optgroup>
+                              {oferta.melhorPrecoSmartPed && oferta.melhorPrecoSmartPed > 0 && (
+                                <optgroup label="SMARTPED">
+                                  <option value="smartped">{oferta.melhorDistribuidora} | {formatCurrency(oferta.melhorPrecoSmartPed)} | Melhor SmartPed</option>
+                                </optgroup>
+                              )}
+                            </select>
+                          </div>
                         )}
                       </>
                     )}
@@ -844,12 +875,12 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
               {/* Metricas */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="text-center p-2 bg-gray-50 border border-gray-200">
-                  <p className="text-[10px] text-gray-500 font-sans uppercase">Vendas</p>
-                  <p className="text-sm font-bold text-[#141414] font-sans">{detalheAberto.vendasMensais}/mes</p>
+                  <p className="text-[10px] text-gray-500 font-sans uppercase">Vendas (4m)</p>
+                  <p className="text-sm font-bold text-[#141414] font-sans">{detalheAberto.vendasMensais}/mês</p>
                 </div>
                 <div className="text-center p-2 bg-gray-50 border border-gray-200">
                   <p className="text-[10px] text-gray-500 font-sans uppercase">Estoque</p>
-                  <p className="text-sm font-bold text-[#141414] font-sans">{detalheAberto.estoqueMesmoEan} cx</p>
+                  <p className="text-sm font-bold text-[#141414] font-sans">{detalheAberto.estoqueTotal} cx</p>
                 </div>
               </div>
 
@@ -870,19 +901,55 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
             <div className="p-4 border-t border-gray-200 bg-gray-50 flex gap-2">
               {onAddToPedido && detalheAberto.ean && (
                 <div className="flex-1 flex items-center gap-2">
+                  <select
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '') return;
+                      if (val === 'base') {
+                        setAddingQtd({ ean: detalheAberto.ean, qtd: '1', selectedPrice: detalheAberto.preco });
+                      } else if (val === 'smartped') {
+                        setAddingQtd({ ean: detalheAberto.melhorEanSmartPed || detalheAberto.ean, qtd: '1', selectedPrice: detalheAberto.melhorPrecoSmartPed || 0 });
+                      } else {
+                        const idx = parseInt(val);
+                        const tier = detalheAberto.tiers![idx];
+                        setAddingQtd({ ean: detalheAberto.ean, qtd: String(tier.minQty), selectedPrice: tier.price });
+                      }
+                    }}
+                    defaultValue=""
+                    className="px-2 py-2 border border-amber-400 text-[10px] font-bold bg-white focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
+                  >
+                    <option value="" disabled>Adicionar ▼</option>
+                    <optgroup label="PROMOCAO">
+                      <option value="base">{detalheAberto.fornecedorLista || detalheAberto.fornecedor} | {formatCurrency(detalheAberto.preco)} | Sem minimo</option>
+                      {detalheAberto.tiers && detalheAberto.tiers.map((tier, idx) => {
+                        const isBest = idx === detalheAberto.tiers!.length - 1;
+                        const savings = detalheAberto.preco > 0 ? ((detalheAberto.preco - tier.price) / detalheAberto.preco * 100) : 0;
+                        return (
+                          <option key={idx} value={idx}>
+                            {detalheAberto.fornecedorLista || detalheAberto.fornecedor} | {formatCurrency(tier.price)} | {tier.minQty}+ und{isBest ? ' ★' : ''}{savings > 0 ? ` (-${savings.toFixed(0)}%)` : ''}
+                          </option>
+                        );
+                      })}
+                    </optgroup>
+                    {detalheAberto.melhorPrecoSmartPed && detalheAberto.melhorPrecoSmartPed > 0 && (
+                      <optgroup label="SMARTPED">
+                        <option value="smartped">{detalheAberto.melhorDistribuidora} | {formatCurrency(detalheAberto.melhorPrecoSmartPed)} | Melhor SmartPed</option>
+                      </optgroup>
+                    )}
+                  </select>
                   <span className="text-[10px] font-bold text-gray-600 uppercase">Qtd:</span>
                   <input
                     type="number"
                     min="1"
-                    defaultValue="1"
-                    id="detalhe-qtd"
+                    value={addingQtd?.ean === detalheAberto.ean ? addingQtd.qtd : '1'}
+                    onChange={(e) => setAddingQtd({ ...addingQtd, ean: detalheAberto.ean, qtd: e.target.value })}
                     className="w-16 px-2 py-2 border border-amber-400 text-[11px] font-bold text-center focus:outline-none focus:ring-1 focus:ring-amber-500"
                   />
                   <button
                     onClick={() => {
-                      const input = document.getElementById('detalhe-qtd') as HTMLInputElement;
-                      const qty = parseInt(input?.value || '1') || 1;
+                      const qty = parseInt(addingQtd?.qtd || '1') || 1;
                       onAddToPedido(detalheAberto, qty);
+                      setAddingQtd(null);
                       setDetalheAberto(null);
                     }}
                     className="flex-1 py-2 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-colors"

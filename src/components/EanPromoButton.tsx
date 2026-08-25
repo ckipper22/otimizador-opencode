@@ -252,12 +252,12 @@ export const EanPromoButton = ({ ean, descricao }: { ean: string; descricao?: st
                 {/* Metricas */}
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <div className="text-center p-2 bg-gray-50">
-                    <p className="text-[10px] text-gray-500 font-sans uppercase">Vendas</p>
-                    <p className="text-xs font-bold text-[#141414] font-sans">{detail.vendasMensais}/mes</p>
+                    <p className="text-[10px] text-gray-500 font-sans uppercase">Vendas (4m)</p>
+                    <p className="text-xs font-bold text-[#141414] font-sans">{detail.vendasMensais}/mês</p>
                   </div>
                   <div className="text-center p-2 bg-gray-50">
                     <p className="text-[10px] text-gray-500 font-sans uppercase">Estoque</p>
-                    <p className="text-xs font-bold text-[#141414] font-sans">{detail.estoqueMesmoEan} cx</p>
+                    <p className="text-xs font-bold text-[#141414] font-sans">{detail.estoqueTotal} cx</p>
                   </div>
                 </div>
 
@@ -474,12 +474,12 @@ export const EanPromoButton = ({ ean, descricao }: { ean: string; descricao?: st
                 {/* Metricas */}
                 <div className="grid grid-cols-2 gap-2">
                   <div className="text-center p-2 bg-gray-50 border border-gray-200">
-                    <p className="text-[10px] text-gray-500 font-sans uppercase">Vendas</p>
-                    <p className="text-sm font-bold text-[#141414] font-sans">{detail.vendasMensais}/mes</p>
+                    <p className="text-[10px] text-gray-500 font-sans uppercase">Vendas (4m)</p>
+                    <p className="text-sm font-bold text-[#141414] font-sans">{detail.vendasMensais}/mês</p>
                   </div>
                   <div className="text-center p-2 bg-gray-50 border border-gray-200">
                     <p className="text-[10px] text-gray-500 font-sans uppercase">Estoque</p>
-                    <p className="text-sm font-bold text-[#141414] font-sans">{detail.estoqueMesmoEan} cx</p>
+                    <p className="text-sm font-bold text-[#141414] font-sans">{detail.estoqueTotal} cx</p>
                   </div>
                 </div>
 

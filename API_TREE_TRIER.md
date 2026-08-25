@@ -140,6 +140,163 @@ GET /api/chatbot/produto/vendas-semanais/{ean}
 
 ---
 
+### 4. Buscar Produto por EAN (NOVO - 2026-08)
+
+```
+GET /api/produtos/buscar-por-ean/{ean}
+```
+
+**Parametros:**
+| Parametro | Tipo | Obrigatorio | Descricao |
+|-----------|------|-------------|-----------|
+| `ean` | string (path) | Sim | Codigo de barras do produto |
+
+**Resposta (200 OK):**
+```json
+{
+  "ean": "7899620911031",
+  "nom_produto": "SINVASTATINA 20MG 30CP",
+  "nom_laborat": "E.JEFFERSON",
+  "qtd_estoque": 15,
+  "vlr_custopersonalizado": "8.50",
+  "vlr_venda_final": "18.50",
+  "cod_dcb": "SINVASTATINA",
+  "grupo": "Similar"
+}
+```
+
+**Uso no sistema (`server.ts`):**
+- **Linha 1483** - Busca por EAN no fluxo de otimização
+
+---
+
+### 5. Buscar Lote por Descrição (NOVO - 2026-08)
+
+```
+POST /api/produtos/buscar-lote
+```
+
+**Request Body:**
+```json
+{
+  "itens": ["ATENOLOL 25MG", "AMLODIPINO 5MG"]
+}
+```
+
+**⚠️ REGRAS CRÍTICAS:**
+- Body deve ser `{"itens": [...]}` NÃO `{"termos": [...]}` (AGENTS.md #40)
+- Limpar termos: remover "GENÉRICO", nomes de marca (Sandoz, EMS, etc.) antes de enviar (AGENTS.md #41)
+- Buscar por princípio ativo (primeira palavra) + filtrar dosagem no JS (AGENTS.md #47)
+
+**Resposta (200 OK):**
+```json
+{
+  "resultados": {
+    "ATENOLOL 25MG": [
+      {
+        "ean": "7899620911031",
+        "nom_produto": "ATENOLOL 25MG 30CP",
+        "nom_laborat": "E.JEFFERSON",
+        "qtd_estoque": 15,
+        "vlr_custopersonalizado": "8.50",
+        "vlr_venda_final": "18.50",
+        "cod_dcb": "ATENOLOL",
+        "grupo": "Generico"
+      }
+    ]
+  }
+}
+```
+
+**Uso no sistema (`server.ts`):**
+- **Linha 601** - Busca por descrição no fluxo de análise
+- **Linha 1001** - Expandir EANs via princípio ativo
+- **Linha 1072, 1368, 1417, 1516** - RUPTURA-REGEX (busca por descrição)
+- **Linha 3068** - Fallback DCB no optimize flow
+
+---
+
+### 6. Histórico de Compras por EAN (NOVO - 2026-08)
+
+```
+GET /api/produtos/compras-historico/{ean}?meses=6
+```
+
+**Parametros:**
+| Parametro | Tipo | Obrigatorio | Descricao |
+|-----------|------|-------------|-----------|
+| `ean` | string (path) | Sim | Codigo de barras do produto |
+| `meses` | number (query) | Nao | Periodo em meses (padrão: 6) |
+
+**Resposta (200 OK):**
+```json
+{
+  "historico": [
+    {
+      "data": "2026-08-15",
+      "preco_tabela": 5.54,
+      "preco_unitario": 5.18,
+      "desconto_pct": 6.47,
+      "quantidade": 120,
+      "fornecedor": "FORSTER"
+    }
+  ]
+}
+```
+
+**Uso no sistema (`server.ts`):**
+- **Linha 550** - Histórico de compras para análise de ofertas
+- **Linha 1181, 1641** - Histórico no fluxo de otimização
+
+---
+
+### 7. Similares em Lote (Batch) (NOVO - 2026-08)
+
+```
+POST /api/produtos/similares/batch
+```
+
+**Request Body:**
+```json
+{
+  "eans": ["7899620911031", "7897595620613"]
+}
+```
+
+**Resposta (200 OK):**
+```json
+{
+  "success": true,
+  "resultados": {
+    "7899620911031": {
+      "ean": "7899620911031",
+      "nom_produto": "SINVASTATINA 20MG 30CP",
+      "nom_laborat": "E.JEFFERSON",
+      "qtd_estoque": 15,
+      "vlr_custopersonalizado": "8.50",
+      "vlr_venda_final": "18.50",
+      "cod_dcb": "SINVASTATINA",
+      "grupo": "Similar"
+    },
+    "7897595620613": {
+      "ean": "7897595620613",
+      "nom_produto": "SINVASTATINA 20MG 30CP",
+      "nom_laborat": "LEGRAND",
+      "qtd_estoque": 8,
+      "vlr_custopersonalizado": "9.20",
+      "vlr_venda_final": "19.50",
+      "cod_dcb": "SINVASTATINA",
+      "grupo": "Similar"
+    }
+  }
+}
+```
+
+**Uso no sistema (`server.ts`):**
+- **Linha 101** - `fetchSimilarGenericsBatch()`: Batch de similares para busca por grupo DCB
+
+---
+
 ## Camada 2: Trier SGF API (Integracao Direta)
 
 ### Parametros Comuns

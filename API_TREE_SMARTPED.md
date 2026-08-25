@@ -37,7 +37,7 @@ POST /api/Condicoes/Ean
 |-------|------|-------------|-----------|
 | `Token` | string | Sim | Token de autenticacao da API |
 | `parametros.CnpjCLi` | string | Sim | CNPJ do cliente (sem pontuacao) |
-| `parametros.Ean` | string | Sim | EAN(s) separados por virgula (lotes de ate 40) |
+| `parametros.Ean` | string | Sim | EAN(s) separados por virgula (lotes de ate 40). **INFO DIOGO (24/08/2026):** endpoint JÁ aceita múltiplos EANs — não precisa chamar EAN por EAN |
 | `parametros.AceitaOntem` | number | Nao | 1 = aceita condicoes do dia anterior |
 
 **Resposta (200 OK) - Estrutura:**
@@ -121,6 +121,7 @@ PMC > pmc > Pmc > VlrPmc > vlr_pmc
 - SmartPed retorna EANs como String neste endpoint
 - PMC e Preco de Tabela vêm aninhados dentro de cada ItemPedido
 - **Resposta inclui array `dists[]` (ou `Dists[]`) na raiz de `Retorno`:** Cada item tem `CodDist` e `NomeDist`. Este array é a fonte primária para popular o cache dinâmico de nomes de distribuidoras (`enrichDistribuidoresFromPayload`). **Não confiar que `NomeDist` venha no objeto `Condicoes[]` individual** — vem separado no `dists[]`.
+- **⚠️ BUSCA SEQUENCIAL (INFO DIOGO):** API usa tabela temporária. Requests paralelos sobrescrevem os dados. Sempre usar `await` sequencial com delay entre chamadas quando usando lote de EANs.
 
 > **⚠️ REGRAS CRÍTICAS PARA BUSCA POR DESCRIÇÃO (QtdMin)**
 >
@@ -603,20 +604,40 @@ POST /api/Pedido/Retorno
 
 ## 10. Busca Comparativa (`/api/Produtos/BuscaComparativa`)
 
-Busca produtos com precificacao comparativa entre distribuidoras. Similar ao Buscar, mas inclui campo `ChaveKEY` e permite filtrar por principio ativo.
+Busca produtos com precificacao comparativa entre distribuidoras. **Endpoint mais poderoso que Buscar** — descobre principio ativo automaticamente e retorna TODOS os produtos equivalentes.
+
+> **⚠️ INFO DO DIOGO (CTO SmartPed, 24/08/2026):**
+> - **Passar UM EAN** → sistema descobre a composição → retorna TODOS os produtos iguais (mesmo principio ativo), já ordenados por preço
+> - **Filtrar por principio + dosage**: `Principio: "LOSARTANA"`, `Descricao: "50%"` → retorna só losartana 50mg
+> - **Busca deve ser SEQUENCIAL (não paralela)** — API grava em tabela temporária, requests paralelos sobrescrevem uns aos outros
+> - `SoMelhor=1` retorna apenas a melhor oferta por produto
 
 ```
 POST /api/Produtos/BuscaComparativa
 ```
 
-**Request Body:**
+**Request Body (por EAN — descobre composição automaticamente):**
 ```json
 {
   "Token": "seu_token_aqui",
   "parametros": {
     "CnpjCLi": "13408443000168",
-    "Descricao": "PARACETAMOL%",
-    "Principio": "ACIDO ACETILSALICILICO",
+    "Descricao": "",
+    "Principio": "",
+    "SoMelhor": 1,
+    "EAN": "7896241225530"
+  }
+}
+```
+
+**Request Body (por principio + filtro de dosage):**
+```json
+{
+  "Token": "seu_token_aqui",
+  "parametros": {
+    "CnpjCLi": "13408443000168",
+    "Descricao": "50%",
+    "Principio": "LOSARTANA",
     "SoMelhor": 0
   }
 }
@@ -627,9 +648,10 @@ POST /api/Produtos/BuscaComparativa
 |-------|------|-------------|-----------|
 | `Token` | string | Sim | Token de autenticacao |
 | `parametros.CnpjCLi` | string | Sim | CNPJ do cliente |
-| `parametros.Descricao` | string | Sim | Texto de busca com `%` wildcard (ex: `"PARACETAMOL%"`) |
-| `parametros.Principio` | string | Nao | Filtro por principio ativo (DCB) |
-| `parametros.SoMelhor` | number | Nao | 0 = todos os resultados, 1 = apenas o melhor |
+| `parametros.EAN` | string | Nao | **UM EAN** — sistema descobre composição e retorna todos equivalentes |
+| `parametros.Descricao` | string | Nao | Texto de busca com `%` wildcard (ex: `"50%"`, `"PARACETAMOL%"`) |
+| `parametros.Principio` | string | Nao | Principio ativo DCB (ex: `"LOSARTANA"`, `"ALENDRONATO"`) |
+| `parametros.SoMelhor` | number | Nao | 0 = todos os resultados, 1 = apenas o melhor por produto |
 
 **Resposta (200 OK) - Estrutura:**
 ```json
@@ -655,9 +677,10 @@ POST /api/Produtos/BuscaComparativa
 **Notas:**
 - EAN retornado como **NUMERO** (nao string!) - obrigatorio normalizar com `padStart(13, "0")`
 - Inclui campo `ChaveKEY` (nao presente no Buscar simples)
-- `Descricao` aceita curinga `%` (ex: `"PARACETAMOL%"`)
+- `Descricao` aceita curinga `%` (ex: `"PARACETAMOL%"`, `"50%"`)
 - `Principio` usa o nome DCB completo do principio ativo
 - `SoMelhor=1` filtra apenas a melhor oferta por produto
+- **IMPORTANTE:** Chamadas devem ser SEQUENCIAIS — API usa tabela temporária que é sobrescrita a cada request
 
 ---
 

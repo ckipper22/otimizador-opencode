@@ -47,6 +47,8 @@ export interface SwapReportItem {
   whatsappDestino?: string;
   fornecedorLista?: string;
   fornecedorId?: string;
+  vendasMensais?: number;
+  estoqueTotal?: number;
   tiers?: Array<{ minQty: number; price: number }>;
   alternatives?: Array<{
     ean: string;

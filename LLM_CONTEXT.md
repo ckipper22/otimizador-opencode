@@ -46,6 +46,9 @@ Upload de arquivo SICF → parsing de EANs → consulta SmartPed (moléculas/gen
 | Tier regex não detectava emojis | `💥70und 2,29` virava produto separado em vez de tier | Limpar emojis Unicode antes de testar tier regex ( ranges específicos, NÃO `\p{Emoji}`) | `ConfigurationPanel.tsx:171` |
 | Mojibake em termos de busca | `\udca5Alendronato` causava HTTP 500 no buscar-lote | Limpar `\udca5\|\udca4\|\udca6\|\ufffd` antes de enviar à API | `server.ts` `analisarFornecedorEmBackground` |
 | Buscar-lote sem mg não acha | `ILIKE %ALLENDRONATO 70%` não casa com `ALLENDRONATO SOD 70MG` | Buscar por princípio ativo (primeira palavra) + filtrar dosagem no JS | `server.ts` `analisarFornecedorEmBackground` |
+| Card estoque "0 cx" (CETOCONAZOL SH) | Card mostrava `estoqueMesmoEan` (EAN específico=0), detail mostrava `estoqueTotal` (soma labs=3) | Card usa `estoqueTotal`. Backend: filtro apresentação em `analisarUmProduto` (SH≠CR). Fallback `estoqueGrupo`→`analysis.estoqueTotal` | `OfertasDoDiaModal.tsx`, `EanPromoButton.tsx`, `server.ts:543-571`, `server.ts:1224-1228` |
+| Vendas "2/mês" em vez de "1/mês" | Background aggregation buscava vendas de 16 EANs (SmartPed wildcards) sem filtro apresentação | Filtro apresentação no bloco vendas do background. `eanToDesc` de `allProdutos` (buscar-lote). EANs sem descrição excluídos | `server.ts:1198-1240` |
+| Divisor hardcoded vendas | `vendasAgregadas = Math.round(total / 4)` — sempre dividia por4 | Calcular `mesesDiff` das datas reais (padrão SICF server.ts:3611) | `server.ts:1270-1273`, `server.ts:1773-1774` |
 
 ---
 
@@ -78,6 +81,8 @@ Detecta padrões: `70und 2,29`, `50+ 5,00`, `a partir de 100: 3,50`. Limpa emoji
 
 ---
 
+---
+
 ## 1.2. SMARTPED MULTI-EAN EXPANSION — Promoções do Dia (2026-08-24)
 
 ### Problema
@@ -100,6 +105,34 @@ analisarUmProduto(ean, cnpj, [4+ EANs])
 
 ### Limitação
 Ferramentinhas só tem EANs do ERP local. SmartPed tem EANs extras (Gauchofarma, CervoSul) que não estão no ERP. API SmartPed não suporta busca textual por descrição.
+
+---
+
+## 1.2.1. FILTRO DE APRESENTAÇÃO — Padrão SICF (2026-08-25)
+
+### Regra
+Ao buscar estoque via `similares/{ean}` ou vendas via `vendas-detalhadas/{ean}`, FILTRAR por apresentação farmacêutica. SH não mistura com CR.
+
+### Onde se aplica
+- **`analisarUmProduto` (estoque):** `similares/{ean}` filtra por `_PRES_GRUPOS` antes de somar estoque/por-laboratório
+- **Background vendas:** `eanListFiltrado` exclui EANs sem descrição ou com apresentação diferente
+- **SICF vendas+estoque:** Já usa filtro (server.ts:3610-3640) — NÃO mexer
+
+### Fluxo de dados (decisão arquitetural)
+```
+buscar-lote (ERP) → allProdutos[] (tem nom_produto)
+  ↓
+eansGrupo = allProdutos filtrado por DCB
+  ↓
+eanToDesc = Map de allProdutos (EAN → nom_produto)
+  ↓
+eanListFiltrado = eanList filtrado por apresentação (usa eanToDesc)
+  ↓
+vendas = vendas-detalhadas/{ean} APENAS para eanListFiltrado
+```
+
+### Por que allProdutos e não eansGrupo?
+`eansGrupo` fica vazio quando o produto não tem EAN inicialmente (DCB filter não roda). `allProdutos` sempre tem os resultados do `buscar-lote`.
 
 ---
 
@@ -163,6 +196,8 @@ Ferramentinhas só tem EANs do ERP local. SmartPed tem EANs extras (Gauchofarma,
 | `docs/testing.md` | Massa de testes, endpoints, scripts de diagnóstico | Ao validar alterações ou debugar |
 | `API_TREE_SMARTPED.md` | Árvore de endpoints da SmartPed | Ao integrar novos endpoints |
 | `API_TREE_TRIER.md` | Árvore de endpoints do ERP Trier | Ao integrar novos endpoints Trier |
+| `api ferramentinhas.txt` | Documentação completa da API Ferramentinhas (endpoints, parâmetros, respostas) | **SEMPRE ao usar endpoints Ferramentinhas** (buscar-lote, similares, vendas-detalhadas, compras-historico, etc.) |
+| `docs/encomendas-integration.md` | API Encomendas: auth, endpoints, fluxo completo | Ao integrar ou debugar encomendas |
 | `docs/encomendas-integration.md` | API Encomendas: auth, endpoints, fluxo completo | Ao integrar ou debugar encomendas |
 
 ---
@@ -182,6 +217,7 @@ Ferramentinhas só tem EANs do ERP local. SmartPed tem EANs extras (Gauchofarma,
 10. **ALINHAMENTO FRONTEND/BACKEND** — sempre que alterar um lado, confirmar no outro. Ver AGENTS.md #27.
 11. **`resolveCategoria()`** — função normalizadora em `server/parsers.ts`. Fonte: Ferramentinhas `grupo` > SmartPed TipoItem > suffixo Molecula > descrição. Usar em vez de lógica espalhada.
 12. **DEPENDÊNCIAS CRUZADAS** — antes de alterar qualquer função, consultar tabela em AGENTS.md (seção "DEPENDÊNCIAS CRUZADAS"). Cada função lista todos os pontos que precisam ser verificados.
+13. **DOCUMENTAÇÃO — LEITURA OBRIGATÓRIA** — antes de codar qualquer integração com API, LER OBRIGATORIAMENTE o `API_TREE_*.md` correspondente. Ver AGENTS.md #52 para a regra completa.
 13. **DOCUMENTAÇÃO — ATUALIZAÇÃO EM AMBOS** — quando pedir "atualizar documentação", SEMPRE atualizar `LLM_CONTEXT.md` + `AGENTS.md`. Nunca um sem o outro. Exceção: bug fix sem nova regra → basta `LLM_CONTEXT.md`. **ALÉM DISSO**, salvar resumo na `supermemory` (mode: add, type: project-config).
 
 ---
@@ -543,6 +579,18 @@ Otimização de lote grandes (~100+ EANs) revelou problemas com `CodProdutoDist`
 - **Arquivos:** `server.ts:2048` (filtro 1), `server.ts:2579` (filtro 2)
 - **Status:** RESOLVIDO
 
+#### 45. Cross-contamination: preço de outro produto no card (2026-08-24)
+- **Problema:** Card do Alendronato mostrava preço da Anlodipino (R$2.37 SMARTDISTRIBUIDORA) porque batch `Condicoes/Ean` retornava condições de EANs de OUTROS produtos (substitutos) na mesma resposta.
+- **Causa raiz:** Batch com 11 EANs de Alendronato retornou 65 condições — incluindo ofertas de EANs de Anlodipino que estavam como substitutos na resposta da API.
+- **Correção (`server.ts:721-731`):** Filtro `eansDoGrupo` (Set normalizado, zeros à esquerda removidos) em `_sourceEan` antes de usar condições. Condições de EANs fora do grupo DCB são descartadas.
+- **Regra derivada:** AGENTS.md #49 — "Batch EAN SEMPRE com filtro de cross-contamination."
+- **Status:** RESOLVIDO
+
+#### 46. SMARTDISTRIBUIDORA estoque fantasma (2026-08-24)
+- **Problema:** SMARTDISTRIBUIDORA (CodDist=624) retorna `Estoque: 1` em batch, mas o SmartPed UI mostra bolinha vermelha (sem estoque real). Probabilidade ~50% de faturar com erro.
+- **Causa raiz:** Dados incorretos da API SmartPed — não é bug do nosso código.
+- **Status:** CONHECIDO, não corrigido. SMARTDISTRIBUIDORA tratada como "low-trust" (AGENTS.md #51).
+
 ### Fluxo de Diagnóstico (reutilizável)
 1. Ler log: `$log | Select-String "CodProdutoDist:EMPTY"` → lista itens afetados
 2. Para cada item, verificar RETRY: `$log | Select-String "RETRY-CODPRODDIST.*EAN=xxx"`
@@ -604,6 +652,100 @@ SmartPed API filtra ou rejeita requests de IPs de datacenter. Cloud Run usa IPs 
 
 ---
 
+## 4.22. SmartPed API — Descobertas do Diogo (CTO) — 24/08/2026
+
+### Descobertas-Chave
+
+1. **`Condicoes/Ean` JÁ aceita múltiplos EANs** — separados por vírgula, lotes de até 40
+   - Hoje: fazemos loop EAN por EAN com delay (~660 chamadas para 60 itens)
+   - **Deveria ser:** enviar todos os EANs de uma vez (`"Ean": "7896714231204,7893454101644"`)
+   - Redução: ~660 chamadas → ~16 chamadas (batch de 40)
+
+2. **`BuscaComparativa` é o endpoint que faltava** — passa UM EAN, sistema descobre composição e retorna TODOS os equivalentes
+   - Substitui nosso fluxo atual: buscar-lote → description → Produtos/Buscar → Condicoes/Ean
+   - `SoMelhor=1` retorna apenas a melhor oferta por produto
+   - Pode filtrar por principio + dosage: `Principio: "LOSARTANA"`, `Descricao: "50%"`
+
+3. **API usa tabela temporária** — requests paralelos sobrescrevem dados
+   - **SEMPRE** usar `await` sequencial com delay entre chamadas
+   - Isso explica por que nossos testes em paralelo falhavam
+
+### Onde Nos Ajuda
+
+| Fluxo Atual | Chamadas | Com Batch Ean | Com BuscaComparativa |
+|-------------|----------|---------------|---------------------|
+| `analisarUmProduto` (11 EANs) | 11 + 11 Molecula = 22 | 1 + 1 = 2 | 1 (por EAN, descobre tudo) |
+| 60 itens × 11 EANs | ~1320 | ~120 | ~60 |
+| RUPTURA-REGEX (busca por desc) | 1 Produtos/Buscar + N Condicoes/Ean | 1 + 1 batch | 1 BuscaComparativa |
+| Promoções do Dia (analisar-referencia) | buscar-lote + Produtos/Buscar + Condicoes/Ean | 1 + 1 + 1 batch | 1 BuscaComparativa |
+
+### Impacto Estimado
+
+- **Tempo:** 5-6 min → ~30 seg (redução de 90%)
+- **Cross-contamination:** Eliminado — batch retorna itens agrupados por EAN
+- **Código:** Simplifica `analisarUmProduto` (remove loop EAN por EAN)
+- **Dados:** `BuscaComparativa` já retorna preço + estoque + distribuidora + CodProdutoDist
+
+### Implementado (24/08/2026)
+
+- ✅ `analisarUmProduto` refatorado: envia todos os EANs em batch (chunks de 40) via `Condicoes/Ean`
+- ✅ Cross-contamination filter mantido como proteção (usa `_sourceEan` que continua correto no batch)
+- ✅ Molecula QtdMin matching funciona via `_sourceEan` fallback
+
+### Pendente (próxima sessão)
+
+- ~~Refatorar `analisarUmProduto` para usar batch Ean em vez de loop~~ ✅ IMPLEMENTADO (24/08/2026)
+- Testar `BuscaComparativa` com EAN para validar retorno
+- Integrar `BuscaComparativa` no RUPTURA-REGEX e Promoções do Dia
+
+---
+
+## 4.23. SmartPed Batch EAN — Descobertas da Implementação (24/08/2026)
+
+### O que funciona
+
+1. **`Condicoes/Ean` aceita batch** — enviar `"Ean": "7896714231204,7893454101644"` (separados por vírgula)
+2. **Limite:** 40 EANs por chamada. Acima disso, particionar em chunks
+3. **`Condicoes/Molecula` também aceita batch** — enviar `"Ean": "7896714231204"` (um por vez, ou lote se endpoint suportar)
+4. **Resposta agrupada:** Cada item no array `Retorno.Itens[]` contém `ItemPedido.Ean` (EAN fonte) + `Condicoes[]` (ofertas)
+5. **Cross-contamination real:** A SmartPed retorna condições de EANs de OUTROS produtos (substitutos) na mesma resposta. Ex: batch com 11 EANs de Alendronato → retorna 65 condições, incluindo ofertas de EANs que são de Anlodipino
+
+### O que NÃO funciona
+
+1. **Retorno não tem campo `Ean` no nível da condição** — o EAN fonte vem em `ItemPedido.Ean` (nível do item), não em cada condição individual. Solução: popular `_sourceEan` a partir do `ItemPedido.Ean` do pai
+2. **Paralelo sobrescreve dados** — a API usa tabela temporária interna. Requests paralelos sobrescrevem uns aos outros. **SEMPRE** usar `await` sequencial com delay entre chunks
+
+### Regra de Cross-Contamination
+
+```
+O filtro é OBRIGATÓRIO em:
+- analisarUmProduto (Promoções do Dia)
+- RUPTURA-REGEX (busca por descrição)
+- Qualquer fluxo com batch EAN
+
+O filtro NÃO é necessário em:
+- /api/search-products (single EAN)
+- Busca por EAN específico no botão "+"
+```
+
+**Implementação (server.ts:721-731):**
+```typescript
+const eansDoGrupo = new Set(eansParaBuscar.map(e => e.replace(/^0+/, '')));
+const allCondicoesFiltradas = allCondicoes.filter(c => {
+  const srcEan = (c._sourceEan || '').replace(/^0+/, '');
+  return eansDoGrupo.has(srcEan);
+});
+```
+
+### SMARTDISTRIBUIDORA — Dados Incorretos (24/08/2026)
+
+- **Problema:** SMARTDISTRIBUIDORA (CodDist=624) retorna `Estoque: 1` em batch, mas o SmartPed UI mostra bolinha vermelha (sem estoque real)
+- **Probabilidade de erro:** ~50% (testado com Anlodipino: 19 EANs, SMARTDISTRIBUIDORA retornou R$2.37 com est=1)
+- **Recomendação:** Considerar SMARTDISTRIBUIDORA como "low-trust". Preferir distribuidora com estoque confirmado quando disponível
+- **Status:** Conhecido, não corrigido (dados da API, não do nosso código)
+
+---
+
 ## 5. Funções de Busca por Tipo de Item
 
 ### Funções-Chave no Backend
@@ -622,9 +764,10 @@ SmartPed API filtra ou rejeita requests de IPs de datacenter. Cloud Run usa IPs 
 
 | Endpoint | Quando chama | O que retorna |
 |----------|-------------|---------------|
-| `Condicoes/Ean` | Sempre (lote inicial + TARGET-EAN-PRE + RUPTURA-REGEX) | Ofertas comerciais do EAN (preço, estoque, condição) |
+| `Condicoes/Ean` | Sempre (lote inicial + TARGET-EAN-PRE + RUPTURA-REGEX) | Ofertas comerciais do EAN (preço, estoque, condição). **JÁ aceita múltiplos EANs (batch de 40)** |
 | `Condicoes/Molecula` | Sempre em paralelo com Ean | Substitutos moleculares + QtdMin |
 | `Produtos/Buscar` | RUPTURA-REGEX (ruptura ou genérico) | Busca por descrição → retorna EANs |
+| `Produtos/BuscaComparativa` | **PENDENTE** — substituir RUPTURA-REGEX e Promoções do Dia | Passa 1 EAN → descobre composição → retorna TODOS equivalentes com preço |
 | `Condicoes/Distribuidores` | Startup do servidor | Lista completa de distribuidoras |
 
 ### Fluxo de Busca por Tipo
@@ -1444,3 +1587,79 @@ Adicionado botão "P" ao lado de cada `EanEyeButton` (olhinho) em todas as 5 oco
 ### Configuração Firebase Console
 - Google Auth já estava ativado no Firebase Console
 - Domínio `localhost` adicionado à lista de domínios autorizados (requisito para dev local)
+
+---
+
+## 4.24. Sessão 2026-08-25 — Vendas Mensais Unificadas + Filtro de Apresentação
+
+### Contexto
+Cálculo de vendas mensais estava inconsistente entre os 3 fluxos do sistema (SICF, P button, Promoções do Dia). Cada um usava método diferente (vendas-semanais vs vendas-detalhadas, 4 semanas vs 13 semanas, sem filtro de período).
+
+### Regra Unificada (AGENTS.md #54)
+- **API:** Usar `vendas-detalhadas/{ean}` (NÃO `vendas-semanais`)
+- **Filtro:** Apenas últimos **4 meses**
+- **Cálculo:** Somar vendas de TODOS os EANs do grupo → dividir por 4 meses → arredondar
+- **NÃO calcular por-EAN e depois somar** (infla resultado)
+
+### Os 3 Fluxos (ANDAM JUNTOS — alterar um, verificar outros dois)
+
+| Fluxo | Função/Endpoint | Localização |
+|-------|----------------|-------------|
+| **SICF (optimize)** | Batch vendas+estoque | `server.ts` ~linha 3477 |
+| **P button / lupa** | `analisar-referencia` | `server.ts` ~linha 1700 |
+| **Promoções do Dia** | `analisarFornecedorEmBackground` | `server.ts` ~linha 1170 |
+
+### Filtro de Apresentação (AGENTS.md #55)
+- Ao expandir EANs via `buscar-lote` ou `marketSimilarMap`, filtrar por apresentação farmacêutica
+- **Grupos:** `["SH", "SHAMPOO"]`, `["CR", "CREME"]`, `["DERM"]`, `["GEL"]`, etc.
+- Exemplo: CETOCONAZOL SH não deve incluir CETOCONAZOL CR no grupo de vendas
+- Aplicar em: batch SICF, RUPTURA-REGEX, `analisarFornecedorEmBackground`
+
+### UI Labels
+- Todos os badges mostram `(4m)` indicando "médias dos últimos 4 meses"
+- Componentes: SwapsTable (tabela + Painel de Escolhas), OfertasDoDiaModal, EanPromoButton
+
+### Bug Resolvido: Reprocessamento de Listas
+- **Problema:** `JSON.stringify` direto causava falsos positivos por reordenação de campos
+- **Correção:** `normalizeProducts()` ordena por description+price antes de comparar
+- **Arquivo:** `server.ts` POST `/api/external-suppliers` (~linha 402)
+
+---
+
+## 4.25. Sessão 2026-08-25 (noite) — SICF + Promoções do Dia: Vendas, Estoque e Apresentação
+
+### O que foi feito
+
+#### 1. Expansão de EANs no SICF (`server.ts` optimize)
+- Adicionado `buscar-lote` para expandir EANs de itens do SICF via princípio ativo + dosagem
+- Filtro de apresentação: SH/SHAMPOO, CR/CREME, DERM, GEL — mesmo grupo
+- Itens sem EAN: busca por descrição → resolve EAN via `buscar-lote`
+
+#### 2. Vendas + Estoques no SICF (`server.ts` optimize batch)
+- Batch `vendas-detalhadas/{ean}` para TODOS os EANs expandidos
+- Filtro últimos 4 meses
+- Agregação: somar vendas / 4 meses (NÃO por-EAN)
+- Estoques via `similares/{ean}` com filtro de apresentação
+- Badges no SwapsTable: `📊 X un/mês (4m)` + `📦 X cx`
+
+#### 3. Vendas no P button (EanPromoButton)
+- `buscar-produto` agora expande EANs via `buscar-lote` quando busca por EAN
+- `analisar-referencia` agora passa `eanList` para `analisarUmProduto`
+- Badges: `Vendas (4m)` no card e detail
+
+#### 4. Vendas no Promoções do Dia (`analisarFornecedorEmBackground`)
+- Corrigido: usava `buscar-lote("CETOCONAZOL")` → misturava CR com SH
+- Agora usa descrição completa: `buscar-lote("CETOCONAZOL 20MG/ML SH")` → DCB correto
+- Vendas: soma / 4 meses (mesmo método do SICF)
+
+#### 5. Reprocessamento de listas
+- `normalizeProducts()` antes de comparar → evita falsos positivos
+
+#### 6. Documentação
+- AGENTS.md: regras #54 (vendas 4 meses), #55 (filtro apresentação), #56 (normalizar comparação)
+- Dependências cruzadas #12: vendas vincula 3 fluxos
+
+### Tarefa pendente (próxima sessão)
+- **Estoque inconsistente:** Card mostra "Estoque: 0 cx" mas detail mostra "TEUTO 2cx + EMS 1cx = 3cx"
+- Causa provável: `analisarFornecedorEmBackground` busca estoque via `similares/{ean}` para o EAN original (7896112101628 = TEUTO), mas o `analisar-referencia` usa os EANs expandidos do `buscar-produto`
+- Precisa alinhar: ambos devem usar os mesmos EANs para estoque

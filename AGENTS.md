@@ -35,6 +35,11 @@
 | 24 | **Tier regex não detectava emojis (💥)** | Character class `[•\-*\s]` não incluía emojis Unicode | Usar ranges Unicode específicos (`\u{1F300}-\u{1FAFF}`) NÃO `\p{Emoji}` (que inclui dígitos) | `ConfigurationPanel.tsx:171` |
 | 25 | **Mojibake em termos de busca causava HTTP 500** | `\udca5Alendronato` (corrupção do 💥) não era limpo antes de enviar à API | Limpar `\udca5\|\udca4\|\udca6\|\ufffd` antes de enviar | `server.ts` `analisarFornecedorEmBackground` |
 | 26 | **Buscar-lote sem "mg" não acha produto** | `ILIKE %ALLENDRONATO 70%` não casa com `ALLENDRONATO SOD 70MG` (SOD no meio) | Buscar por princípio ativo (primeira palavra) + filtrar dosagem no JS | `server.ts` `analisarFornecedorEmBackground` |
+| 27 | **Cross-contamination: preço de outro produto aparece no card** | `Condicoes/Ean` batch retorna condições de EANs de OUTROS produtos na mesma resposta. Filtrar por `_sourceEan ∈ eansDoGrupo` | Filtro `eansDoGrupo` (Set normalizado) em `analisarUmProduto`. **NUNCA** chamar `Condicoes/Ean` sem esse filtro | `server.ts:721-731` |
+| 28 | **SMARTDISTRIBUIDORA (CodDist=624) retorna estoque fantasma** | API retorna `Estoque: 1` mas SmartPed UI mostra bolinha vermelha (sem estoque real). Probabilidade ~50% de faturar com erro | Ao faturar, logar aviso quando `distName === "SMARTDISTRIBUIDORA"` e `estoque === 1`. Considerar SMARTDISTRIBUIDORA como low-trust | `server.ts` faturamento |
+| 29 | **Card estoque "0 cx" mas detail mostra "3 cx" (CETOCONAZOL SH)** | `estoqueMesmoEan` filtrava por EAN exato (0cx), `estoqueTotal` somava labs (3cx). Cada lab tem EAN diferente para SH | Card usa `estoqueTotal`. Backend: filtro apresentação em `analisarUmProduto` (SH≠CR via `_PRES_GRUPOS`). Fallback `estoqueGrupo`→`analysis.estoqueTotal` | `OfertasDoDiaModal.tsx:520,883`, `EanPromoButton.tsx:260,482`, `server.ts:543-571`, `server.ts:1224-1228` |
+| 30 | **Vendas "2/mês" em vez de "1/mês"** | Background aggregation buscava vendas de 16 EANs (SmartPed wildcards) sem filtro de apresentação. `eansGrupo` vazio quando produto sem EAN inicial | Filtro apresentação no bloco vendas: `eanToDesc` de `allProdutos` (buscar-lote). EANs sem descrição excluídos. Padrão SICF | `server.ts:1198-1240` |
+| 31 | **Divisor hardcoded vendas (/4)** | `vendasAgregadas = Math.round(total / 4)` — sempre dividia por 4 independente do período real | Calcular `mesesDiff` das datas reais (primeiraData/ultimaData). Padrão SICF `server.ts:3611` | `server.ts:1270-1273` (background), `server.ts:1773-1774` (analisar-referencia) |
 
 **SE O PROBLEMA PARECE NOVO, VERIFIQUE ESTA TABELA ANTES DE INVESTIGAR.**
 Se estiver aqui, a correção já existe. Não reinvente a roda.
@@ -177,6 +182,45 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 
 48. **ANALYSIS CACHE — LIMPAR QUANDO PRODUCTS MUDAM:** POST `/api/external-suppliers` compara oldProducts vs newProducts. Se diferentes → `updateSupplierAnalysis(id, null, "pendente")` para forçar re-análise. **Arquivo:** `server.ts` POST `/api/external-suppliers` (linha ~397).
 
+49. **SMARTPED BATCH EAN — FILTRO DE CROSS-CONTAMINAÇÃO OBRIGATÓRIO:** A API SmartPed `Condicoes/Ean` aceita múltiplos EANs separados por vírgula (lotes de até 40). Porém, retorna condições de EANs de OUTROS produtos que estão na mesma resposta (substitutos). **SEMPRE** aplicar filtro `eansDoGrupo` (Set normalizado com zeros à esquerda removidos) em `_sourceEan` antes de usar as condições. **Arquivo:** `server.ts:721-731`. Ver LLM_CONTEXT.md #4.22 para detalhes completos.
+
+50. **SMARTPED BATCH EAN — QUANDO USAR vs NÃO USAR:**
+    - **USAR batch quando:** `analisarUmProduto` (Promoções do Dia),RUPTURA-REGEX (busca por descrição), Qualquer fluxo com >1 EAN do mesmo grupo DCB
+    - **NÃO usar batch quando:** `/api/search-products` (single EAN endpoint), busca por EAN específico no botão "+"
+    - **Motivo:** Batch retorna condições de TODOS os EANs do grupo + substitutos → precisa de cross-contamination filter. Single EAN não tem esse problema.
+    - **Max batch:** 40 EANs por chamada (`Condicoes/Ean`). `Condicoes/Molecula` aceita batch similar mas **SEMPRE** chamar ambos em `Promise.all`.
+
+51. **SMARTPED BATCH — SMARTDISTRIBUIDORA LOW-TRUST:** SMARTDISTRIBUIDORA (CodDist=624) frequentemente retorna `Estoque: 1` mas o SmartPed UI mostra bolinha vermelha (sem estoque real). Ao mostrar SMARTDISTRIBUIDORA no card ou dropdown, considerar como "low-trust" — preferir distribuidora com estoque confirmado quando disponível.
+
+52. **LEITURA OBRIGATÓRIA DE DOCUMENTAÇÃO ANTES DE CODAR:** Ao iniciar QUALQUER tarefa que envolva integração com APIs (SmartPed, Ferramentinhas, Trier, Encomendas, Reval, etc.), **LER OBRIGATORIAMENTE**:
+    - `API_TREE_SMARTPED.md` (se for usar endpoints SmartPed)
+    - `API_TREE_TRIER.md` (se for usar endpoints Ferramentinhas/Trier)
+    - `docs/external-suppliers-plan.md` (se for usar fornecedores externos)
+    - `docs/encomendas-integration.md` (se for usar encomendas)
+    - `LLM_CONTEXT.md` seção relevante
+    **NUNCA** começar a codar sem ler a documentação da API que será usada. A informação pode estar lá mas não será usada se não for lida antes.
+
+53. **USAR ENDPOINTS DOCUMENTADOS, NÃO INVENTAR:** Antes de implementar uma chamada a uma API, VERIFICAR se o endpoint já está documentado em `API_TREE_*.md`. Se estiver, usar exatamente os parâmetros e formato documentados. Se não estiver, perguntar ao usuário antes de inventar um endpoint.
+
+54. **CÁLCULO DE VENDAS — MÉTODO ÚNICO EM TODOS OS FLUXOS:** O cálculo de vendas mensais DEVE seguir o mesmo método em TODOS os pontos do sistema:
+    - **API:** Usar `vendas-detalhadas/{ean}` (NÃO `vendas-semanais`)
+    - **Filtro:** Apenas últimos **4 meses**
+    - **Cálculo:** Somar vendas de TODOS os EANs do grupo → dividir por 4 meses → arredondar
+    - **NÃO calcular por-EAN e depois somar** (infla o resultado)
+    - **Fluxos vinculados (ANDAM JUNTOS):**
+      1. `analisar-referencia` (P button / lupa) — `server.ts` linha ~1638
+      2. `analisarFornecedorEmBackground` (Promoções do Dia) — `server.ts` linha ~1170
+      3. Batch SICF (optimize) — `server.ts` linha ~3477
+    - **Ao alterar QUALQUER um, verificar os outros dois.** Documentar em `AGENTS.md #54` e `LLM_CONTEXT.md #4.24`
+
+55. **EXPANSÃO DE EANs — FILTRO DE APRESENTAÇÃO OBRIGATÓRIO:** Ao expandir EANs via `buscar-lote` ou `marketSimilarMap`, FILTRAR por apresentação farmacêutica antes de adicionar:
+    - **Grupos:** `["SH", "SHAMPOO"]`, `["CR", "CREME"]`, `["DERM"]`, `["GEL"]`, etc.
+    - Se o original é SH (shampoo), NÃO adicionar CR (creme) ao grupo
+    - Aplicar em: batch SICF (linha ~2497), RUPTURA-REGEX (linha ~4151), `analisarFornecedorEmBackground` (linha ~967)
+    - **Ao alterar, verificar os 3 pontos.**
+
+56. **REPROCESSAMENTO DE LISTAS — COMPARAÇÃO NORMALIZADA:** O endpoint `POST /api/external-suppliers` compara `products` via JSON stringify. Usar `normalizeProducts()` para ordenar por description+price ANTES de comparar, evitando falsos positivos por reordenação de campos. **NÃO usar `JSON.stringify` direto.**
+
 ---
 
 ## DEPENDÊNCIAS CRUZADAS — AO MUDAR UM PONTO, VERIFIQUE OS OUTROS
@@ -196,6 +240,7 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 | 9 | `validateSwapEquivalence()` | `swap-validation.ts` | `server.ts` filtered substitutos (linha ~1775), `allAlternativesForRupture` filter, `finalAlternatives` |
 | 10 | `parseSmartPedEstoque()` | `server/parsers.ts` | `server.ts` `originalHasStock` (linha ~1934), `findBestSubstitute`, filtros de estoque |
 | 11 | `isExternalManual` | `SwapsTable.tsx:1206` | Grupo verde/WhatsApp, botão "Copiar Pedido", esconde "Faturar", badge "📋 Lista:" |
+| 12 | **Cálculo de vendas (últimos 4 meses)** | `server.ts` vendas-detalhadas | `server.ts` `analisar-referencia` (~1700), `analisarFornecedorEmBackground` (~1170), batch SICF (~3477). **ANDAM JUNTOS — alterar um, verificar os outros dois.** |
 
 **COMO USAR:** Antes de alterar qualquer função, busque no código por todos os pontos listados na coluna "Impacta" e verifique se a alteração é compatível.
 
