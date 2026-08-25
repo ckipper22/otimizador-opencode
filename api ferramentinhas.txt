@@ -1,0 +1,2937 @@
+import flask
+from flask import Flask, request, render_template, url_for, jsonify
+import psycopg2
+from psycopg2 import pool
+from psycopg2 import sql
+from flask_cors import CORS
+from datetime import date, datetime
+import math
+import os
+import re
+from dotenv import load_dotenv
+import socket  # Adicionado para a função get_local_ip
+
+# ==============================================================================
+# 0. CONFIGURAÇÃO DE AMBIENTE
+# ==============================================================================
+load_dotenv()
+
+
+# ==============================================================================
+# 1. FUNÇÕES DE UTILIDADE E FILTROS JINJA
+# ==============================================================================
+
+def safe_int(value):
+    """Converte um valor para inteiro de forma segura, aceitando strings e None."""
+    if value is None:
+        return None
+    try:
+        return int(round(float(value)))
+    except (ValueError, TypeError):
+        return None
+
+
+def format_whatsapp_price(value):
+    """Formata um valor numérico para o padrão X,XX."""
+    if value is None:
+        return 'N/A'
+    try:
+        return f"{float(value):.2f}".replace('.', ',')
+    except (ValueError, TypeError):
+        return 'N/A'
+
+
+def datetimeformat(value, format='%d/%m/%Y %H:%M'):
+    """Formata um objeto datetime, date ou timestamp do DB."""
+    if value is None or value == 'N/A' or value == '-':
+        return 'N/A'
+
+    if isinstance(value, date) and not isinstance(value, datetime):
+        value = datetime.combine(value, datetime.min.time())
+
+    if isinstance(value, datetime):
+        return value.strftime(format)
+
+    return value
+
+
+def currencyformat(value):
+    """Formata um valor numérico para o padrão monetário R$ X.XXX,XX."""
+    if value is None or value == 'N/A' or value == '-':
+        return 'N/A'
+    try:
+        return f"R$ {float(value):,.2f}".replace(",", "_TEMP_").replace(".", ",").replace("_TEMP_", ".")
+    except (ValueError, TypeError):
+        return 'N/A'
+
+
+def split(value, separator=' '):
+    """Divide uma string em uma lista de substrings."""
+    if isinstance(value, str):
+        return value.split(separator)
+    return [value]
+
+
+def get_local_ip():
+    """Retorna o IP local da máquina."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"  # Fallback para localhost
+
+
+app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', 'SUPERSECRETA_PADRAO_DEV') # Adicionado um fallback para dev
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Registra os filtros no ambiente Jinja
+app.jinja_env.filters['datetimeformat'] = datetimeformat
+app.jinja_env.filters['dateonlyformat'] = lambda value: datetimeformat(value, '%d/%m/%Y')
+app.jinja_env.filters['timeonlyformat'] = lambda value: datetimeformat(value, '%H:%M:%S')
+app.jinja_env.filters['currencyformat'] = currencyformat
+app.jinja_env.filters['split'] = split
+app.jinja_env.filters['safe_int'] = safe_int
+app.jinja_env.filters['format_whatsapp_price'] = format_whatsapp_price
+
+app.jinja_env.globals['safe_int'] = safe_int
+
+# ==============================================================================
+# 2. CONFIGURAÇÕES E DADOS FIXOS
+# ==============================================================================
+
+DADOS_SOLICITANTE = {
+    'razao': os.getenv('RAZAO_SOCIAL', "Carlos Kipper Ltda"),
+    'cnpj': os.getenv('CNPJ', "13.408.443/0001-68"),
+    'ie': os.getenv('IE', "090/0055324"),
+    'afe': os.getenv('AFE', "7216566"),
+    'endereco': os.getenv('ENDERECO',
+                          "Avenida Presidente Kennedy, 1754 Bairro: Arco Iris, Panambi - RS, CEP 98280-000"),
+    'tel': os.getenv('TELEFONE', "55 98455 7096"),
+    'email': os.getenv('EMAIL', "ckipper22@gmail.com"),
+    'COD_REDE': int(os.getenv('COD_REDE', 1)),
+    'COD_FILIAL': int(os.getenv('COD_FILIAL', 1))
+}
+
+DB_CONFIG = {
+    "host": os.getenv('DB_HOST', "10.157.211.236"),
+    "database": os.getenv('DB_NAME', "sgfpod1"),
+    "user": os.getenv('DB_USER', "postgres"),
+    "password": os.getenv('DB_PASSWORD', "postgres"),
+    "port": int(os.getenv('DB_PORT', 5432))
+}
+# Inicializa o pool de conexões (mantém entre 1 e 10 conexões sempre abertas)
+db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, **DB_CONFIG)
+
+MAPA_CLASSIFICACAO = {
+    'G': 'Genérico',
+    'N': 'Referência',
+    'S': 'Similar',
+    'B': 'Biológico',
+    'P': 'Popular',
+    '0': 'Sem classificação',
+    ' ': 'Não classificado',
+}
+
+MAPA_GRUPOS = {
+    1: 'Miscelânea',
+    3: 'Medicamento',
+    4: 'Medicamento',
+    5: 'Fraldas/Bebê',
+    6: 'Fraldas/Bebê',
+    8: 'Chás/Suplementos',
+    12: 'Tintura',
+    13: 'Eletrônicos/Brindes',
+    18: 'Eletrônicos/Brindes',
+    2000: 'Similar',
+    3000: 'Referência/Marca',
+    4000: 'Genérico',
+    8000: 'Perfumaria/Cosméticos',
+    9000: 'Ortopedia/EPI',
+    10000: 'Alimentos/Diversos',
+}
+
+
+def get_classificacao(flg_tipoprod):
+    if not flg_tipoprod:
+        return 'Não classificado'
+    return MAPA_CLASSIFICACAO.get(str(flg_tipoprod).strip(), 'Não classificado')
+
+
+def get_grupo(cod_grupo):
+    if cod_grupo is None:
+        return 'Não informado'
+    return MAPA_GRUPOS.get(int(cod_grupo), f'Grupo {cod_grupo}')
+
+# ==============================================================================
+# 3. FUNÇÃO DE BUSCA DE OPÇÕES (REUTILIZÁVEL)
+# ==============================================================================
+
+def _fetch_product_options(search_term, cod_rede, cod_filial):
+    """
+    Busca múltiplos produtos por descrição usando o Pool de Conexões.
+    """
+    if not search_term or search_term.isdigit():
+        return None
+
+    conn = None
+    try:
+        # Pega uma conexão já aberta do pool permanente
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            SQL_BUSCA_DESCRICAO = """
+                                  SELECT t1.cod_reduzido,
+                                         t1.nom_produto,
+                                         COALESCE(t4.vlr_liquido, t1.vlr_venda) AS vlr_liquido_final,
+                                         t3.qtd_estoque,
+                                         t5.nom_laborat,
+                                         t1.vlr_venda,
+                                         t1.cod_grupo,
+                                         t1.flg_tipoprod
+                                  FROM cadprodu t1
+                                           LEFT JOIN cadestoq t3 ON t1.cod_reduzido = t3.cod_reduzido
+                                      AND t3.cod_rede = t1.cod_rede
+                                      AND t3.cod_filial = %s
+                                           LEFT JOIN desconto_produto_vw AS t4 ON t4.cod_reduzido = t1.cod_reduzido
+                                           LEFT JOIN public.cadlabor t5 ON t1.cod_laborat = t5.cod_laborat
+                                  WHERE t1.nom_produto ILIKE %s
+                                    AND t1.cod_rede = %s
+                                    AND t1.flg_ativo = 'A'
+                                  ORDER BY
+                                      CASE WHEN t3.qtd_estoque > 0 THEN 0 ELSE 1
+                                  END,
+                                  t1.nom_produto
+                                  LIMIT 10;
+                                  """
+            like_term = f"%{search_term}%"
+            cur.execute(sql.SQL(SQL_BUSCA_DESCRICAO), (cod_filial, like_term, cod_rede))
+            rows_descricao = cur.fetchall()
+
+            if not rows_descricao:
+                return []
+
+            product_options = []
+            for row in rows_descricao:
+                cod_reduzido = safe_int(row[0])
+                nome_produto = row[1]
+                vlr_liquido_final_raw = row[2]
+                qtd_estoque_raw = row[3]
+                nom_laboratorio = row[4]
+                vlr_venda_raw = row[5]
+                cod_grupo = row[6]
+                flg_tipoprod = row[7]
+
+                vlr_venda_float = float(vlr_venda_raw) if vlr_venda_raw is not None else 0.0
+                vlr_liquido_float = float(vlr_liquido_final_raw) if vlr_liquido_final_raw is not None else 0.0
+                qtd_estoque = safe_int(qtd_estoque_raw) if qtd_estoque_raw is not None else 0
+
+                whatsapp_string = ""
+                desconto_percentual = 0.0
+
+                if vlr_venda_float > 0 and vlr_liquido_float < vlr_venda_float:
+                    desconto_percentual = ((vlr_venda_float - vlr_liquido_float) / vlr_venda_float) * 100
+
+                desconto_str = f"{desconto_percentual:.2f}".replace('.', ',')
+                vlr_liquido_wapp = format_whatsapp_price(vlr_liquido_float)
+                vlr_venda_wapp = format_whatsapp_price(vlr_venda_float)
+
+                if qtd_estoque > 0:
+                    estoque_str = f"Temos {qtd_estoque} unidades em estoque."
+                    if desconto_percentual > 0.01:
+                        whatsapp_string = (
+                            f"**{nome_produto}** está com {desconto_str}% OFF! "
+                            f"De R$ {vlr_venda_wapp} por **R$ {vlr_liquido_wapp}** à vista. "
+                            f"{estoque_str}"
+                        )
+                    else:
+                        whatsapp_string = (
+                            f"**{nome_produto}** por apenas **R$ {vlr_liquido_wapp}** à vista. "
+                            f"{estoque_str}"
+                        )
+                else:
+                    whatsapp_string = (
+                        f"Ótima escolha! O preço final para **{nome_produto}** "
+                        f"é de **R$ {vlr_liquido_wapp}** à vista. "
+                        f"No momento, está esgotado. Gostaria de verificar a encomenda para você?"
+                    )
+
+                product_options.append({
+                    'cod_reduzido': cod_reduzido,
+                    'nome_produto': nome_produto,
+                    'nom_laboratorio': nom_laboratorio if nom_laboratorio else 'N/A',
+                    'vlr_venda': currencyformat(vlr_venda_raw),
+                    'preco_final_venda': currencyformat(vlr_liquido_final_raw),
+                    'qtd_estoque': qtd_estoque,
+                    'whatsapp_string': whatsapp_string,
+                    'vlr_venda_raw_float': vlr_venda_float,
+                    'vlr_liquido_raw_float': vlr_liquido_float,
+                    'desconto_percentual': round(desconto_percentual, 2),
+                    'vlr_liquido_wapp': vlr_liquido_wapp,
+                    'classificacao': get_classificacao(flg_tipoprod),
+                    'grupo': get_grupo(cod_grupo),
+                })
+
+            return product_options
+
+    except psycopg2.Error as e:
+        print(f"Erro de Banco de Dados na busca por descrição: {e}")
+        return None
+    except Exception as e:
+        print(f"Erro inesperado na busca por descrição: {e}")
+        return None
+    finally:
+        # Garante a devolução da conexão para o pool
+        if conn:
+            db_pool.putconn(conn)
+# == ============================================================================
+# 4. ROTAS PRINCIPAIS EXISTENTES (Inalteradas, usam _fetch_product_options)
+# ==============================================================================
+
+@app.route('/search_live', methods=['GET'])
+def search_live():
+    """Rota para Live Search (AJAX). Usa _fetch_product_options."""
+    search_term = request.args.get('search_term', '')
+
+    if not search_term or len(search_term) < 3:
+        return jsonify([])
+
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    product_options = _fetch_product_options(search_term, cod_rede, cod_filial)
+
+    if product_options is None:
+        return jsonify({'error': 'Erro ao consultar o banco de dados.'}), 500
+
+    return jsonify(product_options)
+
+
+@app.route('/', methods=['GET'])
+@app.route('/produto', methods=['GET'])
+def get_product_info():
+    """Rota principal para buscar informações de produtos. (Inalterado)"""
+    search_term = request.args.get('search_term') or request.args.get('ean_code', '').strip()
+
+    if ':' in search_term:
+        search_term = search_term.split(':')[0]
+
+    is_numeric = search_term and search_term.isdigit()
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    versao = "1.0.0"
+    data_versao = datetime.now().strftime('%d/%m/%Y %H:%M')
+    
+    context = {
+        'search_term': search_term,
+        'nome_produto': None,
+        'ean_code': None,
+        'solicitante': DADOS_SOLICITANTE,
+        'now': datetime.now().date(),
+        'versao': versao,
+        'data_versao': data_versao
+    }
+
+    if not search_term:
+        return render_template('produto.html', **context)
+
+    cod_reduzido = None
+    ean_found = None
+    product_options = None
+
+    try:
+        with psycopg2.connect(**DB_CONFIG) as conn:
+            with conn.cursor() as cur:
+                # BUSCA POR CÓDIGO NUMÉRICO (EAN OU REDUZIDO)
+                if is_numeric:
+                    if len(search_term) > 8: # Assume que EAN tem mais de 8 digitos
+                        SQL_BUSCA = """
+                                    SELECT cod_reduzido, cod_barra
+                                    FROM cadcdbar
+                                    WHERE cod_barra = %s LIMIT 1;
+                                    """
+                        cur.execute(sql.SQL(SQL_BUSCA), (search_term,))
+                        row_found = cur.fetchone()
+
+                        if row_found:
+                            cod_reduzido = row_found[0]
+                            ean_found = row_found[1]
+                            context['ean_code'] = ean_found
+
+                    if not cod_reduzido and len(search_term) <= 8: # Assume que cod_reduzido tem até 8 digitos
+                        SQL_BUSCA_REDUZIDO = """
+                                              SELECT t1.cod_reduzido, b.cod_barra
+                                              FROM cadprodu t1
+                                                   LEFT JOIN LATERAL (
+                                                       SELECT t2.cod_barra
+                                                       FROM cadcdbar t2
+                                                       WHERE t2.cod_reduzido = t1.cod_reduzido
+                                                       ORDER BY t2.flg_principal DESC NULLS LAST, t2.tip_status = 'V' DESC, t2.dat_cadastro DESC
+                                                       LIMIT 1
+                                                   ) b ON true
+                                              WHERE t1.cod_reduzido = %s
+                                                AND t1.cod_rede = %s
+                                                AND t1.flg_ativo = 'A' LIMIT 1;
+                                              """
+                        cur.execute(sql.SQL(SQL_BUSCA_REDUZIDO), (search_term, cod_rede))
+                        row_reduzido = cur.fetchone()
+
+                        if row_reduzido:
+                            cod_reduzido = row_reduzido[0]
+                            ean_found = row_reduzido[1]
+                            context['ean_code'] = ean_found or "Não cadastrado"
+                        else: # Tenta buscar o numero como EAN caso não seja cod_reduzido
+                            SQL_BUSCA_EAN = """
+                                            SELECT cod_reduzido, cod_barra
+                                            FROM cadcdbar
+                                            WHERE cod_barra = %s LIMIT 1;
+                                            """
+                            cur.execute(sql.SQL(SQL_BUSCA_EAN), (search_term,))
+                            row_ean = cur.fetchone()
+
+                            if row_ean:
+                                cod_reduzido = row_ean[0]
+                                ean_found = row_ean[1]
+                                context['ean_code'] = ean_found
+
+                # BUSCA POR DESCRIÇÃO (reutiliza _fetch_product_options que já filtra por flg_ativo)
+                if not cod_reduzido:
+                    options = _fetch_product_options(search_term, cod_rede, cod_filial)
+
+                    if options is None:
+                        return render_template('error.html',
+                                               message="Erro ao consultar o banco de dados.",
+                                               **context), 500
+
+                    if not options:
+                        context['ean_code'] = search_term
+                        return render_template('produto.html', nome_produto=None, **context)
+
+                    if len(options) > 1:
+                        return render_template('produto.html',
+                                               search_term=search_term,
+                                               product_options=options,
+                                               solicitante=DADOS_SOLICITANTE,
+                                               now=context['now'])
+                    elif len(options) == 1:
+                        cod_reduzido = options[0]['cod_reduzido']
+
+                # SE NENHUM PRODUTO ENCONTRADO
+                if not cod_reduzido:
+                    context['ean_code'] = search_term
+                    return render_template('produto.html', nome_produto=None, **context)
+
+                # CONSULTA DE DADOS COMPLETOS DO PRODUTO (CORREÇÃO: Adicionado t2.flg_ativo = 'A')
+                SQL_PRODUTO_FULL = """
+                                   SELECT t2.nom_local,
+                                          t2.vlr_venda,
+                                          t2.nom_produto,
+                                          t3.qtd_estoque,
+                                          t3.est_minimo,
+                                          COALESCE(t4.vlr_liquido, t2.vlr_venda) AS preco_final_venda,
+                                          t5.nom_laborat,
+                                          t2.cod_grupo,
+                                          t2.flg_tipoprod,
+                                          t2.cod_depto,
+                                          t6.nom_depto
+                                   FROM cadprodu t2
+                                            LEFT JOIN cadestoq t3
+                                                      ON t2.cod_reduzido = t3.cod_reduzido AND t3.cod_rede = %s AND
+                                                         t3.cod_filial = %s
+                                            LEFT JOIN desconto_produto_vw AS t4 ON t4.cod_reduzido = t2.cod_reduzido
+                                            LEFT JOIN public.cadlabor t5 ON t2.cod_laborat = t5.cod_laborat
+                                            LEFT JOIN public.caddepto t6 ON t2.cod_depto = t6.cod_depto
+                                   WHERE t2.cod_reduzido = %s
+                                     AND t2.cod_rede = %s
+                                     AND t2.flg_ativo = 'A' -- FILTRO: Apenas produtos ativos
+                                   """
+                cur.execute(sql.SQL(SQL_PRODUTO_FULL), (cod_rede, cod_filial, cod_reduzido, cod_rede))
+                row = cur.fetchone()
+
+                if row is None:
+                    return render_template('produto.html', nome_produto=None, **context)
+
+                localizacao, valor_venda, nome_produto, quantidade_em_estoque, estoque_minimo, preco_final_venda, nom_laboratorio, cod_grupo, flg_tipoprod, cod_depto, nom_depto = row
+                nom_laboratorio = nom_laboratorio if nom_laboratorio else "Não cadastrado"
+                nom_depto = nom_depto if nom_depto else "Não informado"
+
+                # BUSCA DO EAN (cadcdbar) - prioriza flg_principal, depois tip_status='V', depois mais recente
+                if not ean_found:
+                    SQL_EAN = """
+                                SELECT cod_barra FROM cadcdbar
+                                WHERE cod_reduzido = %s
+                                ORDER BY flg_principal DESC NULLS LAST, tip_status = 'V' DESC, dat_cadastro DESC
+                                LIMIT 1;
+                                """
+                    cur.execute(sql.SQL(SQL_EAN), (cod_reduzido,))
+                    row_ean = cur.fetchone()
+                    if row_ean and row_ean[0]:
+                        ean_found = row_ean[0]
+                        context['ean_code'] = ean_found
+                    else:
+                        context['ean_code'] = "Não cadastrado"
+
+                # CONSULTA DE ÚLTIMA VENDA (dat_atualiza é da tabela cadinfis, não cadcvend)
+                SQL_ULTIMA_VENDA = """
+                                   SELECT MAX(dat_atualiza)
+                                   FROM cadinfis
+                                   WHERE cod_reduzido = %s
+                                     AND cod_rede = %s
+                                     AND cod_filial = %s;
+                                   """
+                cur.execute(sql.SQL(SQL_ULTIMA_VENDA), (cod_reduzido, cod_rede, cod_filial))
+                ultima_venda_db = cur.fetchone()
+                ultima_compra = ultima_venda_db[0] if ultima_venda_db and ultima_venda_db[0] else None
+
+
+                # CONSULTA DE ÚLTIMAS ENTRADAS
+                SQL_LOTES_ENTRADAS = """
+                                     SELECT t1.dat_entrada,
+                                            t1.qtd_produto,
+                                            t2.num_lote,
+                                            t3.dat_fabric,
+                                            t3.dat_valid,
+                                            t3.qtd_saldo,
+                                            t1.cod_fornec,
+                                            t1.num_nota,
+                                            t4.nom_fornec
+                                     FROM public.cadicomp t1
+                                              LEFT JOIN public.cadlentd t2 ON t2.cod_reduzido = t1.cod_reduzido
+                                         AND t2.num_seqcadicomp = t1.num_sequencial
+                                         AND t2.cod_rede = t1.cod_rede
+                                         AND t2.cod_filial = t1.cod_filial
+                                              LEFT JOIN public.cadloted t3 ON t3.num_lote = t2.num_lote
+                                              LEFT JOIN public.cadforne t4
+                                                        ON t4.cod_fornec = t1.cod_fornec AND t4.cod_rede = t1.cod_rede
+                                     WHERE t1.cod_reduzido = %s
+                                       AND t1.cod_rede = %s
+                                       AND t1.cod_filial = %s
+                                     ORDER BY t1.dat_entrada DESC, t1.num_nota DESC, t1.cod_fornec DESC LIMIT 3;
+                                     """
+                cur.execute(sql.SQL(SQL_LOTES_ENTRADAS), (cod_reduzido, cod_rede, cod_filial))
+                lotes_entradas_db = cur.fetchall()
+
+                # PROCESSAMENTO DAS ENTRADAS
+                entradas_formatadas = []
+                quantidade_ultima_entrada_calc = 0
+                data_ultima_entrada = None
+                quantidade_ultima_entrada = None
+                data_penultima_entrada = None
+
+                for idx, item in enumerate(lotes_entradas_db):
+                    qtd_entrada = safe_int(item[1]) if item[1] is not None else 'N/A'
+
+                    entradas_formatadas.append({
+                        'indice': idx + 1,
+                        'data_entrada': item[0],
+                        'qtd_entrada': qtd_entrada,
+                        'num_lote': item[2] if item[2] else 'N/A',
+                        'data_fabric': item[3],
+                        'data_valid': item[4],
+                        'qtd_saldo': safe_int(item[5]) if item[5] is not None else 'N/A',
+                        'cod_fornec': item[6],
+                        'num_nota': item[7],
+                        'nome_fornec': item[8] if item[8] else 'N/A'
+                    })
+
+                if entradas_formatadas:
+                    data_ultima_entrada = entradas_formatadas[0]['data_entrada']
+                    quantidade_ultima_entrada = entradas_formatadas[0]['qtd_entrada']
+
+                    qtd_entrada_num = safe_int(quantidade_ultima_entrada)
+                    if qtd_entrada_num is not None:
+                        quantidade_ultima_entrada_calc = qtd_entrada_num
+
+                    if len(entradas_formatadas) >= 2:
+                        data_penultima_entrada = entradas_formatadas[1]['data_entrada']
+
+                estoque_anterior_entrada = "N/A"
+                estoque_atual_num = safe_int(quantidade_em_estoque)
+
+                if estoque_atual_num is not None:
+                    if quantidade_ultima_entrada_calc is not None and quantidade_ultima_entrada_calc > 0:
+                        estoque_anterior_entrada = estoque_atual_num - quantidade_ultima_entrada_calc
+                    else:
+                        estoque_anterior_entrada = estoque_atual_num
+
+                if quantidade_em_estoque == "Não cadastrado" or estoque_atual_num is None:
+                    estoque_anterior_entrada = "N/A"
+
+                # CONSULTA DE ÚLTIMAS VENDAS
+                SQL_ULTIMAS_VENDAS = """
+                                     SELECT t1.dat_atualiza,
+                                            t1.qtd_produto,
+                                            (t1.vlr_total / t1.qtd_produto)                             AS vlr_unitario_final,
+                                            STRING_AGG(t6.num_lote || ' (' || t6.qtd_lote || ')', ', ') AS lotes_vendidos,
+                                            t3.nom_usuario,
+                                            t4.nom_cliente,
+                                            t1.num_nota,
+                                            t1.num_sequencial
+                                     FROM cadinfis t1
+                                              INNER JOIN public.cadcnfis t2 ON t2.num_nota = t1.num_nota
+                                         AND t2.cod_rede = t1.cod_rede AND t2.cod_filial = t1.cod_filial
+                                              LEFT JOIN public.cadcvend t5 ON t5.cod_rede = t2.cod_rede
+                                         AND t5.cod_filial = t2.cod_filial AND t5.num_nota = t2.num_controle
+                                              LEFT JOIN public.cadusuar t3 ON t3.cod_usuario = t5.cod_vendedor
+                                              LEFT JOIN public.cadclien t4 ON t4.cod_cliente = t2.cod_cliente
+                                              LEFT JOIN public.cadlvend t6 ON t6.cod_rede = t1.cod_rede
+                                         AND t6.cod_filial = t1.cod_filial AND t6.num_nota = t2.num_controle
+                                         AND t6.num_seqcadivend = t1.num_sequencial
+                                     WHERE t1.cod_reduzido = %s
+                                       AND t1.cod_rede = %s
+                                       AND t1.cod_filial = %s
+                                     GROUP BY 1, 2, 3, 5, 6, 7, 8
+                                     ORDER BY t1.dat_atualiza DESC, t1.num_nota DESC, t1.num_sequencial DESC LIMIT 3
+                                     """
+                cur.execute(sql.SQL(SQL_ULTIMAS_VENDAS), (cod_reduzido, cod_rede, cod_filial))
+                ultimas_vendas_db = cur.fetchall()
+
+                # PROCESSAMENTO DAS VENDAS
+                vendas_formatadas = []
+                for idx, item in enumerate(ultimas_vendas_db):
+                    vendas_formatadas.append({
+                        'indice': idx + 1,
+                        'data_hora_venda': item[0],
+                        'qtd_venda': item[1],
+                        'valor_unitario': item[2],
+                        'num_lote': item[3] if item[3] else 'Não Loteado/Erro de Busca',
+                        'nome_vendedor': item[4] if item[4] else 'N/A',
+                        'nome_cliente': item[5] if item[5] else 'Consumidor Final',
+                        'num_nota': item[6],
+                        'num_sequencial': item[7]
+                    })
+
+    except psycopg2.Error as e:
+        print(f"Erro de Banco de Dados: {e}")
+        return render_template('error.html',
+                               message=f"Erro ao consultar o banco de dados. Detalhe: {e}",
+                               **context), 500
+    except Exception as e:
+        print(f"Erro inesperado: {e}")
+        return render_template('error.html', message="Ocorreu um erro inesperado.", **context), 500
+
+    # FORMATAÇÃO FINAL
+    localizacao = localizacao if localizacao else "Sem localização cadastrada"
+    estoque_minimo = safe_int(estoque_minimo) if estoque_minimo is not None else "Não cadastrado"
+    quantidade_em_estoque = safe_int(quantidade_em_estoque) if quantidade_em_estoque is not None else "Não cadastrado"
+
+    context.update({
+        'cod_reduzido': cod_reduzido,
+        'nome_produto': nome_produto,
+        'localizacao': localizacao,
+        'quantidade_em_estoque': quantidade_em_estoque,
+        'valor_venda': valor_venda,
+        'estoque_minimo': estoque_minimo,
+        'preco_final_venda': preco_final_venda,
+        'nom_laboratorio': nom_laboratorio,
+        'ultima_compra': ultima_compra,
+        'data_ultima_entrada': data_ultima_entrada,
+        'quantidade_ultima_entrada': quantidade_ultima_entrada,
+        'lotes_entradas': entradas_formatadas,
+        'ultimas_vendas': vendas_formatadas,
+        'estoque_anterior_entrada': estoque_anterior_entrada,
+        'data_penultima_entrada': data_penultima_entrada,
+        'product_options': None,
+        'classificacao': get_classificacao(flg_tipoprod),
+        'grupo': get_grupo(cod_grupo),
+        'departamento': nom_depto,
+    })
+
+    return render_template('produto.html', **context)
+
+
+@app.route('/carta_correcao', methods=['GET', 'POST'])
+def gerar_carta_correcao():
+    """Gera dados para o template de Carta de Correção. (Inalterado)"""
+    if request.method == 'POST':
+        # Recebe os dados do formulário
+        cod_reduzido = request.form.get('cod_reduzido')
+        num_nota = request.form.get('num_nota')
+        cod_fornec = request.form.get('cod_fornec')
+        produto_nome = request.form.get('produto_nome')
+        quantidade = request.form.get('quantidade')
+
+        # Dados atuais (NF)
+        lote_atual = request.form.get('lote_atual')
+        validade_atual = request.form.get('validade_atual')
+        fabricacao_atual = request.form.get('fabricacao_atual')
+
+        # Dados corretos (embalagem)
+        lote_correto = request.form.get('lote_correto')
+        validade_correta = request.form.get('validade_correta')
+        fabricacao_correta = request.form.get('fabricacao_correta')
+        observacoes = request.form.get('observacoes', '')
+
+        # Buscar dados adicionais da NF
+        cod_rede = DADOS_SOLICITANTE['COD_REDE']
+        cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+        fornecedor_razao = ''
+        fornecedor_cnpj = ''
+        nf_data = ''
+        nf_chave = ''
+
+        if num_nota and cod_fornec:
+            try:
+                with psycopg2.connect(**DB_CONFIG) as conn:
+                    with conn.cursor() as cur:
+                        SQL_NF_FORNEC = """
+                                        SELECT t2.nom_fornec, t2.num_cnpj, t1.dat_emissao, t1.nom_chavenfe
+                                        FROM public.cadccomp t1
+                                                 INNER JOIN public.cadforne t2
+                                                            ON t1.cod_fornec = t2.cod_fornec AND t1.cod_rede = t2.cod_rede
+                                        WHERE t1.num_nota = %s
+                                          AND t1.cod_fornec = %s
+                                          AND t1.cod_rede = %s
+                                          AND t1.cod_filial = %s
+                                        ORDER BY t1.dat_emissao DESC LIMIT 1;
+                                        """
+                        cur.execute(sql.SQL(SQL_NF_FORNEC), (num_nota, cod_fornec, cod_rede, cod_filial))
+                        row_nf_fornec = cur.fetchone()
+
+                        if row_nf_fornec:
+                            fornecedor_razao = row_nf_fornec[0] if row_nf_fornec[0] else ''
+                            fornecedor_cnpj = row_nf_fornec[1] if row_nf_fornec[1] else ''
+                            nf_data_raw = row_nf_fornec[2]
+                            nf_data = datetimeformat(nf_data_raw, '%d/%m/%Y') if nf_data_raw else ''
+                            nf_chave = row_nf_fornec[3] if row_nf_fornec[3] else ''
+
+            except psycopg2.Error as e:
+                print(f"Erro ao buscar dados da NF/Fornecedor (Carta Correção): {e}")
+
+        return render_template('carta_correcao.html',
+                               solicitante=DADOS_SOLICITANTE,
+                               produto_nome=produto_nome,
+                               cod_reduzido=cod_reduzido,
+                               fornecedor_razao=fornecedor_razao,
+                               fornecedor_cnpj=fornecedor_cnpj,
+                               nf_numero=num_nota if num_nota else '',
+                               nf_data=nf_data,
+                               nf_chave=nf_chave,
+                               quantidade=quantidade,
+                               # Dados atuais (NF)
+                               lote_atual=lote_atual,
+                               validade_atual=validade_atual,
+                               fabricacao_atual=fabricacao_atual,
+                               # Dados corretos (embalagem)
+                               lote_correto=lote_correto,
+                               validade_correta=validade_correta,
+                               fabricacao_correta=fabricacao_correta,
+                               observacoes=observacoes,
+                               data_hoje=datetime.now().strftime('%d/%m/%Y'))
+
+    else:
+        cod_reduzido = request.args.get('cod_reduzido')
+        num_nota = request.args.get('num_nota')
+        cod_fornec = request.args.get('cod_fornec')
+        nf_lote = request.args.get('lote')
+        nf_validade = request.args.get('validade')
+        nf_fabricacao = request.args.get('fabricacao')
+        produto_nome = request.args.get('produto_nome')
+
+        cod_rede = DADOS_SOLICITANTE['COD_REDE']
+        cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+        fornecedor_razao = ''
+        fornecedor_cnpj = ''
+        nf_data = ''
+        nf_chave = ''
+
+        if num_nota and cod_fornec:
+            try:
+                with psycopg2.connect(**DB_CONFIG) as conn:
+                    with conn.cursor() as cur:
+                        SQL_NF_FORNEC = """
+                                        SELECT t2.nom_fornec, t2.num_cnpj, t1.dat_emissao, t1.nom_chavenfe
+                                        FROM public.cadccomp t1
+                                                 INNER JOIN public.cadforne t2
+                                                            ON t1.cod_fornec = t2.cod_fornec AND t1.cod_rede = t2.cod_rede
+                                        WHERE t1.num_nota = %s
+                                          AND t1.cod_fornec = %s
+                                          AND t1.cod_rede = %s
+                                          AND t1.cod_filial = %s
+                                        ORDER BY t1.dat_emissao DESC LIMIT 1;
+                                        """
+                        cur.execute(sql.SQL(SQL_NF_FORNEC), (num_nota, cod_fornec, cod_rede, cod_filial))
+                        row_nf_fornec = cur.fetchone()
+
+                        if row_nf_fornec:
+                            fornecedor_razao = row_nf_fornec[0] if row_nf_fornec[0] else ''
+                            fornecedor_cnpj = row_nf_fornec[1] if row_nf_fornec[1] else ''
+                            nf_data_raw = row_nf_fornec[2]
+                            nf_data = datetimeformat(nf_data_raw, '%d/%m/%Y') if nf_data_raw else ''
+                            nf_chave = row_nf_fornec[3] if row_nf_fornec[3] else ''
+
+            except psycopg2.Error as e:
+                print(f"Erro ao buscar dados da NF/Fornecedor (Carta Correção): {e}")
+
+        return render_template('carta_correcao.html', solicitante=DADOS_SOLICITANTE,
+                               nf_lote_errado=nf_lote if nf_lote != 'N/A' else '',
+                               nf_validade_errada=nf_validade if nf_validade != 'N/A' else '',
+                               nf_fabricacao_errada=nf_fabricacao if nf_fabricacao != 'N/A' else '',
+                               produto_nome=produto_nome, cod_reduzido=cod_reduzido,
+                               fornecedor_razao=fornecedor_razao, fornecedor_cnpj=fornecedor_cnpj,
+                               nf_numero=num_nota if num_nota else '', nf_data=nf_data, nf_chave=nf_chave,
+                               data_hoje=datetime.now().strftime('%d/%m/%Y'))
+
+
+# ==============================================================================
+# 5. ROTAS DA API CHATBOT
+# ==============================================================================
+
+@app.route('/api/chatbot/buscar-reduzido/<int:cod_reduzido>', methods=['GET'])
+def chatbot_buscar_reduzido(cod_reduzido):
+    """
+    Busca produto diretamente pelo CÓDIGO REDUZIDO.
+    Retorna apenas dados, sem mensagem formatada (mantido da refatoração anterior).
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        with psycopg2.connect(**DB_CONFIG) as conn:
+            with conn.cursor() as cur:
+                query = """
+                        SELECT p.cod_reduzido,
+                               p.nom_produto,
+                               p.vlr_venda,
+                               COALESCE(e.qtd_estoque, 0) as estoque,
+                               COALESCE(d.vlr_liquido, p.vlr_venda) as preco_final,
+                               b.cod_barra,
+                               p.cod_grupo,
+                               p.flg_tipoprod,
+                               p.cod_depto,
+                               dept.nom_depto
+FROM cadprodu p
+                         LEFT JOIN cadestoq e ON e.cod_reduzido = p.cod_reduzido
+                    AND e.cod_rede = %s AND e.cod_filial = %s
+                         LEFT JOIN desconto_produto_vw d ON d.cod_reduzido = p.cod_reduzido
+                         LEFT JOIN LATERAL (
+                             SELECT b.cod_barra
+                             FROM cadcdbar b
+                             WHERE b.cod_reduzido = p.cod_reduzido
+                             ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC
+                             LIMIT 1
+                         ) b ON true
+                         LEFT JOIN caddepto dept ON dept.cod_depto = p.cod_depto
+                        WHERE p.cod_reduzido = %s
+                          AND p.cod_rede = %s
+                          AND p.flg_ativo = 'A' LIMIT 1
+                        """
+
+                cur.execute(query, (cod_rede, cod_filial, cod_reduzido, cod_rede))
+                p = cur.fetchone()
+
+        if not p:
+            return jsonify({
+                'success': False,
+                'encontrado': False,
+                'error': f'Produto com código {cod_reduzido} não encontrado.'
+            }), 404
+
+        nome = p[1]
+        preco = float(p[2]) if p[2] else 0.0
+        estoque = int(p[3]) if p[3] else 0
+        preco_desconto = float(p[4]) if p[4] else preco
+        ean = p[5]
+
+        return jsonify({
+            'success': True,
+            'encontrado': True,
+            'produto': {
+                'cod_reduzido': p[0],
+                'nome': nome,
+                'ean': ean,
+                'preco': preco,
+                'preco_final': preco_desconto,
+                'estoque': estoque,
+                'tem_estoque': estoque > 0,
+                'classificacao': get_classificacao(p[7]),
+                'grupo': get_grupo(p[6]),
+                'departamento': p[9] if p[9] else 'Não informado',
+            },
+            'total_opcoes': 1
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar produto por reduzido: {e}")
+        return jsonify({'success': False, 'error': 'Erro interno no servidor'}), 500
+
+
+@app.route('/api/status', methods=['GET'])
+def api_status():
+    """Endpoint para verificar o status da API. (Inalterado)"""
+    try:
+        with psycopg2.connect(**DB_CONFIG) as conn:
+            # Apenas tenta uma conexão para verificar o DB
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            db_status = "online"
+    except Exception as e:
+        db_status = f"offline - {str(e)}"
+
+    return jsonify({
+        "status": "online",
+        "database": db_status,
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0"
+    }), 200
+
+
+@app.route('/api/products/search', methods=['GET'])
+def api_products_search():
+    """
+    API para busca de produtos (live search).
+    Retorna a lista de produtos com a 'whatsapp_string' restaurada.
+    """
+    search_term = request.args.get('q', '')
+
+    if not search_term or len(search_term) < 2:
+        return jsonify({
+            "success": True,
+            "query": search_term,
+            "count": 0,
+            "data": []
+        }), 200
+
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        products = _fetch_product_options(search_term, cod_rede, cod_filial)
+
+        if products is None:
+            return jsonify({
+                "success": False,
+                "error": "Erro ao consultar o banco de dados"
+            }), 500
+
+        return jsonify({
+            "success": True,
+            "query": search_term,
+            "count": len(products),
+            "data": products
+        }), 200
+
+    except Exception as e:
+        print(f"Erro na busca de produtos: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Erro na busca de produtos"
+        }), 500
+
+
+@app.route('/api/chatbot/identificar-cliente', methods=['POST'])
+def chatbot_identificar_cliente():
+    """
+    Identifica cliente por: TELEFONE, CPF ou NOME.
+    Retorna apenas dados do cliente, sem mensagem formatada (mantido da refatoração anterior).
+    """
+    data = request.get_json()
+    telefone = data.get('telefone', '').strip()
+    cpf = data.get('cpf', '').strip()
+    nome = data.get('nome', '').strip()
+
+    if not (telefone or cpf or nome):
+        return jsonify({
+            'success': False,
+            'error': 'Por favor, informe seu telefone, CPF ou nome.'
+        }), 400
+
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        query = "SELECT cod_cliente, nom_cliente, num_fone, num_celular, num_cnpj FROM cadclien WHERE cod_rede = %s AND ("
+        params = [cod_rede]
+        conditions = []
+
+        if telefone:
+            telefone_limpo = ''.join(filter(str.isdigit, telefone))
+            conditions.append(
+                "(REGEXP_REPLACE(COALESCE(num_fone, ''), '[^0-9]', '', 'g') LIKE %s OR REGEXP_REPLACE(COALESCE(num_celular, ''), '[^0-9]', '', 'g') LIKE %s)")
+            params.extend([f'%{telefone_limpo}%', f'%{telefone_limpo}%'])
+
+        if cpf:
+            cpf_limpo = ''.join(filter(str.isdigit, cpf))
+            conditions.append("REGEXP_REPLACE(COALESCE(num_cnpj, ''), '[^0-9]', '', 'g') LIKE %s")
+            params.append(f'%{cpf_limpo}%')
+
+        if nome:
+            conditions.append("nom_cliente ILIKE %s")
+            params.append(f'%{nome}%')
+
+        query += " OR ".join(conditions) + ") LIMIT 1"
+        cur.execute(query, params)
+        cliente = cur.fetchone()
+
+        cur.close()
+        conn.close()
+
+        if not cliente:
+            return jsonify({
+                'success': False,
+                'identificado': False,
+                'error': 'Não encontrei seu cadastro. Gostaria de se cadastrar?'
+            }), 404
+
+        primeiro_nome = cliente[1].split()[0].title()
+
+        return jsonify({
+            'success': True,
+            'identificado': True,
+            'cliente': {
+                'cod_cliente': cliente[0],
+                'nome': cliente[1],
+                'primeiro_nome': primeiro_nome,
+                'telefone': cliente[2] if cliente[2] else cliente[3],
+                'cpf': cliente[4] if cliente[4] else 'Não informado'
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao identificar cliente: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/buscar-produto', methods=['POST'])
+def chatbot_buscar_produto():
+    """
+    Busca produto para o chatbot.
+    Garante que os valores de tabela, final e desconto percentual sejam 
+    calculados matematicamente se o banco omitir o percentual.
+    """
+    data = request.get_json() or {}
+    termo = data.get('termo', '').strip()
+
+    if not termo or len(termo) < 3:
+        return jsonify({
+            'success': False,
+            'error': 'Me diga qual produto você procura (mínimo 3 letras ou código).'
+        }), 400
+
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        opcoes = _fetch_product_options(termo, cod_rede, cod_filial)
+
+        if not opcoes:
+            return jsonify({
+                'success': True,
+                'encontrado': False,
+                'produtos': []
+            }), 200
+
+        produtos_retorno = []
+        for op in opcoes:
+            # 1. Tenta buscar o preço de venda/tabela cheio
+            # Se 'vlr_venda_raw_float' não existir, tenta 'vlr_venda' ou assume o líquido
+            vlr_venda = float(op.get('vlr_venda_raw_float') or op.get('vlr_venda') or op.get('vlr_liquido_raw_float') or 0.0)
+            vlr_liquido = float(op.get('vlr_liquido_raw_float') or op.get('vlr_liquido') or 0.0)
+            
+            # 2. Recupera o desconto ou calcula matematicamente na hora para blindar a rota
+            desconto_perc = float(op.get('desconto_percentual', 0.0))
+            if desconto_perc <= 0.01 and vlr_venda > vlr_liquido and vlr_venda > 0:
+                desconto_perc = ((vlr_venda - vlr_liquido) / vlr_venda) * 100
+
+            produtos_retorno.append({
+                'cod_reduzido': op.get('cod_reduzido'),
+                'nome': op.get('nome_produto'),
+                'nom_laboratorio': op.get('nom_laboratorio') if op.get('nom_laboratorio') else 'Não Informado',
+                'estoque': int(op.get('qtd_estoque', 0)),
+                'preco_tabela': vlr_venda,
+                'preco_final': vlr_liquido,
+                'desconto_percentual': round(desconto_perc, 2),
+                'classificacao': op.get('classificacao', 'Não classificado'),
+                'grupo': op.get('grupo', 'Não informado'),
+            })
+
+        return jsonify({
+            'success': True,
+            'encontrado': True,
+            'produtos': produtos_retorno
+        }), 200
+
+    except Exception as e:
+        print(f"Erro na rota buscar-produto do chatbot: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/chatbot/historico/<int:cod_cliente>', methods=['GET'])
+def chatbot_historico(cod_cliente):
+    """
+    Retorna histórico resumido do cliente.
+    Retorna apenas dados, sem mensagem formatada (mantido da refatoração anterior).
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        ultima_compra_data = None
+        dias_atras = None
+
+        cur.execute("""
+                    SELECT v.dat_emissao, SUM(i.vlr_total)
+                    FROM cadcvend v
+                             LEFT JOIN cadivend i ON i.num_nota = v.num_nota
+                        AND i.cod_rede = v.cod_rede AND i.cod_filial = v.cod_filial
+                    WHERE v.cod_cliente = %s
+                      AND v.cod_rede = %s
+                      AND v.cod_filial = %s
+                    GROUP BY v.dat_emissao
+                    ORDER BY v.dat_emissao DESC LIMIT 1
+                    """, (cod_cliente, cod_rede, cod_filial))
+        ultima = cur.fetchone()
+
+        if ultima:
+            ultima_compra_data = ultima[0].strftime('%Y-%m-%d')
+            dias_atras = (datetime.now().date() - ultima[0]).days
+
+        cur.execute("""
+                    SELECT COUNT(DISTINCT v.num_nota), SUM(i.vlr_total)
+                    FROM cadcvend v
+                             LEFT JOIN cadivend i ON i.num_nota = v.num_nota
+                        AND i.cod_rede = v.cod_rede AND i.cod_filial = v.cod_filial
+                    WHERE v.cod_cliente = %s
+                      AND v.cod_rede = %s
+                      AND v.cod_filial = %s
+                    """, (cod_cliente, cod_rede, cod_filial))
+        stats = cur.fetchone()
+
+        cur.execute("""
+                    SELECT p.nom_produto, COUNT(DISTINCT v.num_nota)
+                    FROM cadivend i
+                             INNER JOIN cadcvend v ON v.num_nota = i.num_nota
+                        AND v.cod_rede = i.cod_rede AND v.cod_filial = i.cod_filial
+                             LEFT JOIN cadprodu p ON p.cod_reduzido = i.cod_reduzido
+                    WHERE v.cod_cliente = %s
+                      AND v.cod_rede = %s
+                      AND v.cod_filial = %s
+                      AND v.dat_emissao >= CURRENT_DATE - INTERVAL '12 months'
+                    GROUP BY p.nom_produto
+                    ORDER BY COUNT(DISTINCT v.num_nota) DESC LIMIT 3
+                    """, (cod_cliente, cod_rede, cod_filial))
+        top = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        total_compras = stats[0] if stats[0] else 0
+        total_gasto = float(stats[1]) if stats[1] else 0.0
+
+        return jsonify({
+            'success': True,
+            'estatisticas': {
+                'total_compras': total_compras,
+                'total_gasto': round(total_gasto, 2),
+                'ticket_medio': round(total_gasto / total_compras, 2) if total_compras > 0 else 0
+            },
+            'ultima_compra': {
+                'data': ultima_compra_data,
+                'dias_atras': dias_atras
+            },
+            'top_produtos': [p[0] for p in top if p[0]]
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar histórico: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/sugerir-reposicao/<int:cod_cliente>', methods=['GET'])
+def chatbot_sugerir_reposicao(cod_cliente):
+    """
+    Sugere produtos que cliente precisa repor (comprados regularmente).
+    MELHORIAS v2:
+    - CORRIGIDO: ORDER BY ASC -> DESC (antes trazia produtos mais antigos, agora traz os mais recentes)
+    - NOVO: Filtro de 24 meses para ignorar produtos abandonados há muito tempo
+    - NOVO: Retorna data_ultima_compra formatada além de dias_desde_ultima
+    - NOVO: Calcula intervalo_medio_dias (ritmo de recompra do cliente para aquele produto)
+    - NOVO: Calcula dias_atrasado (quantos dias além do padrão de recompra)
+    - NOVO: Campo urgencia ('alta' se atrasado > 7 dias, 'normal' caso contrário)
+    - NOVO: Campo uso_continuo baseado na classe terapêutica do produto
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        # QUERY PRINCIPAL: busca produtos comprados >= 2x nos últimos 24 meses
+        # ordenados pelos comprados mais recentemente (DESC) para sugerir reposição relevante
+        cur.execute("""
+                    SELECT i.cod_reduzido,
+                           p.nom_produto,
+                           COUNT(DISTINCT v.num_nota)  AS qtd_compras,
+                           MAX(v.dat_emissao)          AS ultima_compra,
+                           COALESCE(e.qtd_estoque, 0)  AS estoque,
+                           ct.descricao                AS classe_terapeutica,
+                           p.cod_dcb                   AS cod_dcb
+                    FROM cadivend i
+                             INNER JOIN cadcvend v ON v.num_nota = i.num_nota
+                        AND v.cod_rede = i.cod_rede AND v.cod_filial = i.cod_filial
+                             LEFT JOIN cadprodu p ON p.cod_reduzido = i.cod_reduzido
+                             LEFT JOIN cadestoq e ON e.cod_reduzido = i.cod_reduzido
+                        AND e.cod_rede = %s AND e.cod_filial = %s
+                             LEFT JOIN classe_terapeutica ct ON ct.cod_classe_terapeutica = p.cod_classe_terapeutica
+                    WHERE v.cod_cliente = %s
+                      AND v.cod_rede = %s
+                      AND v.cod_filial = %s
+                      AND v.dat_emissao >= CURRENT_DATE - INTERVAL '24 months'
+                    GROUP BY i.cod_reduzido, p.nom_produto, e.qtd_estoque, ct.descricao, p.cod_dcb
+                    HAVING COUNT(DISTINCT v.num_nota) >= 1
+                    ORDER BY MAX(v.dat_emissao) DESC
+                    LIMIT 200
+                    """, (cod_rede, cod_filial, cod_cliente, cod_rede, cod_filial))
+
+        produtos = cur.fetchall()
+
+        # QUERY SECUNDÁRIA: calcula intervalo médio de recompra por produto para este cliente
+        # CORRIGIDO: prefixo v2. em todas as ocorrências de dat_emissao para evitar ambiguidade
+        intervalos = {}
+        for p in produtos:
+            cod_red = p[0]
+            cur.execute("""
+                        SELECT ROUND(AVG(diff_dias))
+                        FROM (
+                            SELECT v2.dat_emissao - LAG(v2.dat_emissao) OVER (ORDER BY v2.dat_emissao) AS diff_dias
+                            FROM cadcvend v2
+                            INNER JOIN cadivend i2 ON i2.num_nota = v2.num_nota
+                                AND i2.cod_rede = v2.cod_rede AND i2.cod_filial = v2.cod_filial
+                            WHERE v2.cod_cliente = %s
+                              AND i2.cod_reduzido = %s
+                              AND v2.cod_rede = %s
+                              AND v2.cod_filial = %s
+                        ) sub
+                        WHERE diff_dias IS NOT NULL
+                        """, (cod_cliente, cod_red, cod_rede, cod_filial))
+            row = cur.fetchone()
+            intervalos[cod_red] = int(row[0]) if row and row[0] else None
+
+        cur.close()
+        conn.close()
+
+        if not produtos:
+            return jsonify({
+                'success': True,
+                'tem_sugestoes': False,
+                'error': 'Não tenho sugestões no momento.'
+            }), 200
+
+        # Prefixos ATC de classes terapêuticas de uso contínuo
+        # 'C' cobre todo o sistema cardiovascular (betabloqueadores, IECA, antagonistas
+        # da angiotensina, antagonistas do cálcio, diuréticos, estatinas, etc.)
+        PREFIXOS_USO_CONTINUO = [
+            'C',     # Cardiovascular (completo)
+            'A02B',  # Inibidores da bomba de prótons (omeprazol, pantoprazol)
+            'A10',   # Antidiabéticos
+            'H03',   # Tireoide (levotiroxina)
+            'B01',   # Anticoagulantes/antitrombóticos
+            'N06',   # Antidepressivos
+            'N05A',  # Antipsicóticos
+            'N05B',  # Ansiolíticos e hipnóticos (zolpidem)
+            'M04',   # Antigotosos (alopurinol)
+            'R03',   # Asma e DPOC
+            'N07D',  # Alzheimer
+            'N03',   # Antiepilepticos (clonazepam, fenitoina, valproato - uso cronico)
+            'G04',   # Urologicos (tansulosina, finasterida - uso continuo)
+            'H02',   # Corticosteroides sistemicos de uso continuo
+        ]
+
+        # Produtos de uso continuo (remedios) e produtos comuns sao tratados
+        # separadamente: os continuos nao competem por espaco com itens comprados
+        # com frequencia (chocolate, agua, etc.) que dominariam o topo por recencia.
+        candidatos_continuos = []
+        candidatos_outros = []
+
+        for p in produtos:
+            qtd_compras = int(p[2]) if p[2] else 0
+            dias = (datetime.now().date() - p[3]).days if p[3] else 999
+
+            classe = (p[5] or '').strip()
+            cod_dcb = (p[6] or '').strip() if len(p) > 6 else ''
+            cod_atc = classe.split(' - ')[0].strip()  # extrai ex: "C09A0" de "C09A0 - INIBIDORES DA ECA PUROS"
+            # So marca como uso continuo se, alem de bater o prefixo ATC, o produto
+            # tiver DCB preenchido (Denominacao Comum Brasileira) - isso so existe
+            # em medicamentos de verdade, protegendo contra produtos nao-farmaceuticos
+            # (sabonete, papel higienico, etc.) com cod_classe_terapeutica mal vinculado.
+            uso_continuo = (
+                bool(cod_dcb) and
+                any(cod_atc.startswith(pref) for pref in PREFIXOS_USO_CONTINUO)
+            )
+
+            # Produtos de uso continuo entram com apenas 1 compra. Demais produtos
+            # precisam de pelo menos 2 compras para evitar sugerir algo que o
+            # cliente so experimentou uma vez.
+            qtd_minima = 1 if uso_continuo else 2
+            if qtd_compras < qtd_minima:
+                continue
+
+            if dias < 30:
+                continue
+
+            intervalo = intervalos.get(p[0])
+            dias_atrasado = max(0, dias - intervalo) if intervalo else 0
+            urgencia = 'alta' if dias_atrasado > 7 else 'normal'
+
+            item = {
+                'cod_reduzido': p[0],
+                'nome': p[1],
+                'qtd_compras_historico': qtd_compras,
+                'dias_desde_ultima': dias,
+                'data_ultima_compra': p[3].strftime('%Y-%m-%d') if p[3] else None,
+                'intervalo_medio_dias': intervalo,
+                'dias_atrasado': dias_atrasado,
+                'urgencia': urgencia,
+                'uso_continuo': uso_continuo,
+                'classe_terapeutica': p[5] if p[5] else None,
+                'estoque': int(p[4]) if p[4] else 0
+            }
+
+            if uso_continuo:
+                candidatos_continuos.append(item)
+            else:
+                candidatos_outros.append(item)
+
+        # Continuos: todos entram, ordenados pelos mais atrasados primeiro (sem
+        # limite de recencia, pois sao poucos e sao os mais relevantes pra saude).
+        candidatos_continuos.sort(key=lambda x: x['dias_atrasado'], reverse=True)
+
+        # Outros: mantem o comportamento anterior, priorizando os comprados mais
+        # recentemente, e ocupam so o espaco que sobrar apos os continuos.
+        candidatos_outros.sort(key=lambda x: x['data_ultima_compra'] or '', reverse=True)
+
+        vagas_restantes = max(0, 5 - len(candidatos_continuos))
+        sugestoes = candidatos_continuos + candidatos_outros[:vagas_restantes]
+
+        if not sugestoes:
+            return jsonify({
+                'success': True,
+                'tem_sugestoes': False,
+                'error': 'Seus produtos estão em dia! 👍'
+            }), 200
+
+        return jsonify({
+            'success': True,
+            'tem_sugestoes': True,
+            'sugestoes': sugestoes
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao sugerir reposição: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/ultimas-compras-6meses/<int:cod_cliente>', methods=['GET'])
+def chatbot_ultimas_compras_6meses(cod_cliente):
+    """
+    Retorna os produtos comprados pelo cliente nos ultimos 6 meses.
+    Deduplicado por produto: quando o mesmo produto aparece em mais de uma
+    compra no periodo, mantem apenas a ocorrencia mais recente (MAX da data).
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        cur.execute("""
+                    SELECT i.cod_reduzido,
+                           p.nom_produto,
+                           MAX(v.dat_emissao)         AS ultima_compra,
+                           COUNT(DISTINCT v.num_nota) AS qtd_compras,
+                           lb.nom_laborat             AS nom_laboratorio,
+                           b.cod_barra
+                    FROM cadivend i
+                             INNER JOIN cadcvend v ON v.num_nota = i.num_nota
+                        AND v.cod_rede = i.cod_rede AND v.cod_filial = i.cod_filial
+                             LEFT JOIN cadprodu p ON p.cod_reduzido = i.cod_reduzido
+                             LEFT JOIN cadlabor lb ON lb.cod_laborat = p.cod_laborat
+                             LEFT JOIN LATERAL (
+                                 SELECT b.cod_barra
+                                 FROM cadcdbar b
+                                 WHERE b.cod_reduzido = i.cod_reduzido
+                                 ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC
+                                 LIMIT 1
+                             ) b ON true
+                    WHERE v.cod_cliente = %s
+                      AND v.cod_rede = %s
+                      AND v.cod_filial = %s
+                      AND v.dat_emissao >= CURRENT_DATE - INTERVAL '6 months'
+                    GROUP BY i.cod_reduzido, p.nom_produto, lb.nom_laborat, b.cod_barra
+                    ORDER BY MAX(v.dat_emissao) DESC
+                    """, (cod_cliente, cod_rede, cod_filial))
+
+        produtos = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not produtos:
+            return jsonify({
+                'success': True,
+                'tem_compras': False,
+                'compras': []
+            }), 200
+
+        compras = []
+        for p in produtos:
+            dias = (datetime.now().date() - p[2]).days if p[2] else None
+            compras.append({
+                'cod_reduzido': p[0],
+                'nome': p[1],
+                'data_ultima_compra': p[2].strftime('%Y-%m-%d') if p[2] else None,
+                'dias_desde_ultima': dias,
+                'qtd_compras_periodo': int(p[3]) if p[3] else 0,
+                'nom_laboratorio': p[4] if p[4] else None,
+                'cod_ean': p[5] if p[5] else None
+            })
+
+        return jsonify({
+            'success': True,
+            'tem_compras': True,
+            'compras': compras
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar ultimas compras (6 meses): {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/buscar-generico/<int:cod_reduzido>', methods=['GET'])
+def chatbot_buscar_generico(cod_reduzido):
+    """
+    Busca genéricos/equivalentes mais baratos.
+    Retorna apenas dados, sem mensagem formatada (mantido da refatoração anterior).
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        cur.execute("""
+                    WITH produto_base AS (SELECT p.cod_reduzido,
+                                                 p.nom_produto,
+                                                 p.cod_dcb,
+                                                 p.cod_concentracao,
+                                                 p.vlr_venda,
+                                                 COALESCE(d.vlr_liquido, p.vlr_venda) as preco_final
+                                          FROM cadprodu p
+                                                   LEFT JOIN desconto_produto_vw d ON d.cod_reduzido = p.cod_reduzido
+                                          WHERE p.cod_reduzido = %s
+                                            AND p.flg_ativo = 'A')
+                    SELECT p.cod_reduzido,
+                           p.nom_produto,
+                           p.vlr_venda                                                       as preco_tabela,
+                           COALESCE(d.vlr_liquido, p.vlr_venda)                              as preco_final,
+                           pb.nom_produto                                                    as original,
+                           pb.preco_final                                                    as preco_original_final,
+                           ROUND((pb.preco_final - COALESCE(d.vlr_liquido, p.vlr_venda)), 2) as economia,
+                           ROUND(((pb.preco_final - COALESCE(d.vlr_liquido, p.vlr_venda)) / NULLIF(pb.preco_final, 0) *
+                                  100), 1)                                                   as perc,
+                           COALESCE(e.qtd_estoque, 0)                                        as estoque
+                    FROM cadprodu p
+                             CROSS JOIN produto_base pb
+                             LEFT JOIN desconto_produto_vw d ON d.cod_reduzido = p.cod_reduzido
+                             LEFT JOIN cadestoq e ON e.cod_reduzido = p.cod_reduzido
+                        AND e.cod_rede = %s AND e.cod_filial = %s
+                    WHERE p.cod_dcb = pb.cod_dcb
+                      AND p.flg_ativo = 'A'
+                      AND p.cod_reduzido != pb.cod_reduzido
+                      AND (p.cod_concentracao = pb.cod_concentracao OR p.cod_concentracao IS NULL OR pb.cod_concentracao IS NULL)
+                      AND COALESCE(d.vlr_liquido, p.vlr_venda) < pb.preco_final
+                      AND COALESCE(e.qtd_estoque, 0) > 0
+                    ORDER BY ((pb.preco_final - COALESCE (d.vlr_liquido, p.vlr_venda)) / NULLIF (pb.preco_final, 1))
+                        DESC
+                        LIMIT 1
+                    """, (cod_reduzido, cod_rede, cod_filial))
+
+        resultado = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not resultado:
+            return jsonify({
+                'success': True,
+                'tem_generico': False,
+                'error': 'Este já é o melhor preço disponível!'
+            }), 200
+
+        percentual = float(resultado[7]) if resultado[7] else 0
+
+        if percentual < 10:
+            return jsonify({
+                'success': True,
+                'tem_generico': False,
+                'economia_encontrada_perc': percentual,
+                'error': f'A economia seria de apenas {percentual:.1f}%. Este já é um bom preço!'
+            }), 200
+
+        economia = float(resultado[6]) if resultado[6] else 0
+        preco_final_generico = float(resultado[3]) if resultado[3] else 0
+        preco_tabela_generico = float(resultado[2]) if resultado[2] else 0
+        estoque_generico = int(resultado[8]) if resultado[8] else 0
+        nome_generico = resultado[1]
+        nome_original = resultado[4]
+        preco_final_original = float(resultado[5]) if resultado[5] else 0
+
+        return jsonify({
+            'success': True,
+            'tem_generico': True,
+            'generico': {
+                'cod_reduzido': resultado[0],
+                'nome': nome_generico,
+                'preco_tabela': preco_tabela_generico,
+                'preco_final': preco_final_generico,
+                'tem_desconto': preco_final_generico < preco_tabela_generico,
+                'estoque': estoque_generico
+            },
+            'produto_original': {
+                'nome': nome_original,
+                'preco_final': preco_final_original
+            },
+            'economia': {
+                'valor': economia,
+                'percentual': percentual
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar genérico: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/docs', methods=['GET'])
+def api_chatbot_docs():
+    """Rota de documentação da API do Chatbot. (Inalterado)"""
+    local_ip = get_local_ip()
+    port = int(os.getenv('PORT', 5000))
+    base = f'http://{local_ip}:{port}'
+
+    return jsonify({
+        'sistema': 'API Chatbot Farmacia - Completa',
+        'versao': '3.0',
+        'base_url': base,
+        'grupos': {
+            '1_identificacao': {
+                'descricao': 'Identificar cliente por telefone, CPF ou nome',
+                'rotas': [
+                    {
+                        'path': '/api/chatbot/identificar-cliente',
+                        'method': 'POST',
+                        'body': {'telefone': '98455706', 'cpf': '51341964000', 'nome': 'Carlos'},
+                        'exemplo': f'curl -X POST {base}/api/chatbot/identificar-cliente -H "Content-Type: application/json" -d \'{{"telefone":"98455706"}}\''
+                    }
+                ]
+            },
+            '2_produtos': {
+                'descricao': 'Buscar produtos por nome ou código de barras',
+                'rotas': [
+                    {
+                        'path': '/api/chatbot/buscar-produto',
+                        'method': 'POST',
+                        'body': {'termo': 'dipirona ou 7891234567890', 'cod_cliente': 506559},
+                        'exemplo': f'curl -X POST {base}/api/chatbot/buscar-produto -d \'{{"termo":"dipirona"}}\''
+                    }
+                ]
+            },
+            '3_historico': {
+                'descricao': 'Histórico e sugestões personalizadas',
+                'rotas': [
+                    {
+                        'path': '/api/chatbot/historico/<cod_cliente>',
+                        'method': 'GET',
+                        'exemplo': f'{base}/api/chatbot/historico/506559'
+                    },
+                    {
+                        'path': '/api/chatbot/sugerir-reposicao/<cod_cliente>',
+                        'method': 'GET',
+                        'exemplo': f'{base}/api/chatbot/sugerir-reposicao/506559'
+                    }
+                ]
+            },
+            '4_genericos': {
+                'descricao': 'Buscar genéricos e equivalentes mais baratos',
+                'rotas': [
+                    {
+                        'path': '/api/chatbot/buscar-generico/<cod_reduzido>',
+                        'method': 'GET',
+                        'exemplo': f'{base}/api/chatbot/buscar-generico/19000'
+                    }
+                ]
+            },
+            # NOVAS ROTAS ADICIONADAS
+            '5_detalhes_cliente': {
+                'descricao': 'Detalhes financeiros e de compras do cliente',
+                'rotas': [
+                    {
+                        'path': '/api/chatbot/ultimas-compras/<cod_cliente>',
+                        'method': 'GET',
+                        'exemplo': f'{base}/api/chatbot/ultimas-compras/506559',
+                        'notas': 'Usado para popular o WhatsApp Flow de recompra (produtos distintos).'
+                    },
+                    {
+                        'path': '/api/chatbot/historico-compras-detalhado/<cod_cliente>',
+                        'method': 'GET',
+                        'exemplo': f'{base}/api/chatbot/historico-compras-detalhado/506559',
+                        'notas': 'Histórico transacional detalhado de todas as últimas compras.'
+                    },
+                    {
+                        'path': '/api/chatbot/contas-a-receber/total/<cod_cliente>',
+                        'method': 'GET',
+                        'exemplo': f'{base}/api/chatbot/contas-a-receber/total/506559',
+                        'notas': 'Resumo total de dívidas e juros do cliente.'
+                    },
+                    {
+                        'path': '/api/chatbot/contas-a-receber/detalhe/<cod_cliente>',
+                        'method': 'GET',
+                        'exemplo': f'{base}/api/chatbot/contas-a-receber/detalhe/506559',
+                        'notas': 'Lançamentos individuais de contas a receber do cliente.'
+                    },
+                    {
+                        'path': '/api/chatbot/produto/tags/<cod_reduzido>',
+                        'method': 'GET',
+                        'exemplo': f'{base}/api/chatbot/produto/tags/19000',
+                        'notas': 'Tags associadas a um produto específico.'
+                    }
+                ]
+            }
+        },
+        'fluxo_conversa': [
+            '1. Cliente: "Oi" -> Bot: "Me diga seu telefone"',
+            '2. Cliente: "98455706" -> POST /identificar-cliente',
+            '3. Bot identifica -> GET /historico/{cod}',
+            '4. Cliente: "Tem dipirona?" -> POST /buscar-produto {"termo":"dipirona"}',
+            '5. Bot encontra produto -> GET /buscar-generico/{cod} (sugerir economia)',
+            '6. Cliente: "Preciso repor algo?" -> GET /sugerir-reposicao/{cod}',
+            '7. (NOVO) Cliente: "Quero recomprar" -> GET /ultimas-compras/{cod} (para o Flow)',
+            '8. (NOVO) Cliente: "Minhas contas" -> GET /contas-a-receber/total/{cod}'
+        ]
+    }), 200
+
+
+# ==============================================================================
+# 6. ROTAS CHATBOT DETALHADAS (ADICIONADAS)
+# ==============================================================================
+
+@app.route('/api/chatbot/ultimas-compras/<int:cod_cliente>', methods=['GET'])
+def chatbot_ultimas_compras(cod_cliente):
+    """
+    Retorna os detalhes dos itens das últimas 6 compras finalizadas de um cliente.
+    Será usada para popular o WhatsApp Flow de recompra.
+    (Foco em produtos distintos para seleção)
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        query = """
+            SELECT DISTINCT ON (i.cod_reduzido)
+                i.cod_reduzido,
+                p.nom_produto,
+                ROUND( (i.vlr_total / i.qtd_produto), 2 ) AS ultimo_preco_unitario,
+                p.nom_produto AS product_name, -- Alias para consistência com o que o Flow espera
+                i.cod_reduzido AS product_api_id -- Alias para consistência com o que o Flow espera
+            FROM cadivend i
+            INNER JOIN cadcvend v ON v.num_nota = i.num_nota
+                AND v.cod_rede = i.cod_rede AND v.cod_filial = i.cod_filial
+            INNER JOIN cadprodu p ON p.cod_reduzido = i.cod_reduzido
+            WHERE v.cod_cliente = %s AND v.cod_rede = %s AND v.cod_filial = %s
+            ORDER BY i.cod_reduzido, v.dat_emissao DESC
+            LIMIT 6;
+        """
+        cur.execute(query, (cod_cliente, cod_rede, cod_filial))
+        produtos = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        if not produtos:
+            return jsonify({
+                'success': True,
+                'tem_historico': False,
+                'message': 'Não encontramos histórico de compras recentes para este cliente.'
+            }), 200
+
+        ultimas_compras_formatadas = []
+        for p in produtos:
+            ultimas_compras_formatadas.append({
+                'cod_reduzido': p[0],
+                'nome_produto': p[1],
+                'ultimo_preco_unitario': float(p[2]), # Garante que seja float
+                'product_name': p[3], # Consistência com o Flow
+                'product_api_id': p[4] # Consistência com o Flow
+            })
+
+        return jsonify({
+            'success': True,
+            'tem_historico': True,
+            'produtos': ultimas_compras_formatadas
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar últimas compras do cliente: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/historico-compras-detalhado/<int:cod_cliente>', methods=['GET'])
+def chatbot_historico_compras_detalhado(cod_cliente):
+    """
+    Retorna o histórico detalhado das últimas compras de um cliente,
+    incluindo detalhes do cupom, data, hora, produto, quantidade e preços.
+    Baseado na SQL fornecida pelo Carlos.
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        query = """
+            SELECT
+                v.num_nota AS cupom,
+                v.dat_emissao AS data_venda,
+                v.hor_emissao AS hora_venda,
+                p.nom_produto AS produto,
+                iv.qtd_produto AS quantidade,
+                iv.vlr_unitario AS preco_unitario,
+                iv.vlr_total AS subtotal,
+                v.tot_bruto AS total_cupom
+            FROM cadcvend v
+            LEFT JOIN cadivend iv ON v.num_nota = iv.num_nota
+                AND v.cod_filial = iv.cod_filial
+                AND v.cod_rede = iv.cod_rede
+                AND (iv.flg_excluido IS NULL OR iv.flg_excluido = 'N')
+            LEFT JOIN cadprodu p ON iv.cod_reduzido = p.cod_reduzido
+                AND iv.cod_rede = p.cod_rede
+            WHERE v.cod_cliente = %s
+                AND v.cod_rede = %s
+                AND (v.flg_excluido IS NULL OR v.flg_excluido = 'N')
+            ORDER BY
+                v.dat_emissao DESC,
+                v.hor_emissao DESC,
+                iv.num_sequencial
+            LIMIT 20;
+        """
+        cur.execute(query, (cod_cliente, cod_rede))
+        compras_detalhadas = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        if not compras_detalhadas:
+            return jsonify({
+                'success': True,
+                'tem_historico_detalhado': False,
+                'message': 'Não encontramos histórico de compras detalhado para este cliente.'
+            }), 200
+
+        historico_formatado = []
+        for c in compras_detalhadas:
+            historico_formatado.append({
+                'cupom': c[0],
+                'data_venda': c[1].strftime('%Y-%m-%d') if c[1] else None,
+                'hora_venda': c[2].strftime('%H:%M') if c[2] else None,
+                'produto': c[3],
+                'quantidade': float(c[4]), # Garante que seja float
+                'preco_unitario': float(c[5]), # Garante que seja float
+                'subtotal': float(c[6]), # Garante que seja float
+                'total_cupom': float(c[7]) # Garante que seja float
+            })
+
+        return jsonify({
+            'success': True,
+            'tem_historico_detalhado': True,
+            'historico': historico_formatado
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar histórico de compras detalhado do cliente: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/contas-a-receber/total/<int:cod_cliente>', methods=['GET'])
+def chatbot_total_contas_receber(cod_cliente):
+    """
+    Retorna o total de contas a receber do cliente.
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        query = """
+            WITH detalhe_extrato AS (
+                SELECT
+                    (CASE
+                        WHEN cr.tip_venda = 'D' OR cr.flg_devol = 'S' THEN (cr.vlr_receber * -1)
+                        ELSE cr.vlr_receber
+                    END - COALESCE(cr.vlr_recebido, 0) - COALESCE(cr.vlr_descto, 0)) AS saldo_aberto,
+                    CASE
+                        WHEN cr.dat_vencto < CURRENT_DATE AND
+                             (CASE WHEN cr.tip_venda = 'D' OR cr.flg_devol = 'S' THEN (cr.vlr_receber * -1) ELSE cr.vlr_receber END) > 0
+                        THEN (cr.vlr_receber - COALESCE(cr.vlr_recebido, 0) - COALESCE(cr.vlr_descto, 0))
+                             * (COALESCE(cli.prc_juros, 0) / 100)
+                             * (CURRENT_DATE - cr.dat_vencto)
+                        ELSE 0
+                    END AS juros
+                FROM public.cadcredi cr
+                INNER JOIN public.cadclien cli ON cr.cod_cliente = cli.cod_cliente
+                WHERE cli.cod_cliente = %s
+                  AND cr.dat_receb IS NULL
+
+                UNION ALL
+
+                SELECT
+                    (sl.vlr_receber - COALESCE(sl.vlr_recebido, 0)) as saldo_aberto,
+                    CASE
+                        WHEN sl.dat_vencto < CURRENT_DATE AND (sl.vlr_receber - COALESCE(sl.vlr_recebido, 0)) > 0
+                        THEN ((sl.vlr_receber - COALESCE(sl.vlr_recebido, 0)) * (COALESCE(cli.prc_juros, 0) / 100) * (CURRENT_DATE - sl.dat_vencto))
+                        ELSE 0
+                    END AS juros
+                FROM public.cadslddv sl
+                INNER JOIN public.cadclien cli ON sl.cod_cliente = cli.cod_cliente
+                WHERE cli.cod_cliente = %s
+                  AND sl.dat_receb IS NULL
+            )
+            SELECT
+                COUNT(*) as total_titulos_pendentes,
+                ROUND(SUM(saldo_aberto), 2) as total_saldo_principal,
+                ROUND(SUM(juros), 2) as total_juros_atraso,
+                ROUND(SUM(saldo_aberto + juros), 2) as valor_total_para_quitacao
+            FROM detalhe_extrato;
+        """
+        cur.execute(query, (cod_cliente, cod_cliente))
+        resultado = cur.fetchone()
+
+        cur.close()
+        conn.close()
+
+        if not resultado:
+            return jsonify({
+                'success': True,
+                'tem_contas_pendentes': False,
+                'message': 'Não há contas a receber pendentes para este cliente.'
+            }), 200
+
+        return jsonify({
+            'success': True,
+            'tem_contas_pendentes': True,
+            'total_titulos_pendentes': int(resultado[0]),
+            'total_saldo_principal': float(resultado[1]),
+            'total_juros_atraso': float(resultado[2]),
+            'valor_total_para_quitacao': float(resultado[3])
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar total de contas a receber do cliente: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/contas-a-receber/detalhe/<int:cod_cliente>', methods=['GET'])
+def chatbot_detalhe_contas_receber(cod_cliente):
+    """
+    Retorna os lançamentos individuais de contas a receber do cliente.
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        query = """
+            WITH ExtratoDetalhado AS (
+                SELECT
+                    'CADCREDI' as origem,
+                    cr.num_nota::text as documento,
+                    'Parcela ' || cr.num_parcela || '/' || cr.qtd_parcelas AS descricao,
+                    cr.dat_vencto,
+                    CASE
+                        WHEN cr.tip_venda = 'D' OR cr.flg_devol = 'S' THEN (cr.vlr_receber * -1)
+                        ELSE cr.vlr_receber
+                    END AS vlr_orig,
+                    (CASE WHEN cr.tip_venda = 'D' OR cr.flg_devol = 'S' THEN (cr.vlr_receber * -1) ELSE cr.vlr_receber END
+                     - COALESCE(cr.vlr_recebido, 0) - COALESCE(cr.vlr_descto, 0)) AS saldo_liq,
+                    COALESCE(cli.prc_juros, 0) as taxa_juros
+                FROM public.cadcredi cr
+                INNER JOIN public.cadclien cli ON cr.cod_cliente = cli.cod_cliente
+                WHERE cli.cod_cliente = %s
+                  AND cr.dat_receb IS NULL
+
+                UNION ALL
+
+                SELECT
+                    'SALDO_DEVEDOR' as origem,
+                    sl.num_titulo as documento,
+                    'Título Pendente' as descricao,
+                    sl.dat_vencto,
+                    (sl.vlr_receber - COALESCE(sl.vlr_recebido, 0)) as vlr_orig,
+                    (sl.vlr_receber - COALESCE(sl.vlr_recebido, 0)) as saldo_liq,
+                    COALESCE(cli.prc_juros, 0) as taxa_juros
+                FROM public.cadslddv sl
+                INNER JOIN public.cadclien cli ON sl.cod_cliente = cli.cod_cliente
+                WHERE cli.cod_cliente = %s
+                  AND sl.dat_receb IS NULL
+            )
+            SELECT
+                origem,
+                documento,
+                descricao,
+                dat_vencto,
+                vlr_orig,
+                saldo_liq,
+                CASE WHEN dat_vencto < CURRENT_DATE THEN CURRENT_DATE - dat_vencto ELSE 0 END as dias_atraso,
+                CASE
+                    WHEN dat_vencto < CURRENT_DATE AND saldo_liq > 0
+                    THEN (saldo_liq * (taxa_juros / 100) * (CURRENT_DATE - dat_vencto))
+                    ELSE 0
+                END as valor_juros,
+                (saldo_liq + (CASE
+                    WHEN dat_vencto < CURRENT_DATE AND saldo_liq > 0
+                    THEN (saldo_liq * (taxa_juros / 100) * (CURRENT_DATE - dat_vencto))
+                    ELSE 0
+                END)) as total_geral
+            FROM ExtratoDetalhado
+            ORDER BY dat_vencto ASC;
+        """
+        cur.execute(query, (cod_cliente, cod_cliente))
+        lancamentos = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        if not lancamentos:
+            return jsonify({
+                'success': True,
+                'tem_lancamentos': False,
+                'message': 'Não há lançamentos de contas a receber pendentes para este cliente.'
+            }), 200
+
+        lancamentos_formatados = []
+        for l in lancamentos:
+            lancamentos_formatados.append({
+                'origem': l[0],
+                'documento': l[1],
+                'descricao': l[2],
+                'data_vencimento': l[3].strftime('%Y-%m-%d') if l[3] else None,
+                'valor_original': float(l[4]),
+                'saldo_liquido': float(l[5]),
+                'dias_atraso': int(l[6]),
+                'valor_juros': float(l[7]),
+                'total_geral': float(l[8])
+            })
+
+        return jsonify({
+            'success': True,
+            'tem_lancamentos': True,
+            'lancamentos': lancamentos_formatados
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar lançamentos individuais do cliente: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chatbot/produto/tags/<int:cod_reduzido>', methods=['GET'])
+def chatbot_produto_tags(cod_reduzido):
+    """
+    Retorna as tags associadas a um produto.
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        query = """
+            SELECT
+                gtp.cod_reduzido,
+                gt.cod_tag,
+                gt.descricao AS tag_nome,
+                gt.data_cadastro AS tag_criada_em
+            FROM
+                public.gcp_tags_produto gtp
+            JOIN
+                public.gcp_tags gt ON gtp.cod_tag = gt.cod_tag
+                AND gtp.cod_rede = gt.cod_rede
+            WHERE
+                gtp.cod_reduzido = %s AND gtp.cod_rede = %s
+            ORDER BY
+                gt.descricao ASC;
+        """
+        cur.execute(query, (cod_reduzido, cod_rede))
+        tags = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        if not tags:
+            return jsonify({
+                'success': True,
+                'tem_tags': False,
+                'message': 'Nenhuma tag encontrada para este produto.'
+            }), 200
+
+        tags_formatadas = []
+        for t in tags:
+            tags_formatadas.append({
+                'cod_reduzido': t[0],
+                'cod_tag': t[1],
+                'tag_nome': t[2],
+                'tag_criada_em': t[3].strftime('%Y-%m-%d %H:%M:%S') if t[3] else None
+            })
+
+        return jsonify({
+            'success': True,
+            'tem_tags': True,
+            'tags': tags_formatadas
+        }), 200
+
+    except Exception as e:
+        print(f"Erro ao buscar tags do produto: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
+
+
+# ==============================================================================
+# 7. ROTA DE PRODUTOS SIMILARES POR EAN
+# ==============================================================================
+
+@app.route('/api/produtos/similares/<ean>', methods=['GET'])
+def api_produtos_similares(ean):
+    """
+    Busca pelo EAN informado, obtém DCB e Concentração do produto,
+    e retorna todos os produtos com mesmo DCB + Concentração que possuam
+    estoque, estoque crítico, estoque mínimo ou demanda maior que zero.
+    Inclui nom_obsvenda e ean.
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        # PASSO 1: EAN -> cod_reduzido
+        cur.execute("""
+            SELECT cod_reduzido
+            FROM cadcdbar
+            WHERE cod_barra = %s
+            LIMIT 1
+        """, (ean,))
+        row = cur.fetchone()
+
+        if not row:
+            cur.close()
+            conn.close()
+            return jsonify({
+                'success': False,
+                'error': f'EAN {ean} não encontrado.'
+            }), 404
+
+        cod_reduzido = row[0]
+
+        # PASSO 2: cod_reduzido -> DCB + Concentração
+        cur.execute("""
+            SELECT cod_dcb, cod_concentracao
+            FROM cadprodu
+            WHERE cod_reduzido = %s
+              AND cod_rede = %s
+        """, (cod_reduzido, cod_rede))
+        row = cur.fetchone()
+
+        if not row or not row[0]:
+            cur.close()
+            conn.close()
+            return jsonify({
+                'success': False,
+                'error': 'Produto não possui DCB cadastrado. Não é possível buscar similares.'
+            }), 404
+
+        cod_dcb, cod_concentracao = row
+
+        # PASSO 3: busca todos os similares com mesmo DCB + Concentração
+        cur.execute("""
+            SELECT
+                p.cod_reduzido,
+                p.nom_produto,
+                l.nom_laborat,
+                e.qtd_estoque,
+                e.vlr_custopersonalizado,
+                e.est_minimo,
+                e.est_critico,
+                e.qtd_demanda,
+                e.dat_ultent,
+                p.cod_dcb,
+                p.cod_concentracao,
+                COALESCE(d.vlr_liquido, p.vlr_venda) AS vlr_venda_final,
+                p.vlr_venda AS vlr_venda_tabela,
+                p.nom_obsvenda,
+                (SELECT b.cod_barra FROM cadcdbar b WHERE b.cod_reduzido = p.cod_reduzido ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC LIMIT 1) AS ean,
+                p.cod_grupo,
+                p.flg_tipoprod
+            FROM cadprodu p
+            JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
+                AND e.cod_rede = %s
+                AND e.cod_filial = %s
+            LEFT JOIN cadlabor l ON p.cod_laborat = l.cod_laborat
+            LEFT JOIN desconto_produto_vw d ON d.cod_reduzido = p.cod_reduzido
+            WHERE p.cod_dcb = %s
+              AND p.cod_concentracao = %s
+              AND p.cod_rede = %s
+              AND p.flg_ativo = 'A'
+              AND (
+                  e.qtd_estoque > 0
+                  OR e.est_critico > 0
+                  OR e.est_minimo > 0
+                  OR e.qtd_demanda > 0
+              )
+            ORDER BY e.vlr_custopersonalizado ASC
+        """, (cod_rede, cod_filial, cod_dcb, cod_concentracao, cod_rede))
+
+        produtos = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not produtos:
+            return jsonify({
+                'success': True,
+                'encontrou': False,
+                'cod_dcb': cod_dcb,
+                'cod_concentracao': cod_concentracao,
+                'message': 'Nenhum produto similar com estoque ou parâmetros cadastrados.'
+            }), 200
+
+        resultado = []
+        for p in produtos:
+            resultado.append({
+                'cod_reduzido':          p[0],
+                'nom_produto':           p[1],
+                'nom_laborat':           p[2] if p[2] else 'N/A',
+                'qtd_estoque':           float(p[3]) if p[3] is not None else 0.0,
+                'vlr_custopersonalizado': float(p[4]) if p[4] is not None else None,
+                'est_minimo':            float(p[5]) if p[5] is not None else 0.0,
+                'est_critico':           float(p[6]) if p[6] is not None else 0.0,
+                'qtd_demanda':           float(p[7]) if p[7] is not None else 0.0,
+                'dat_ultent':            p[8].strftime('%d-%m-%Y') if p[8] else None,
+                'cod_dcb':               p[9],
+                'cod_concentracao':      p[10],
+                'vlr_venda_final':       float(p[11]) if p[11] is not None else None,
+                'vlr_venda_tabela':      float(p[12]) if p[12] is not None else None,
+                'nom_obsvenda':          p[13],
+                'ean':                   p[14],
+                'classificacao':         get_classificacao(p[16]),
+                'grupo':                 get_grupo(p[15]),
+            })
+
+        return jsonify({
+            'success':          True,
+            'encontrou':        True,
+            'cod_dcb':          cod_dcb,
+            'cod_concentracao': cod_concentracao,
+            'total':            len(resultado),
+            'produtos':         resultado
+        }), 200
+
+    except Exception as e:
+        print(f"Erro em api_produtos_similares: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/produtos/similares/batch', methods=['POST'])
+def api_produtos_similares_batch():
+    """
+    Endpoint batch para busca de similares.
+    Aceita até 40 EANs numa única chamada.
+    Retorna dict chaveado por EAN com os produtos similares de cada um.
+    """
+    MAX_EANS = 40
+
+    data = request.get_json(force=True, silent=True)
+    if not data or not isinstance(data.get('eans'), list):
+        return jsonify({'success': False, 'error': 'Body deve conter {"eans": ["...", "..."]}'}), 400
+
+    eans = [str(e).strip() for e in data['eans'] if str(e).strip()]
+
+    if not eans:
+        return jsonify({'success': False, 'error': 'Lista de EANs vazia.'}), 400
+
+    if len(eans) > MAX_EANS:
+        return jsonify({'success': False, 'error': f'Máximo de {MAX_EANS} EANs por chamada.'}), 400
+
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    resultado = {}
+
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        # PASSO 1: Batch lookup — EANs → cod_reduzido
+        cur.execute("""
+            SELECT cod_barra::text, cod_reduzido
+            FROM cadcdbar
+            WHERE cod_barra::text = ANY(%s)
+        """, (eans,))
+        ean_map = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Identificar EANs não encontrados
+        for ean in eans:
+            if ean not in ean_map:
+                resultado[ean] = {
+                    'success': False,
+                    'encontrou': False,
+                    'error': f'EAN {ean} não encontrado.'
+                }
+
+        # PASSO 2: Batch lookup — cod_reduzido → DCB + Concentração
+        cod_reduzidos = list(set(ean_map.values()))
+        if not cod_reduzidos:
+            cur.close()
+            conn.close()
+            return jsonify(resultado), 200
+
+        cur.execute("""
+            SELECT cod_reduzido, cod_dcb, cod_concentracao
+            FROM cadprodu
+            WHERE cod_reduzido = ANY(%s)
+              AND cod_rede = %s
+              AND cod_dcb IS NOT NULL
+        """, (cod_reduzidos, cod_rede))
+        dcb_map = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+
+        # Mapear EAN → (cod_reduzido, dcb, concentracao)
+        ean_dcb_map = {}
+        for ean, cod_red in ean_map.items():
+            if cod_red in dcb_map:
+                ean_dcb_map[ean] = (cod_red, *dcb_map[cod_red])
+            else:
+                resultado[ean] = {
+                    'success': False,
+                    'encontrou': False,
+                    'error': 'Produto não possui DCB cadastrado.'
+                }
+
+        # PASSO 3: Para cada DCB+Concentração único, buscar similares (evitar duplicação)
+        dcb_conc_pairs = list(set((v[1], v[2]) for v in ean_dcb_map.values()))
+
+        if not dcb_conc_pairs:
+            cur.close()
+            conn.close()
+            return jsonify(resultado), 200
+
+        # Uma única query por par DCB+Concentração
+        similares_cache = {}
+        for cod_dcb, cod_concentracao in dcb_conc_pairs:
+            cur.execute("""
+                SELECT
+                    p.cod_reduzido,
+                    p.nom_produto,
+                    l.nom_laborat,
+                    e.qtd_estoque,
+                    e.vlr_custopersonalizado,
+                    e.est_minimo,
+                    e.est_critico,
+                    e.qtd_demanda,
+                    e.dat_ultent,
+                    p.cod_dcb,
+                    p.cod_concentracao,
+                    COALESCE(d.vlr_liquido, p.vlr_venda) AS vlr_venda_final,
+                    p.vlr_venda AS vlr_venda_tabela,
+                    p.nom_obsvenda,
+                    (SELECT b.cod_barra FROM cadcdbar b WHERE b.cod_reduzido = p.cod_reduzido ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC LIMIT 1) AS ean,
+                    p.cod_grupo,
+                    p.flg_tipoprod
+                FROM cadprodu p
+                JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
+                    AND e.cod_rede = %s
+                    AND e.cod_filial = %s
+                LEFT JOIN cadlabor l ON p.cod_laborat = l.cod_laborat
+                LEFT JOIN desconto_produto_vw d ON d.cod_reduzido = p.cod_reduzido
+                WHERE p.cod_dcb = %s
+                  AND p.cod_concentracao = %s
+                  AND p.cod_rede = %s
+                  AND p.flg_ativo = 'A'
+                  AND (
+                      e.qtd_estoque > 0
+                      OR e.est_critico > 0
+                      OR e.est_minimo > 0
+                      OR e.qtd_demanda > 0
+                  )
+                ORDER BY e.vlr_custopersonalizado ASC
+            """, (cod_rede, cod_filial, cod_dcb, cod_concentracao, cod_rede))
+
+            produtos = cur.fetchall()
+            produtos_fmt = []
+            for p in produtos:
+                produtos_fmt.append({
+                    'cod_reduzido':          p[0],
+                    'nom_produto':           p[1],
+                    'nom_laborat':           p[2] if p[2] else 'N/A',
+                    'qtd_estoque':           float(p[3]) if p[3] is not None else 0.0,
+                    'vlr_custopersonalizado': float(p[4]) if p[4] is not None else None,
+                    'est_minimo':            float(p[5]) if p[5] is not None else 0.0,
+                    'est_critico':           float(p[6]) if p[6] is not None else 0.0,
+                    'qtd_demanda':           float(p[7]) if p[7] is not None else 0.0,
+                    'dat_ultent':            p[8].strftime('%d-%m-%Y') if p[8] else None,
+                    'cod_dcb':               p[9],
+                    'cod_concentracao':      p[10],
+                    'vlr_venda_final':       float(p[11]) if p[11] is not None else None,
+                    'vlr_venda_tabela':      float(p[12]) if p[12] is not None else None,
+                    'nom_obsvenda':          p[13],
+                    'ean':                   p[14],
+                    'classificacao':         get_classificacao(p[16]),
+                    'grupo':                 get_grupo(p[15]),
+                })
+            similares_cache[(cod_dcb, cod_concentracao)] = produtos_fmt
+
+        cur.close()
+        conn.close()
+
+        # PASSO 4: Montar resposta — cada EAN aponta para os similares do seu DCB
+        for ean, (cod_red, cod_dcb, cod_conc) in ean_dcb_map.items():
+            if ean in resultado:
+                continue
+            produtos = similares_cache.get((cod_dcb, cod_conc), [])
+            resultado[ean] = {
+                'success': True,
+                'encontrou': len(produtos) > 0,
+                'cod_dcb': cod_dcb,
+                'cod_concentracao': cod_conc,
+                'total': len(produtos),
+                'produtos': produtos
+            }
+
+        return jsonify(resultado), 200
+
+    except Exception as e:
+        print(f"Erro em api_produtos_similares_batch: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==============================================================================
+# ROTAS DE HISTÓRICO POR PRODUTO (VENDAS E DESEMPENHO)
+# ==============================================================================
+
+@app.route('/api/chatbot/produto/vendas-detalhadas/<string:ean>', methods=['GET'])
+def chatbot_produto_vendas_detalhadas(ean):
+    """
+    Retorna o extrato de cada venda individual de um produto (buscado pelo EAN)
+    no último ano. Adaptado para as tabelas reais do SGF (cadcvend, cadivend, cadclien).
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+    
+    try:
+        with psycopg2.connect(**DB_CONFIG) as conn:
+            with conn.cursor() as cur:
+                # 1. Buscar o cod_reduzido do EAN
+                cur.execute("SELECT cod_reduzido FROM cadcdbar WHERE cod_barra = %s LIMIT 1", (ean,))
+                row = cur.fetchone()
+                if not row:
+                     return jsonify({"status": "success", "data": []})
+                
+                cod_reduzido = row[0]
+
+                sql_query = """
+                    SELECT 
+                        TO_CHAR(v.dat_emissao, 'DD/MM/YYYY') AS data_venda, 
+                        v.hor_emissao AS hora_venda, 
+                        v.num_nota AS num_nota_cupom,
+                        iv.qtd_produto AS quantidade, 
+                        iv.vlr_unitario AS valor_unitario, 
+                        iv.vlr_total AS valor_total,
+                        c.nom_cliente AS nome_cliente
+                    FROM cadcvend v
+                    INNER JOIN cadivend iv ON v.num_nota = iv.num_nota
+                        AND v.cod_rede = iv.cod_rede 
+                        AND v.cod_filial = iv.cod_filial
+                    LEFT JOIN cadclien c ON v.cod_cliente = c.cod_cliente
+                    WHERE iv.cod_reduzido = %s 
+                      AND v.dat_emissao >= CURRENT_DATE - INTERVAL '1 year'
+                      AND v.cod_rede = %s 
+                      AND v.cod_filial = %s
+                      AND (v.flg_excluido IS NULL OR v.flg_excluido = 'N')
+                      AND (iv.flg_excluido IS NULL OR iv.flg_excluido = 'N')
+                    ORDER BY v.dat_emissao DESC, v.hor_emissao DESC
+                    LIMIT 100
+                """
+                cur.execute(sql_query, (cod_reduzido, cod_rede, cod_filial))
+                
+                columns = [desc[0] for desc in cur.description]
+                resultados = []
+                for row in cur.fetchall():
+                    row_dict = dict(zip(columns, row))
+                    hora_venda = row_dict['hora_venda']
+                    if hasattr(hora_venda, 'strftime'):
+                        row_dict['hora_venda'] = hora_venda.strftime('%H:%M:%S')
+                    elif hora_venda:
+                        row_dict['hora_venda'] = str(hora_venda)
+                    resultados.append(row_dict)
+                
+                return jsonify({"status": "success", "data": resultados})
+                
+    except Exception as e:
+        print(f"Erro em vendas_detalhadas: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+
+@app.route('/api/chatbot/produto/vendas-semanais/<string:ean>', methods=['GET'])
+def chatbot_produto_vendas_semanais(ean):
+    """
+    Retorna a soma das quantidades vendidas agrupadas por semana (últimos 12 meses).
+    Preenche semanas sem venda com zero usando generate_series.
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+    
+    try:
+        with psycopg2.connect(**DB_CONFIG) as conn:
+            with conn.cursor() as cur:
+                # 1. Buscar o cod_reduzido do EAN
+                cur.execute("SELECT cod_reduzido FROM cadcdbar WHERE cod_barra = %s LIMIT 1", (ean,))
+                row = cur.fetchone()
+                if not row:
+                     return jsonify({"status": "success", "data": []})
+                 
+                cod_reduzido = row[0]
+
+                sql_query = """
+                    WITH semanas AS (
+                        SELECT generate_series(
+                            DATE_TRUNC('week', CURRENT_DATE - INTERVAL '1 year'),
+                            DATE_TRUNC('week', CURRENT_DATE),
+                            '1 week'
+                        )::date AS semana
+                    ),
+                    vendas AS (
+                        SELECT 
+                            DATE_TRUNC('week', v.dat_emissao)::date AS semana,
+                            SUM(iv.qtd_produto) AS qtd_vendida
+                        FROM cadcvend v
+                        INNER JOIN cadivend iv ON v.num_nota = iv.num_nota
+                            AND v.cod_rede = iv.cod_rede 
+                            AND v.cod_filial = iv.cod_filial
+                        WHERE iv.cod_reduzido = %s 
+                          AND v.dat_emissao >= CURRENT_DATE - INTERVAL '1 year'
+                          AND v.cod_rede = %s 
+                          AND v.cod_filial = %s
+                          AND v.tip_venda = 'V'
+                          AND (v.flg_excluido IS NULL OR v.flg_excluido = 'N')
+                          AND (iv.flg_excluido IS NULL OR iv.flg_excluido = 'N')
+                        GROUP BY DATE_TRUNC('week', v.dat_emissao)
+                    )
+                    SELECT 
+                        TO_CHAR(s.semana, 'DD/MM/YYYY') AS semana_inicio,
+                        COALESCE(v.qtd_vendida, 0) AS qtd_vendida
+                    FROM semanas s
+                    LEFT JOIN vendas v ON v.semana = s.semana
+                    ORDER BY s.semana DESC
+                """
+                cur.execute(sql_query, (cod_reduzido, cod_rede, cod_filial))
+                
+                columns = [desc[0] for desc in cur.description]
+                resultados = [dict(zip(columns, row)) for row in cur.fetchall()]
+                
+                return jsonify({"status": "success", "data": resultados})
+                
+    except Exception as e:
+        print(f"Erro em vendas_semanais: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# ==============================================================================
+# 9. NOVOS ENDPOINTS - BUSCA POR DESCRIÇÃO, BUSCA EM LOTE E HISTÓRICO DE COMPRAS
+# ==============================================================================
+
+def _normalize_search_text(text):
+    """Normaliza texto: maiúsculas, sem acentos, trim."""
+    import unicodedata
+    if not text:
+        return ''
+    text = text.strip().upper()
+    text = unicodedata.normalize('NFKD', text)
+    text = ''.join(c for c in text if not unicodedata.combining(c))
+    return text
+
+
+@app.route('/api/produtos/buscar', methods=['GET'])
+def api_produtos_buscar():
+    """
+    Busca produtos por descrição (nom_produto) com correspondência parcial.
+    Ordena: exatos primeiro, depois por estoque decrescente.
+    Limita a 20 resultados.
+    """
+    texto = request.args.get('texto', '').strip()
+    
+    if not texto:
+        return jsonify({
+            'success': False,
+            'error': 'Parâmetro "texto" é obrigatório.'
+        }), 400
+    
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+    texto_normalizado = _normalize_search_text(texto)
+    termo_regex = re.escape(texto_normalizado)
+    termo_regex = termo_regex.replace(r'\ ', r'\s+')
+    regex_term = r'\y' + termo_regex + r'\y'
+    
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            SQL_BUSCA = """
+                SELECT
+                    p.cod_reduzido,
+                    p.nom_produto,
+                    l.nom_laborat,
+                    e.qtd_estoque,
+                    e.vlr_custopersonalizado,
+                    e.est_minimo,
+                    e.est_critico,
+                    e.qtd_demanda,
+                    e.dat_ultent,
+                    p.cod_dcb,
+                    p.cod_concentracao,
+                    COALESCE(d.vlr_liquido, p.vlr_venda) AS vlr_venda_final,
+                    p.vlr_venda AS vlr_venda_tabela,
+                    p.nom_obsvenda,
+                    (SELECT b.cod_barra FROM cadcdbar b WHERE b.cod_reduzido = p.cod_reduzido ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC LIMIT 1) AS ean,
+                    p.cod_grupo,
+                    p.flg_tipoprod
+                FROM cadprodu p
+                JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
+                    AND e.cod_rede = %s
+                    AND e.cod_filial = %s
+                LEFT JOIN cadlabor l ON p.cod_laborat = l.cod_laborat
+                LEFT JOIN desconto_produto_vw d ON d.cod_reduzido = p.cod_reduzido
+                WHERE p.cod_rede = %s
+                  AND p.flg_ativo = 'A'
+                  AND p.nom_produto ~* %s
+                ORDER BY
+                    CASE WHEN UPPER(p.nom_produto) = %s THEN 0 ELSE 1 END,
+                    CASE WHEN e.qtd_estoque > 0 THEN 0 ELSE 1 END,
+                    e.qtd_estoque DESC,
+                    p.nom_produto
+                LIMIT 20
+            """
+            cur.execute(sql.SQL(SQL_BUSCA), (cod_rede, cod_filial, cod_rede, regex_term, texto.upper()))
+            produtos = cur.fetchall()
+        
+        db_pool.putconn(conn)
+        
+        if not produtos:
+            return jsonify({
+                'success': True,
+                'encontrou': False,
+                'total': 0,
+                'produtos': []
+            }), 200
+        
+        resultado = []
+        for p in produtos:
+            resultado.append({
+                'cod_reduzido':          p[0],
+                'nom_produto':           p[1],
+                'nom_laborat':           p[2] if p[2] else 'N/A',
+                'qtd_estoque':           float(p[3]) if p[3] is not None else 0.0,
+                'vlr_custopersonalizado': float(p[4]) if p[4] is not None else None,
+                'est_minimo':            float(p[5]) if p[5] is not None else 0.0,
+                'est_critico':           float(p[6]) if p[6] is not None else 0.0,
+                'qtd_demanda':           float(p[7]) if p[7] is not None else 0.0,
+                'dat_ultent':            p[8].strftime('%d-%m-%Y') if p[8] else None,
+                'cod_dcb':               p[9],
+                'cod_concentracao':      p[10],
+                'vlr_venda_final':       float(p[11]) if p[11] is not None else None,
+                'vlr_venda_tabela':      float(p[12]) if p[12] is not None else None,
+                'nom_obsvenda':          p[13],
+                'ean':                   p[14],
+                'classificacao':         get_classificacao(p[16]),
+                'grupo':                 get_grupo(p[15]),
+            })
+        
+        return jsonify({
+            'success': True,
+            'encontrou': True,
+            'total': len(resultado),
+            'produtos': resultado
+        }), 200
+        
+    except Exception as e:
+        print(f"Erro em api_produtos_buscar: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/produtos/buscar-lote', methods=['POST'])
+def api_produtos_buscar_lote():
+    """
+    Busca em lote por descrição.
+    Body: {"itens": ["TERMO1", "TERMO2", ...]}
+    Retorna objeto com chave = termo original, valor = array de produtos (formato igual ao endpoint buscar).
+    Limita 20 resultados por item.
+    """
+    data = request.get_json(force=True, silent=True)
+    if not data or not isinstance(data.get('itens'), list):
+        return jsonify({'success': False, 'error': 'Body deve conter {"itens": ["...", "..."]}'}), 400
+    
+    itens = [str(item).strip() for item in data['itens'] if str(item).strip()]
+    
+    if not itens:
+        return jsonify({'success': False, 'error': 'Lista de itens vazia.'}), 400
+    
+    if len(itens) > 50:
+        return jsonify({'success': False, 'error': 'Máximo de 50 itens por chamada.'}), 400
+    
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+    
+    resultados = {}
+    
+    try:
+        conn = db_pool.getconn()
+        
+        for termo_original in itens:
+            termo_normalizado = _normalize_search_text(termo_original)
+            termo_regex = re.escape(termo_normalizado)
+            termo_regex = termo_regex.replace(r'\ ', r'\s+')
+            regex_term = r'\y' + termo_regex + r'\y'
+            
+            with conn.cursor() as cur:
+                SQL_BUSCA = """
+                    SELECT
+                        p.cod_reduzido,
+                        p.nom_produto,
+                        l.nom_laborat,
+                        e.qtd_estoque,
+                        e.vlr_custopersonalizado,
+                        e.est_minimo,
+                        e.est_critico,
+                        e.qtd_demanda,
+                        e.dat_ultent,
+                        p.cod_dcb,
+                        p.cod_concentracao,
+                        COALESCE(d.vlr_liquido, p.vlr_venda) AS vlr_venda_final,
+                        p.vlr_venda AS vlr_venda_tabela,
+                        p.nom_obsvenda,
+                        (SELECT b.cod_barra FROM cadcdbar b WHERE b.cod_reduzido = p.cod_reduzido ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC LIMIT 1) AS ean,
+                        p.cod_grupo,
+                        p.flg_tipoprod
+                    FROM cadprodu p
+                    JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
+                        AND e.cod_rede = %s
+                        AND e.cod_filial = %s
+                    LEFT JOIN cadlabor l ON p.cod_laborat = l.cod_laborat
+                    LEFT JOIN desconto_produto_vw d ON d.cod_reduzido = p.cod_reduzido
+                    WHERE p.cod_rede = %s
+                      AND p.flg_ativo = 'A'
+                      AND p.nom_produto ~* %s
+                    ORDER BY
+                        CASE WHEN UPPER(p.nom_produto) = %s THEN 0 ELSE 1 END,
+                        CASE WHEN e.qtd_estoque > 0 THEN 0 ELSE 1 END,
+                        e.qtd_estoque DESC,
+                        p.nom_produto
+                    LIMIT 20
+                """
+                cur.execute(sql.SQL(SQL_BUSCA), (cod_rede, cod_filial, cod_rede, regex_term, termo_original.upper()))
+                produtos = cur.fetchall()
+            
+            produtos_fmt = []
+            for p in produtos:
+                produtos_fmt.append({
+                    'ean':                   p[14],
+                    'cod_barra':             p[14],
+                    'nom_produto':           p[1],
+                    'descricao':             p[1],
+                    'nom_laborat':           p[2] if p[2] else 'N/A',
+                    'laboratorio':           p[2] if p[2] else 'N/A',
+                    'qtd_estoque':           float(p[3]) if p[3] is not None else 0.0,
+                    'est_minimo':            float(p[5]) if p[5] is not None else 0.0,
+                    'est_maximo':            float(p[5]) if p[5] is not None else 0.0,
+                    'estoque_maximo':        float(p[5]) if p[5] is not None else 0.0,
+                    'maximo':                float(p[5]) if p[5] is not None else 0.0,
+                    'cod_reduzido':          p[0],
+                    'vlr_custopersonalizado': str(p[4]) if p[4] is not None else None,
+                    'vlr_venda_tabela':      str(p[12]) if p[12] is not None else None,
+                    'vlr_venda_final':       str(p[11]) if p[11] is not None else None,
+                    'dat_ultent':            p[8].strftime('%Y-%m-%d') if p[8] else None,
+                    'cod_dcb':               p[9],
+                    'cod_concentracao':      p[10],
+                    'classificacao':         get_classificacao(p[16]),
+                    'grupo':                 get_grupo(p[15]),
+                })
+            
+            resultados[termo_original] = produtos_fmt
+        
+        db_pool.putconn(conn)
+        
+        return jsonify({
+            'success': True,
+            'total_itens': len(itens),
+            'resultados': resultados
+        }), 200
+        
+    except Exception as e:
+        print(f"Erro em api_produtos_buscar_lote: {e}")
+        if 'conn' in locals():
+            db_pool.putconn(conn)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/produtos/compras-historico/<ean>', methods=['GET'])
+def api_produtos_compras_historico(ean):
+    """
+    Histórico de compras de um produto (por EAN).
+    Query params: meses (int, padrão=6)
+    Retorna resumo (melhor preço, preço médio, etc.) + detalhes das compras.
+    """
+    try:
+        meses = int(request.args.get('meses', 6))
+    except (ValueError, TypeError):
+        meses = 6
+    
+    if meses < 1 or meses > 36:
+        return jsonify({'success': False, 'error': 'Parâmetro "meses" deve estar entre 1 e 36.'}), 400
+    
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+    
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            # 1. EAN -> cod_reduzido
+            cur.execute("SELECT cod_reduzido FROM cadcdbar WHERE cod_barra = %s LIMIT 1", (ean,))
+            row = cur.fetchone()
+            
+            if not row:
+                db_pool.putconn(conn)
+                return jsonify({
+                    'success': False,
+                    'encontrou': False,
+                    'ean': ean,
+                    'error': f'EAN {ean} não encontrado.'
+                }), 404
+            
+            cod_reduzido = row[0]
+            
+            # 2. Buscar compras no período (usar vlr_custopersonalizado como custo real)
+            cur.execute("""
+                SELECT 
+                    i.dat_entrada,
+                    f.nom_fornec,
+                    i.vlr_custopersonalizado,
+                    i.vlr_unitario,
+                    i.qtd_produto,
+                    i.num_nota
+                FROM cadicomp i
+                LEFT JOIN cadforne f ON f.cod_fornec = i.cod_fornec AND f.cod_rede = i.cod_rede
+                WHERE i.cod_reduzido = %s
+                  AND i.cod_rede = %s
+                  AND i.cod_filial = %s
+                  AND i.dat_entrada >= CURRENT_DATE - INTERVAL '%s months'
+                ORDER BY i.dat_entrada DESC, i.num_nota DESC
+            """, (cod_reduzido, cod_rede, cod_filial, meses))
+            
+            compras = cur.fetchall()
+        
+        db_pool.putconn(conn)
+        
+        if not compras:
+            return jsonify({
+                'success': True,
+                'encontrou': False,
+                'ean': ean,
+                'resumo': None,
+                'compras': []
+            }), 200
+        
+        # Processar compras (usar vlr_custopersonalizado como preço real)
+        compras_formatadas = []
+        precos = []
+        
+        for c in compras:
+            data_entrada = c[0]
+            fornecedor = c[1] if c[1] else 'N/A'
+            custo_personalizado = float(c[2]) if c[2] is not None else 0.0
+            preco_tabela = float(c[3]) if c[3] is not None else 0.0
+            quantidade = int(c[4]) if c[4] is not None else 0
+            nota_fiscal = c[5] if c[5] else 'N/A'
+            
+            if custo_personalizado > 0:
+                precos.append(custo_personalizado)
+            
+            compras_formatadas.append({
+                'data': data_entrada.strftime('%Y-%m-%d') if data_entrada else None,
+                'fornecedor': fornecedor,
+                'preco_unitario': custo_personalizado,  # custo personalizado (real)
+                'preco_tabela': preco_tabela,           # vlr_unitario original (referência)
+                'quantidade': quantidade,
+                'nota_fiscal': nota_fiscal
+            })
+        
+        # Calcular resumo (usar vlr_custopersonalizado - index 2)
+        melhor_preco = min(precos) if precos else 0.0
+        preco_medio = sum(precos) / len(precos) if precos else 0.0
+        total_compras = len(compras)
+        
+        # Melhor compra (menor custo personalizado)
+        melhor_compra = min(compras, key=lambda x: float(x[2]) if x[2] is not None else float('inf'))
+        melhor_fornecedor = melhor_compra[1] if melhor_compra[1] else 'N/A'
+        melhor_data = melhor_compra[0].strftime('%Y-%m-%d') if melhor_compra[0] else None
+        
+        # Última compra (mais recente)
+        ultima_compra = compras[0]
+        ultima_compra_data = ultima_compra[0].strftime('%Y-%m-%d') if ultima_compra[0] else None
+        ultima_compra_fornecedor = ultima_compra[1] if ultima_compra[1] else 'N/A'
+        ultima_compra_preco = float(ultima_compra[2]) if ultima_compra[2] is not None else 0.0
+        
+        resumo = {
+            'melhor_preco': round(melhor_preco, 2),
+            'melhor_fornecedor': melhor_fornecedor,
+            'melhor_data': melhor_data,
+            'preco_medio': round(preco_medio, 2),
+            'total_compras': total_compras,
+            'ultima_compra_data': ultima_compra_data,
+            'ultima_compra_fornecedor': ultima_compra_fornecedor,
+            'ultima_compra_preco': round(ultima_compra_preco, 2)
+        }
+        
+        return jsonify({
+            'success': True,
+            'encontrou': True,
+            'ean': ean,
+            'resumo': resumo,
+            'compras': compras_formatadas
+        }), 200
+        
+    except Exception as e:
+        print(f"Erro em api_produtos_compras_historico: {e}")
+        if 'conn' in locals():
+            db_pool.putconn(conn)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/produtos/buscar-por-ean/<string:ean>', methods=['GET'])
+def api_produtos_buscar_por_ean(ean):
+    """
+    Busca produto pelo EAN (código de barras).
+    Retorna o produto com todos os dados necessários para análise.
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            # PASSO 1: EAN -> cod_reduzido
+            cur.execute("""
+                SELECT cod_reduzido FROM cadcdbar
+                WHERE cod_barra = %s LIMIT 1
+            """, (ean,))
+            row = cur.fetchone()
+
+            if not row:
+                db_pool.putconn(conn)
+                return jsonify({
+                    'success': False,
+                    'encontrou': False,
+                    'error': f'EAN {ean} não encontrado.'
+                }), 404
+
+            cod_reduzido = row[0]
+
+            # PASSO 2: Buscar dados completos do produto
+            cur.execute("""
+                SELECT
+                    p.cod_reduzido,
+                    p.nom_produto,
+                    l.nom_laborat,
+                    e.qtd_estoque,
+                    e.vlr_custopersonalizado,
+                    e.est_minimo,
+                    e.est_critico,
+                    e.qtd_demanda,
+                    e.dat_ultent,
+                    p.cod_dcb,
+                    p.cod_concentracao,
+                    COALESCE(d.vlr_liquido, p.vlr_venda) AS vlr_venda_final,
+                    p.vlr_venda AS vlr_venda_tabela,
+                    p.nom_obsvenda,
+                    p.cod_grupo,
+                    p.flg_tipoprod
+                FROM cadprodu p
+                JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
+                    AND e.cod_rede = %s AND e.cod_filial = %s
+                LEFT JOIN cadlabor l ON p.cod_laborat = l.cod_laborat
+                LEFT JOIN desconto_produto_vw d ON d.cod_reduzido = p.cod_reduzido
+                WHERE p.cod_reduzido = %s
+                  AND p.cod_rede = %s
+                  AND p.flg_ativo = 'A'
+            """, (cod_rede, cod_filial, cod_reduzido, cod_rede))
+            row = cur.fetchone()
+
+            if not row:
+                db_pool.putconn(conn)
+                return jsonify({
+                    'success': False,
+                    'encontrou': False,
+                    'error': f'Produto com EAN {ean} não encontrado ou inativo.'
+                }), 404
+
+            produto = {
+                'ean': ean,
+                'cod_reduzido': row[0],
+                'nom_produto': row[1],
+                'nom_laborat': row[2] if row[2] else 'N/A',
+                'qtd_estoque': float(row[3]) if row[3] is not None else 0.0,
+                'vlr_custopersonalizado': float(row[4]) if row[4] is not None else None,
+                'est_minimo': float(row[5]) if row[5] is not None else 0.0,
+                'est_critico': float(row[6]) if row[6] is not None else 0.0,
+                'qtd_demanda': float(row[7]) if row[7] is not None else 0.0,
+                'dat_ultent': row[8].strftime('%Y-%m-%d') if row[8] else None,
+                'cod_dcb': row[9],
+                'cod_concentracao': row[10],
+                'vlr_venda_final': float(row[11]) if row[11] is not None else None,
+                'vlr_venda_tabela': float(row[12]) if row[12] is not None else None,
+                'nom_obsvenda': row[13],
+                'grupo': get_grupo(row[14]),
+                'classificacao': get_classificacao(row[15]),
+            }
+
+            db_pool.putconn(conn)
+
+            return jsonify({
+                'success': True,
+                'encontrou': True,
+                'produto': produto
+            }), 200
+
+    except Exception as e:
+        print(f"Erro em api_produtos_buscar_por_ean: {e}")
+        if 'conn' in locals():
+            db_pool.putconn(conn)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ==============================================================================
+# 8. INICIALIZAÇÃO DA APLICAÇÃO FLASK
+# ==============================================================================
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)

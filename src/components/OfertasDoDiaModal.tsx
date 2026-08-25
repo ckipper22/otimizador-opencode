@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { X, Search, Tag, TrendingUp, Package, ShoppingCart, Loader2 } from 'lucide-react';
+import { X, Search, Tag, TrendingUp, Package, ShoppingCart, Loader2, Filter } from 'lucide-react';
 import { formatCurrency } from '../utils';
 
 interface CompraHistorico {
@@ -47,6 +47,8 @@ interface OfertaDia {
   economiaValor: number;
   economiaMensal: number;
   boaOferta: boolean;
+  descartada?: boolean;
+  motivoDescarte?: string;
   erro?: boolean;
   semEan?: boolean;
   description?: string;
@@ -77,13 +79,13 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
   const [searchLoading, setSearchLoading] = useState(false);
   const [analyzingRef, setAnalyzingRef] = useState<string | null>(null);
   const [addingQtd, setAddingQtd] = useState<{ ean: string; qtd: string; selectedPrice?: number } | null>(null);
+  const [filterFornecedor, setFilterFornecedor] = useState('');
 
-  const fetchOfertas = async (force = false, search = "") => {
+  const fetchOfertas = async (search = "") => {
     setLoading(true);
     setError(null);
     try {
       let url = `/api/ofertas-dia/analisar?cnpj=${encodeURIComponent(cnpj)}`;
-      if (force) url += '&force=true';
       if (search) url += `&q=${encodeURIComponent(search)}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Erro ao buscar ofertas');
@@ -100,9 +102,9 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
 
   const handleSearch = () => {
     if (!query.trim()) {
-      fetchOfertas(false, "");
+      fetchOfertas("");
     } else {
-      fetchOfertas(false, query.trim());
+      fetchOfertas(query.trim());
     }
   };
 
@@ -160,13 +162,24 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
     }
   };
 
+  const fornecedoresDisponiveis = useMemo(() => {
+    const names = ofertas.map(o => o.fornecedorLista || o.fornecedor).filter(Boolean);
+    return [...new Set(names)].sort();
+  }, [ofertas]);
+
   const filteredOfertas = useMemo(() => {
-    let result = [...ofertas];
+    let result = ofertas.filter(o => !o.descartada);
     if (filterBoas) {
       result = result.filter(o => o.boaOferta);
     }
+    if (filterFornecedor) {
+      result = result.filter(o => (o.fornecedorLista || o.fornecedor) === filterFornecedor);
+    }
     return result;
-  }, [ofertas, filterBoas]);
+  }, [ofertas, filterBoas, filterFornecedor]);
+
+  const descartadasCount = useMemo(() => ofertas.filter(o => o.descartada).length, [ofertas]);
+  const ofertasValidasCount = useMemo(() => ofertas.filter(o => !o.descartada).length, [ofertas]);
 
   const getEconomiaColor = (percent: number) => {
     if (percent >= 15) return 'text-emerald-700 bg-emerald-50';
@@ -179,7 +192,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#141414]/80 backdrop-blur-sm p-4">
       <div className="bg-white w-full max-w-6xl shadow-2xl flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-[#141414]/10 bg-amber-50">
+        <div className="flex items-center justify-between p-3 border-b border-[#141414]/10 bg-amber-50">
           <div className="flex items-center gap-3">
             <div className="bg-amber-600 p-2 rounded-lg">
               <Tag className="w-5 h-5 text-white" />
@@ -189,17 +202,21 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                 Ofertas do Dia
               </h2>
               <p className="text-[10px] text-gray-500 font-sans uppercase font-medium mt-0.5">
-                {summary.totalOfertas} ofertas | {summary.ofertasBoas} boas | Economia: {formatCurrency(summary.economiaPotencial)}/mês
+                {filteredOfertas.length} de {ofertasValidasCount} ofertas
+                {summary.ofertasBoas > 0 && ` | ${summary.ofertasBoas} boas (≥10%)`}
+                {descartadasCount > 0 && ` | ${descartadasCount} descartadas`}
+                {` | Economia: ${formatCurrency(summary.economiaPotencial)}/mês`}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowSearchPanel(!showSearchPanel)}
-              className={`p-2 rounded-lg transition-colors ${showSearchPanel ? 'bg-amber-600 text-white' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'}`}
-              title="Buscar produto por descrição"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors ${showSearchPanel ? 'bg-amber-600 text-white' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'}`}
+              title="Busca Avulsa — buscar e analisar um produto específico"
             >
-              <Search className="w-4 h-4" />
+              <Search className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Busca Avulsa</span>
             </button>
             <button onClick={onClose} className="text-gray-400 hover:text-[#141414] transition-colors p-1">
               <X className="w-5 h-5" />
@@ -208,42 +225,55 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
         </div>
 
         {/* Filters */}
-        <div className="p-3 bg-white border-b border-[#141414]/10 flex gap-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Buscar produto (ex: atenolol 25mg)"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 text-[#141414] text-[10px] font-bold uppercase tracking-wider font-sans focus:outline-none focus:border-[#141414] focus:ring-1 focus:ring-[#141414] transition-all rounded-none"
-            />
+        <div className="p-3 bg-white border-b border-[#141414]/10 space-y-2">
+          {/* Row 1: Busca por texto */}
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Filtrar ofertas carregadas (ex: atenolol 25mg)"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={handleKeyDown}
+                className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 text-[#141414] text-[10px] font-sans focus:outline-none focus:border-[#141414] focus:ring-1 focus:ring-[#141414] transition-all rounded-none"
+              />
+            </div>
+            <button
+              onClick={handleSearch}
+              disabled={loading}
+              className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider border border-amber-600 bg-amber-600 text-white hover:bg-amber-700 transition-colors disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Filtrar'}
+            </button>
           </div>
-          <button
-            onClick={handleSearch}
-            disabled={loading}
-            className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider border border-amber-600 bg-amber-600 text-white hover:bg-amber-700 transition-colors disabled:opacity-50"
-          >
-            {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Buscar'}
-          </button>
-          <button
-            onClick={() => setFilterBoas(!filterBoas)}
-            className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider border transition-colors ${
-              filterBoas
-                ? 'bg-emerald-600 text-white border-emerald-600'
-                : 'bg-white text-gray-600 border-gray-200 hover:border-emerald-600'
-            }`}
-          >
-            {filterBoas ? '✓ Boas' : 'Todas'}
-          </button>
-          <button
-            onClick={() => fetchOfertas(true)}
-            disabled={loading}
-            className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider border border-gray-200 hover:border-amber-600 transition-colors disabled:opacity-50"
-          >
-            {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Carregar Todas'}
-          </button>
+          {/* Row 2: Filtros (fornecedor + boas + atualizar) */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <Filter className="w-3 h-3 text-gray-400" />
+              <select
+                value={filterFornecedor}
+                onChange={(e) => setFilterFornecedor(e.target.value)}
+                className="text-[10px] font-bold uppercase tracking-wider border border-gray-200 bg-white text-gray-700 px-2 py-1.5 rounded-none focus:outline-none focus:border-[#141414] cursor-pointer"
+              >
+                <option value="">Todos os fornecedores</option>
+                {fornecedoresDisponiveis.map(f => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={() => setFilterBoas(!filterBoas)}
+              title={filterBoas ? 'Mostrar todas as ofertas (inclui descartadas e sem economia)' : 'Filtrar apenas ofertas com economia >= 10% vs SmartPed'}
+              className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider border transition-colors ${
+                filterBoas
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-emerald-600'
+              }`}
+            >
+              {filterBoas ? '✓ Boas' : 'Apenas Boas'}
+            </button>
+          </div>
         </div>
 
         {/* Search Panel - Referencia */}
@@ -252,13 +282,13 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
             <div className="flex items-center gap-2 mb-2">
               <Search className="w-3.5 h-3.5 text-amber-600" />
               <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">
-                Buscar Produto (Referência)
+                Busca Avulsa — EAN ou Descrição
               </span>
             </div>
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Buscar por EAN ou descrição (ex: 7898014560176 ou sorinan)"
+                placeholder="EAN (ex: 7898014560176) ou descrição (ex: sorinan 10mg)"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 onKeyDown={handleSearchKeyDown}
@@ -336,7 +366,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
             <div className="flex flex-col items-center justify-center py-12 text-red-600">
               <p className="text-sm font-bold font-sans">Erro ao carregar ofertas</p>
               <p className="text-xs mt-1">{error}</p>
-              <button onClick={() => fetchOfertas(false, query)} className="mt-3 px-4 py-2 bg-red-600 text-white text-xs font-bold uppercase">
+              <button onClick={() => fetchOfertas(query)} className="mt-3 px-4 py-2 bg-red-600 text-white text-xs font-bold uppercase">
                 Tentar Novamente
               </button>
             </div>
@@ -345,14 +375,21 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
               <Tag className="w-16 h-16 mb-4 opacity-20" />
               <p className="text-sm font-bold font-sans mb-1">Ofertas do Dia</p>
               <p className="text-xs text-center max-w-xs leading-relaxed">
-                Digite o nome do produto e clique em <strong>Buscar</strong>, ou clique em <strong>Carregar Todas</strong> para ver todas as ofertas analisadas.
+                As ofertas são analisadas automaticamente ao salvar listas de fornecedores.
+                Use a <strong>Busca Avulsa</strong> (botão acima) para analisar um produto específico.
               </p>
             </div>
           ) : filteredOfertas.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-gray-500">
               <Package className="w-12 h-12 mb-3 opacity-30" />
               <p className="text-sm font-bold font-sans">Nenhuma oferta encontrada</p>
-              <p className="text-xs mt-1">Tente outro termo ou carregue todas as ofertas</p>
+              <p className="text-xs mt-1 text-center max-w-xs">
+                {filterBoas
+                  ? 'Nenhuma oferta com economia ≥ 10% vs SmartPed. Desative o filtro "Apenas Boas" para ver todas.'
+                  : filterFornecedor
+                    ? `Nenhuma oferta de "${filterFornecedor}". Tente outro fornecedor.`
+                    : 'Nenhum resultado para este filtro. Tente outro termo ou remova os filtros.'}
+              </p>
             </div>
           ) : (
             <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

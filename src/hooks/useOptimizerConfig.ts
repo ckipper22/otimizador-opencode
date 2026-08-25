@@ -5,19 +5,21 @@ export function useOptimizerConfig() {
   const [externalSuppliers, setExternalSuppliers] = useState<ExternalSupplier[]>([]);
   const [externalSuppliersLoaded, setExternalSuppliersLoaded] = useState(false);
 
-  const handleUpdateExternalSuppliers = async (newSuppliers: ExternalSupplier[]) => {
+  // Atualiza state local SEM salvar no Turso (edições em andamento)
+  const handleUpdateExternalSuppliers = (newSuppliers: ExternalSupplier[]) => {
     setExternalSuppliers(newSuppliers);
-    for (const sup of newSuppliers) {
-      try {
-        await fetch("/api/external-suppliers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...sup, cnpj: config.cnpj }),
-        });
-      } catch (err) {
-        console.error("Erro ao salvar fornecedor externo:", err);
-      }
-    }
+  };
+
+  // Salva TODOS os suppliers no Turso + trigger análise (chamado pelo botão "Salvar Listas")
+  const flushExternalSuppliersToApi = async () => {
+    const snapshot = externalSuppliers;
+    await Promise.all(snapshot.map(sup =>
+      fetch("/api/external-suppliers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...sup, cnpj: config.cnpj }),
+      }).catch(err => console.error("Erro ao salvar fornecedor externo:", err))
+    ));
   };
 
   const handleRemoveExternalSupplier = async (supplierId: string) => {
@@ -146,6 +148,7 @@ export function useOptimizerConfig() {
     backendStatus,
     handleToggleDistributor,
     handleUpdateExternalSuppliers,
+    flushExternalSuppliersToApi,
     handleRemoveExternalSupplier,
   };
 }

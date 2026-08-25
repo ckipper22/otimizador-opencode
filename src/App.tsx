@@ -71,6 +71,7 @@ export default function App() {
     backendStatus,
     handleToggleDistributor,
     handleUpdateExternalSuppliers,
+    flushExternalSuppliersToApi,
     handleRemoveExternalSupplier,
   } = useOptimizerConfig();
 
@@ -1174,6 +1175,7 @@ export default function App() {
                         disabled={!fileContent}
                         externalSuppliers={externalSuppliers}
                         onUpdateExternalSuppliers={handleUpdateExternalSuppliers}
+                        onSaveListas={flushExternalSuppliersToApi}
                         onRemoveExternalSupplier={handleRemoveExternalSupplier}
                         authorizedCompanies={authorizedCompanies}
                         onUpdateAuthorizedCompanies={setAuthorizedCompanies}

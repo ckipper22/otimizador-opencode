@@ -10,6 +10,7 @@ interface ConfigurationPanelProps {
   disabled: boolean;
   externalSuppliers: ExternalSupplier[];
   onUpdateExternalSuppliers: (suppliers: ExternalSupplier[]) => void;
+  onSaveListas?: () => Promise<void>;
   onRemoveExternalSupplier?: (supplierId: string) => void;
   authorizedCompanies?: AuthorizedCompany[];
   onUpdateAuthorizedCompanies?: (companies: AuthorizedCompany[]) => void;
@@ -24,6 +25,7 @@ export default function ConfigurationPanel({
   disabled,
   externalSuppliers,
   onUpdateExternalSuppliers,
+  onSaveListas,
   onRemoveExternalSupplier,
   authorizedCompanies = [],
   onUpdateAuthorizedCompanies,
@@ -835,7 +837,7 @@ export default function ConfigurationPanel({
                         <Plus className="w-3.5 h-3.5" />
                         Nova Lista
                       </button>
-                      <button type="button" onClick={() => setTabelasDirty(false)} className={`flex-1 py-2 font-bold text-[11px] rounded transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm ${tabelasDirty ? "bg-indigo-600 hover:bg-indigo-700 text-white" : "bg-indigo-100 text-indigo-500 cursor-default"}`}>
+                      <button type="button" onClick={async () => { if (tabelasDirty && onSaveListas) { await onSaveListas(); } setTabelasDirty(false); }} className={`flex-1 py-2 font-bold text-[11px] rounded transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm ${tabelasDirty ? "bg-indigo-600 hover:bg-indigo-700 text-white" : "bg-indigo-100 text-indigo-500 cursor-default"}`}>
                         <Save className="w-3.5 h-3.5" />
                         {tabelasDirty ? "Salvar Listas" : "Salvo ✓"}
                       </button>

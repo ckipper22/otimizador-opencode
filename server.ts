@@ -414,20 +414,99 @@ app.post("/api/external-suppliers", async (req, res) => {
     const newProducts = Array.isArray(products) ? products : [];
     const productsChanged = JSON.stringify(normalizeProducts(oldProducts)) !== JSON.stringify(normalizeProducts(newProducts));
 
-    if (productsChanged && oldSupplier) {
-      // Limpar analysis cache → força re-análise
-      console.log(`[OFERTAS-DIA] Products changed for ${id} — clearing analysis cache`);
-      await updateSupplierAnalysis(id, null, "pendente");
-    }
-
+    // Salvar fornecedor no banco (SEMPRE, independente de mudanca)
     await saveExternalSupplier({ id, name: name || "", rawText: rawText || "", validade: validade || "", products: JSON.stringify(products || []), cnpj });
-    
-    // Trigger: analise em background (nao bloqueia resposta)
+
     const supplierArray = Array.isArray(products) ? products : [];
-    if (supplierArray.length > 0) {
-      analisarFornecedorEmBackground(id, cnpj).catch(err => {
-        console.error(`[OFERTAS-DIA] Background trigger error:`, err.message);
+
+    if (productsChanged && oldSupplier) {
+      // Calcular diff: quais produtos foram adicionados, modificados, removidos
+      const normalizeForCompare = (p: any) => ({
+        d: (p.description || p.produto || p.ean || "").trim().toLowerCase(),
+        e: (p.ean || p.codigo_barras || "").trim(),
+        pr: parseFloat(String(p.price || p.preco || 0)).toFixed(2),
       });
+      const oldMap = new Map<string, any>();
+      for (const p of oldProducts) {
+        const n = normalizeForCompare(p);
+        oldMap.set(`${n.e}_${n.d}_${n.pr}`, p);
+      }
+      const newMap = new Map<string, any>();
+      for (const p of newProducts) {
+        const n = normalizeForCompare(p);
+        newMap.set(`${n.e}_${n.d}_${n.pr}`, p);
+      }
+      
+      const added = newProducts.filter((p: any) => {
+        const n = normalizeForCompare(p);
+        return !oldMap.has(`${n.e}_${n.d}_${n.pr}`);
+      });
+      const modified = newProducts.filter((p: any) => {
+        const n = normalizeForCompare(p);
+        const key = `${n.e}_${n.d}_${n.pr}`;
+        // Modificado se existe algo parecido no old mas com preço ou descrição diferente
+        for (const [oldKey, oldP] of oldMap) {
+          const on = normalizeForCompare(oldP);
+          if ((on.e && on.e === n.e) || (on.d === n.d && on.d.length > 3)) {
+            // MESMO produto (mesmo EAN ou mesma descrição) mas chave diferente = mudou
+            return oldKey !== key;
+          }
+        }
+        return false;
+      });
+      
+      const changedProducts = [...added, ...modified];
+      const removed = oldProducts.filter((p: any) => {
+        const n = normalizeForCompare(p);
+        return !newMap.has(`${n.e}_${n.d}_${n.pr}`);
+      });
+      
+      console.log(`[OFERTAS-DIA] Products diff for ${id}: +${added.length} added, ~${modified.length} modified, -${removed.length} removed`);
+
+      if (changedProducts.length > 0) {
+        console.log(`[OFERTAS-DIA] Re-analyzing ${changedProducts.length} changed products`);
+        analisarFornecedorEmBackground(id, cnpj, changedProducts).catch(err => {
+          console.error(`[OFERTAS-DIA] Background incremental analysis error:`, err.message);
+        });
+      } else if (removed.length > 0) {
+        // Só removidos: limpar cache para re-análise completa
+        console.log(`[OFERTAS-DIA] Only removals — clearing cache for full re-analysis`);
+        await updateSupplierAnalysis(id, null, "pendente");
+        analisarFornecedorEmBackground(id, cnpj).catch(err => {
+          console.error(`[OFERTAS-DIA] Background full analysis error:`, err.message);
+        });
+      }
+
+      // Se há removidos E analisados/adicionados, limpar ofertas dos removidos do cache
+      if (removed.length > 0 && changedProducts.length > 0) {
+        try {
+          const currentDados = (await getExternalSuppliers(cnpj)) as any[];
+          const currentSupplier = currentDados.find(r => r.id === id);
+          if (currentSupplier?.dados_analise) {
+            const dados = typeof currentSupplier.dados_analise === "string" ? JSON.parse(currentSupplier.dados_analise) : currentSupplier.dados_analise;
+            if (dados?.ofertas) {
+              const removedDescs = new Set(removed.map((p: any) => (p.description || p.produto || "").toLowerCase().trim()));
+              const removedEans = new Set(removed.map((p: any) => (p.ean || p.codigo_barras || "")).filter(Boolean));
+              const cleanedOfertas = dados.ofertas.filter((o: any) => {
+                const oDesc = (o.description || o.produto || "").toLowerCase().trim();
+                const oEan = o.ean || "";
+                // Manter se NÃO está na lista de removidos
+                return !removedDescs.has(oDesc) || (oEan && !removedEans.has(oEan));
+              });
+              if (cleanedOfertas.length !== dados.ofertas.length) {
+                console.log(`[OFERTAS-DIA] CLEANUP: ${dados.ofertas.length - cleanedOfertas.length} removed offers from cache`);
+                dados.ofertas = cleanedOfertas;
+                await updateSupplierAnalysis(id, dados, "analisado");
+              }
+            }
+          }
+        } catch (err: any) {
+          console.log(`[OFERTAS-DIA] CLEANUP error: ${err.message}`);
+        }
+      }
+    } else if (!productsChanged && supplierArray.length > 0) {
+      // Nada mudou nos produtos — não precisa re-analisar
+      console.log(`[OFERTAS-DIA] Products unchanged for ${id} — skipping analysis`);
     }
     
     res.json({ sucesso: true });
@@ -644,7 +723,8 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         try {
           const descLimpa = (product.description || "")
             .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
-            .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
+            .replace(/[\uDCA5\uDCA4\uDCA6\uFFFD]/g, "")
+            .replace(/\\udca5|\\udca4|\\udca6|\\ufffd/gi, "")
             .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
             .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia)\b/gi, "")
             .trim();
@@ -660,11 +740,19 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
               const buscaData = await buscaRes.json();
               const resultados = buscaData?.resultados || {};
               let novosEans: string[] = [];
-              for (const key of Object.keys(resultados)) {
+                const origDosageMatch2 = (product.description || "").match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                const origDosage2 = origDosageMatch2 ? origDosageMatch2[1].toLowerCase() : null;
+                for (const key of Object.keys(resultados)) {
                 const prods = resultados[key] || [];
                 for (const p of prods) {
                   const ean = p.ean || p.cod_barra || "";
-                  if (ean && !eansParaBuscar.includes(ean)) novosEans.push(ean);
+                  if (!ean || eansParaBuscar.includes(ean)) continue;
+                  if (origDosage2) {
+                    const pDesc = (p.nom_produto || "").toLowerCase();
+                    const pDosageMatch = pDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                    if (pDosageMatch && pDosageMatch[1] !== origDosage2) continue;
+                  }
+                  novosEans.push(ean);
                 }
               }
               if (novosEans.length > 0) {
@@ -1000,7 +1088,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
 }
 
 // Funcao para analisar fornecedor em background
-async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) {
+async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, productsToAnalyze?: any[]) {
   try {
     const rows = await getExternalSuppliers(cnpj);
     const supplier = (rows as any[]).find(r => r.id === supplierId);
@@ -1021,8 +1109,13 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
       return;
     }
 
+    // Se productsToAnalyze foi fornecido, analisar SOMENTE esses e mesclar com cache
+    const isIncremental = Array.isArray(productsToAnalyze) && productsToAnalyze.length > 0;
+    const productsForAnalysis = isIncremental ? productsToAnalyze : products;
+    console.log(`[OFERTAS-DIA] ${isIncremental ? `INCREMENTAL: ${productsForAnalysis.length} changed products` : `FULL: ${products.length} products`} for ${supplier.name}`);
+
     // Buscar EANs para produtos sem codigo de barras
-    const uniqueProducts = products.map((p: any) => ({
+    const uniqueProducts = productsForAnalysis.map((p: any) => ({
       ...p,
       ean: p.ean || p.codigo_barras || "",
       produto: p.produto || p.description || "",
@@ -1039,7 +1132,8 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
         const buscaTermos = productsWithoutEan.map((p: any) => {
           let desc = p.description
             .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}\u{1F1E0}-\u{1F1FF}]/gu, "")
-            .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
+            .replace(/[\uDCA5\uDCA4\uDCA6\uFFFD]/g, "")
+            .replace(/\\udca5|\\udca4|\\udca6|\\ufffd/gi, "")
             .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
             .replace(/\b(sandoz|medley|biolab|ache|neo\s*quimica|cernosul|cervosul|EMS|Pfizer|Novartis|Eurofarma|Medley|Delta|Hypera|Torrent|Germed|Prati|Discus|Tommasi|Sanofi|Bayer|Merck|Abbot|Abbott|Vitamedic|Farmoquimica|Cimed|União Quimica|Alten|Bussie|Pharlab|Diméd|Dimed|Anfarm|Emdeplast|Geolab|Mylan|Legrand|Teuto|Pague|Rosário|Andromeda|Biochemiker|Phoenix|Medquimica|Cristália|Cristalia|Aché|Ache)\b/gi, "")
             .trim();
@@ -1049,44 +1143,54 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
           const dosageFilter = dosageMatch ? dosageMatch[1].replace(/\s/g, '').toLowerCase() : null;
           return { principioAtivo, dosageFilter, original: desc };
         });
-        const termosBusca = buscaTermos.map(t => t.principioAtivo);
-        console.log(`[OFERTAS-DIA] buscar-lote princípios ativos:`, termosBusca);
-        const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ itens: termosBusca }),
-        });
-        if (buscaRes.ok) {
-          const buscaData = await buscaRes.json();
-          console.log(`[OFERTAS-DIA] buscar-lote resposta: success=${buscaData?.success}, total=${buscaData?.total_itens}`);
-          const resultados = buscaData?.resultados || {};
-          for (let i = 0; i < productsWithoutEan.length; i++) {
-            const termo = termosBusca[i];
-            const produtosEncontrados = resultados[termo] || [];
-            const { dosageFilter } = buscaTermos[i];
-            console.log(`[OFERTAS-DIA] "${termo}" → ${produtosEncontrados.length} resultados (filtro dosagem: ${dosageFilter || "nenhum"})`);
-            if (produtosEncontrados.length > 0) {
-              let candidatos = produtosEncontrados;
-              if (dosageFilter) {
-                candidatos = produtosEncontrados.filter((p: any) => {
-                  const nome = (p.nom_produto || "").toLowerCase();
-                  return nome.includes(dosageFilter);
-                });
-                if (candidatos.length === 0) candidatos = produtosEncontrados;
-              }
-              const bestMatch = candidatos.find((p: any) => p.qtd_estoque > 0) || candidatos[0];
-              if (bestMatch?.ean) {
-                const product = productsWithoutEan[i];
-                const idx = uniqueProducts.findIndex(p => p.description === product.description && !p.ean);
-                if (idx >= 0) {
-                  uniqueProducts[idx].ean = bestMatch.ean;
-                  console.log(`[OFERTAS-DIA] EAN: ${bestMatch.ean} → "${product.description}" (${bestMatch.nom_produto})`);
-                }
+        const termosUnicos = [...new Set(buscaTermos.map(t => t.principioAtivo).filter(t => t.length >= 3))];
+        const BATCH_SIZE = 20;
+        const allResultados: Record<string, any[]> = {};
+        for (let b = 0; b < termosUnicos.length; b += BATCH_SIZE) {
+          const batch = termosUnicos.slice(b, b + BATCH_SIZE);
+          try {
+            const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ itens: batch }),
+            });
+            if (buscaRes.ok) {
+              const buscaData = await buscaRes.json();
+              const res = buscaData?.resultados || {};
+              for (const key of Object.keys(res)) { allResultados[key] = res[key]; }
+              console.log(`[OFERTAS-DIA] buscar-lote batch ${Math.floor(b/BATCH_SIZE)+1}: ${batch.length} termos → ${Object.keys(res).length} com resultado`);
+            } else {
+              const body = await buscaRes.text().catch(() => "");
+              console.log(`[OFERTAS-DIA] buscar-lote batch ${Math.floor(b/BATCH_SIZE)+1} HTTP ${buscaRes.status}: ${body.substring(0, 200)}`);
+            }
+          } catch (err: any) {
+            console.log(`[OFERTAS-DIA] buscar-lote batch ${Math.floor(b/BATCH_SIZE)+1} erro: ${err.message}`);
+          }
+        }
+        console.log(`[OFERTAS-DIA] buscar-lote total: ${Object.keys(allResultados).length} termos com resultado`);
+        for (let i = 0; i < productsWithoutEan.length; i++) {
+          const termo = buscaTermos[i].principioAtivo;
+          const produtosEncontrados = allResultados[termo] || [];
+          const { dosageFilter } = buscaTermos[i];
+          if (produtosEncontrados.length > 0) {
+            let candidatos = produtosEncontrados;
+            if (dosageFilter) {
+              candidatos = produtosEncontrados.filter((p: any) => {
+                const nome = (p.nom_produto || "").toLowerCase();
+                return nome.includes(dosageFilter);
+              });
+              if (candidatos.length === 0) candidatos = produtosEncontrados;
+            }
+            const bestMatch = candidatos.find((p: any) => p.qtd_estoque > 0) || candidatos[0];
+            if (bestMatch?.ean) {
+              const product = productsWithoutEan[i];
+              const idx = uniqueProducts.findIndex(p => p.description === product.description && !p.ean);
+              if (idx >= 0) {
+                uniqueProducts[idx].ean = bestMatch.ean;
+                console.log(`[OFERTAS-DIA] EAN: ${bestMatch.ean} → "${product.description}" (${bestMatch.nom_produto})`);
               }
             }
           }
-        } else {
-          console.log(`[OFERTAS-DIA] buscar-lote HTTP ${buscaRes.status}`);
         }
       } catch (err: any) {
         console.log(`[OFERTAS-DIA] buscar-lote erro: ${err.message}`);
@@ -1113,7 +1217,8 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
               // que agrupa corretamente por DCB
               const descCompleta = (product.description || product.produto || "")
                 .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
-                .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
+                .replace(/[\uDCA5\uDCA4\uDCA6\uFFFD]/g, "")
+                .replace(/\\udca5|\\udca4|\\udca6|\\ufffd/gi, "")
                 .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
                 .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia)\b/gi, "")
                 .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
@@ -1191,21 +1296,37 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
                     }
                   }
 
+                  // Extrair dosagem do produto original para filtro de concentracao
+                  const origDosageMatch = (product.description || "").match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                  const origDosage = origDosageMatch ? origDosageMatch[1].toLowerCase() : null;
+
                   // Filtrar por DCB do EAN original
                   const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
                   if (dcb) {
                     eansGrupo = allProdutos
-                      .filter((p: any) => p.cod_dcb === dcb && (p.ean || p.cod_barra))
+                      .filter((p: any) => {
+                        if (p.cod_dcb !== dcb || !(p.ean || p.cod_barra)) return false;
+                        if (!origDosage) return true;
+                        const prodDesc = (p.nom_produto || "").toLowerCase();
+                        const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                        return !prodDosageMatch || prodDosageMatch[1] === origDosage;
+                      })
                       .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
                     eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                    console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb})`);
+                    console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb}, dosage: ${origDosage || "any"})`);
                   } else if (allProdutos.length > 0) {
-                    // DCB não encontrado — usar TODOS os produtos do grupo (mesma descrição)
+                    // DCB não encontrado — usar TODOS os produtos do grupo (mesma descrição) com filtro dosagem
                     eansGrupo = allProdutos
-                      .filter((p: any) => (p.ean || p.cod_barra))
+                      .filter((p: any) => {
+                        if (!(p.ean || p.cod_barra)) return false;
+                        if (!origDosage) return true;
+                        const prodDesc = (p.nom_produto || "").toLowerCase();
+                        const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                        return !prodDosageMatch || prodDosageMatch[1] === origDosage;
+                      })
                       .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
                     eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                    console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado, usando todos)`);
+                    console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado, dosage: ${origDosage || "any"})`);
                   } else {
                     console.log(`[OFERTAS-DIA] DCB: EAN original ${product.ean} não encontrado em allProdutos (${allProdutos.length} produtos)`);
                   }
@@ -1431,11 +1552,54 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
       economiaPotencial: ofertasAtivas.reduce((acc, p) => acc + (p.economiaMensal || 0), 0),
     };
 
+    // Se incremental, mesclar com cache existente
+    let finalOfertas = analyzedProducts;
+    if (isIncremental) {
+      try {
+        const existingDados = supplier.dados_analise;
+        if (existingDados) {
+          const existingParsed = typeof existingDados === "string" ? JSON.parse(existingDados) : existingDados;
+          if (existingParsed?.ofertas) {
+            // Mapa: description+ean → oferta existente (chave para merge)
+            const existingMap = new Map<string, any>();
+            for (const o of existingParsed.ofertas) {
+              const key = `${(o.description || o.produto || "").toLowerCase().trim()}_${o.ean || ""}`;
+              existingMap.set(key, o);
+            }
+            // Atualizar/inserir analisados, manter os nao-analisados
+            for (const a of analyzedProducts) {
+              const key = `${(a.description || a.produto || "").toLowerCase().trim()}_${a.ean || ""}`;
+              existingMap.set(key, a);
+            }
+            finalOfertas = Array.from(existingMap.values());
+            console.log(`[OFERTAS-DIA] MERGE: ${analyzedProducts.length} re-analisados + ${existingMap.size - analyzedProducts.length} mantidos = ${finalOfertas.length} total`);
+          }
+        }
+      } catch (err: any) {
+        console.log(`[OFERTAS-DIA] MERGE fallback (erro no parse): ${err.message}`);
+      }
+    }
+
+    // Re-sort merged results
+    finalOfertas.sort((a, b) => {
+      if (a.semEan && !b.semEan) return 1;
+      if (!a.semEan && b.semEan) return -1;
+      return (b.economiaPercent || 0) - (a.economiaPercent || 0);
+    });
+
+    // Recalcular resumo final
+    const finalAtivas = finalOfertas.filter(p => !p.descartada);
+    const finalSummary = {
+      totalOfertas: finalOfertas.length,
+      ofertasBoas: finalAtivas.filter((p) => p.boaOferta).length,
+      economiaPotencial: finalAtivas.reduce((acc, p) => acc + (p.economiaMensal || 0), 0),
+    };
+
     // Salvar resultado no banco
-    const dadosAnalise = { ofertas: analyzedProducts, summary };
+    const dadosAnalise = { ofertas: finalOfertas, summary: finalSummary };
     await updateSupplierAnalysis(supplierId, dadosAnalise, "analisado");
     
-    console.log(`[OFERTAS-DIA] Background analysis complete for ${supplier.name}: ${analyzedProducts.length} products, ${summary.ofertasBoas} good offers`);
+    console.log(`[OFERTAS-DIA] Background analysis complete for ${supplier.name}: ${finalOfertas.length} products, ${finalSummary.ofertasBoas} good offers`);
   } catch (err: any) {
     console.error(`[OFERTAS-DIA] Background analysis error for ${supplierId}:`, err.message);
     await updateSupplierAnalysis(supplierId, { error: err.message }, "erro");
@@ -2788,7 +2952,8 @@ app.post("/api/optimize", async (req, res) => {
         if (!item.descricao) continue;
         const descLimpa = (item.descricao || "")
           .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
-          .replace(/\udca5|\udca4|\udca6|\ufffd/g, "")
+          .replace(/[\uDCA5\uDCA4\uDCA6\uFFFD]/g, "")
+          .replace(/\\udca5|\\udca4|\\udca6|\\ufffd/gi, "")
           .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
           .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia|neo\s*quimica|e\.jefferson|e jefferson|ems)\b/gi, "")
           .trim();
