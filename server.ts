@@ -6305,18 +6305,28 @@ app.post("/api/faturar", async (req, res) => {
       logs.push(`[API CONEXÃƒO] Registrando faturamento na API SmartPed: ${endpointEnvio}...`);
 
       // Mapeamento dos itens para a estrutura oficial da SmartPed (api/Pedido/Envio)
-      // Para itens com codProdutoDist vazio (rupturas/similares), buscar nas alternatives
+      // Para itens com codProdutoDist ou codProduto vazio/0, buscar nas alternatives
       const apiItens = validatedItems.map((it: any) => {
         let codProdDist = String(it.codProdutoDist || "").trim();
         let codProd = String(it.codProduto || "").trim();
-        // Se codProdutoDist vazio e tem alternatives, copiar do substituto escolhido
-        if ((!codProdDist || codProdDist === "0") && it.alternatives && it.alternatives.length > 0) {
+        // Se codProdutoDist ou codProduto vazio/0 e tem alternatives, copiar do substituto escolhido
+        // IMPORTANTE: aplica para TODOS os itens (origem=encomenda, manual, ou qualquer outra)
+        if ((!codProdDist || codProdDist === "0" || !codProd || codProd === "0") && it.alternatives && it.alternatives.length > 0) {
           const altMatch = it.alternatives.find((a: any) => a.codProdutoDist && String(a.codProdutoDist).trim() !== "" && String(a.codProdutoDist).trim() !== "0");
           if (altMatch) {
             codProdDist = String(altMatch.codProdutoDist || "").trim();
             codProd = String(altMatch.codProduto || altMatch.codProdutoDist || "").trim();
-            logs.push(`[BLINDAGEM] codProdutoDist recuperado do alternativo: ${it.novaDescricao || it.originalDescricao} → codProdutoDist=${codProdDist}`);
+            logs.push(`[BLINDAGEM] codProdutoDist/codProduto recuperado do alternativo: ${it.novaDescricao || it.originalDescricao} → codProdutoDist=${codProdDist}, codProduto=${codProd}`);
           }
+        }
+        // Se ainda estiver 0, tentar herdar do item pai (código original do ERP)
+        if ((!codProd || codProd === "0") && it.codProduto && String(it.codProduto).trim() !== "" && String(it.codProduto).trim() !== "0") {
+          codProd = String(it.codProduto).trim();
+          logs.push(`[BLINDAGEM] codProduto herdado do pai: ${it.novaDescricao || it.originalDescricao} → codProduto=${codProd}`);
+        }
+        if ((!codProdDist || codProdDist === "0") && it.codProdutoDist && String(it.codProdutoDist).trim() !== "" && String(it.codProdutoDist).trim() !== "0") {
+          codProdDist = String(it.codProdutoDist).trim();
+          logs.push(`[BLINDAGEM] codProdutoDist herdado do pai: ${it.novaDescricao || it.originalDescricao} → codProdutoDist=${codProdDist}`);
         }
         return {
           CodDist: typeof it.codDist === "number" ? it.codDist : parseInt(it.codDist) || 2,
@@ -6481,6 +6491,27 @@ app.post("/api/faturar", async (req, res) => {
       logs.push(`[TURSO ERRO] Falha ao salvar pedido: ${saveErr.message}`);
     }
 
+    // Montar lista de encomendas pendentes de confirmação (confirmar DEPOIS do retorno)
+    const encomendasPendentes: any[] = [];
+    if (orderSaved) {
+      const encomendasItens = validatedItems.filter((it: any) => it.origem === "encomenda" && it.idEncomenda);
+      if (encomendasItens.length > 0) {
+        const idsEncomenda = [...new Set(encomendasItens.map((it: any) => String(it.idEncomenda)))];
+        for (const id of idsEncomenda) {
+          const itensDaEncomenda = encomendasItens.filter((it: any) => String(it.idEncomenda) === id);
+          encomendasPendentes.push({
+            idEncomenda: id,
+            fornecedor: itensDaEncomenda[0]?.distribuidora || "",
+            itens: itensDaEncomenda.map((it: any) => ({
+              ean: it.novoEan || it.originalEan || "",
+              codDist: it.codDist || 0,
+              descricao: it.novaDescricao || it.originalDescricao || ""
+            }))
+          });
+        }
+      }
+    }
+
     res.json({
       sucesso: true,
       protocoloLote,
@@ -6491,6 +6522,7 @@ app.post("/api/faturar", async (req, res) => {
       economiaTotal: totalEconomia,
       pedidosDistribuidoras,
       distribuidorasBloqueadas,
+      encomendasPendentes,
       itemsFaturados: validatedItems.map((it: any) => ({
         ean: it.novoEan || it.originalEan,
         descricao: it.novaDescricao || it.originalDescricao,
@@ -6501,41 +6533,15 @@ app.post("/api/faturar", async (req, res) => {
         codDist: it.codDist || 2,
         condicao: it.condicao || "FIXA",
         codProdutoDist: it.codProdutoDist || "",
-        codProduto: it.codProduto || ""
+        codProduto: it.codProduto || "",
+        origem: it.origem || "manual",
+        idEncomenda: it.idEncomenda || null
       })),
       logs
     });
 
-    // Confirmar encomendas no sistema externo APENAS se pedido foi salvo no Turso
-    if (orderSaved) {
-      try {
-        const encomendasItens = validatedItems.filter((it: any) => it.origem === "encomenda" && it.idEncomenda);
-        if (encomendasItens.length > 0) {
-          const idsEncomenda = [...new Set(encomendasItens.map((it: any) => String(it.idEncomenda)))];
-          const itensConfirmar = idsEncomenda.map((id) => ({
-            id,
-            fornecedor: encomendasItens.find((it: any) => String(it.idEncomenda) === id)?.distribuidora || "",
-            dataPrevisao: new Date().toISOString().split("T")[0]
-          }));
-          console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando ${itensConfirmar.length} encomenda(s) no sistema externo...`);
-          const respConfirmar = await fetch(`${ENCOMENDAS_API_URL}/api/integracao/encomendas/confirmar-pedido`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-api-key": ENCOMENDAS_API_KEY },
-            body: JSON.stringify({ itens: itensConfirmar })
-          });
-          if (respConfirmar.ok) {
-            console.log(`[ENCOMENDAS-CONFIRMACAO] Encomendas confirmadas com sucesso.`);
-          } else {
-            const errText = await respConfirmar.text().catch(() => "Sem detalhes");
-            console.error(`[ENCOMENDAS-CONFIRMACAO] Falha ao confirmar: ${respConfirmar.status} - ${errText}`);
-          }
-        }
-      } catch (encErr: any) {
-        console.error(`[ENCOMENDAS-CONFIRMACAO] Erro ao confirmar encomendas: ${encErr.message}`);
-      }
-    } else {
-      logs.push(`[ENCOMENDAS-CONFIRMACAO] Pulado — pedido não salvo no Turso.`);
-    }
+    // NÃO confirmar encomendas aqui — aguardar retorno do SmartPed
+    // Confirmação agora é feita pelo frontend após poll retornar status=faturado
   } catch (err: any) {
     console.error("Erro no faturamento do servidor:", err);
     logs.push(`[ERRO FATURAMENTO] Erro interno: ${err.message}`);
