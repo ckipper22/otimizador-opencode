@@ -3,6 +3,13 @@ export function stripHtmlTags(str: string): string {
   return str.replace(/<\/?[^>]+(>|$)/g, "").trim();
 }
 
+export function hasWordBoundary(text: string, keyword: string): boolean {
+  if (!text || !keyword) return false;
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`\\b${escaped}\\b`, "i");
+  return regex.test(text);
+}
+
 export function extractQuantityCount(desc: string): number | null {
   if (!desc) return null;
   const normalized = desc.toUpperCase();

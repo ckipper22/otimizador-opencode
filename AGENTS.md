@@ -180,6 +180,8 @@ Ao atuar neste projeto, opere sob os seguintes pilares inegociáveis:
 
 47. **BUSCAR-LOTE — PRINCÍPIO ATIVO NÃO FULL DESCRIPTION:** O `buscar-lote` da Ferramentinhas usa `ILIKE %termo%`. Buscar com descrição completa falha porque "ALLENDRONATO SOD 70MG" tem "SOD" entre "ALLENDRONATO" e "70MG". **SEMPRE** buscar com princípio ativo (primeira palavra) + filtrar dosagem no JS. **Arquivo:** `server.ts` `analisarFornecedorEmBackground`.
 
+48. **BUSCAR-LOTE — WILDCARD `%` DA TRIER:** Quando `buscar-lote` retorna array vazio para um termo, tentar com `%` (wildcard SQL da Trier). Ex: "CETOCONAZOL 20MG/ML" → 0 resultados. "CETOCONAZOL%" → 16 produtos. A Trier usa `ILIKE` e o `%` força匹配 mais amplo. Fallback: `buscar-lote(["PRINCÍPIO%"])` → `buscar-lote(["PRINCÍPIO"])` → `similares/{ean}`. **Arquivo:** `server.ts` `analisarFornecedorEmBackground` (fallback 1).
+
 48. **ANALYSIS CACHE — LIMPAR QUANDO PRODUCTS MUDAM:** POST `/api/external-suppliers` compara oldProducts vs newProducts. Se diferentes → `updateSupplierAnalysis(id, null, "pendente")` para forçar re-análise. **Arquivo:** `server.ts` POST `/api/external-suppliers` (linha ~397).
 
 49. **SMARTPED BATCH EAN — FILTRO DE CROSS-CONTAMINAÇÃO OBRIGATÓRIO:** A API SmartPed `Condicoes/Ean` aceita múltiplos EANs separados por vírgula (lotes de até 40). Porém, retorna condições de EANs de OUTROS produtos que estão na mesma resposta (substitutos). **SEMPRE** aplicar filtro `eansDoGrupo` (Set normalizado com zeros à esquerda removidos) em `_sourceEan` antes de usar as condições. **Arquivo:** `server.ts:721-731`. Ver LLM_CONTEXT.md #4.22 para detalhes completos.

@@ -10,7 +10,7 @@ import { cacheKey, getFromCache, setInCache, MINIMOS_GLOBAL_CACHE, updateMinimos
 import { rateLimitMiddleware, startRateLimitPurge } from "./server/rate-limiter";
 import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatabaseRecord, loadEanDatabase } from "./server/ean-utils";
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
-import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto } from "./server/parsers";
+import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
 import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
@@ -556,7 +556,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
         ];
         const origDesc = (product.description || product.produto || "").toUpperCase();
-        const origPresSet = new Set(_PRES_KW.filter(k => origDesc.includes(k)));
+        const origPresSet = new Set(_PRES_KW.filter(k => hasWordBoundary(origDesc, k)));
         const getGrupoIndex = (pres: Set<string>): number[] => {
           const indices: number[] = [];
           for (let i = 0; i < _PRES_GRUPOS.length; i++) {
@@ -569,7 +569,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const produtos = origGrupos.length > 0
           ? produtosRaw.filter((p: any) => {
               const pDesc = (p.nom_produto || p.descricao || "").toUpperCase();
-              const pPres = new Set(_PRES_KW.filter(k => pDesc.includes(k)));
+              const pPres = new Set(_PRES_KW.filter(k => hasWordBoundary(pDesc, k)));
               const pGrupos = getGrupoIndex(pPres);
               return origGrupos.some(g => pGrupos.includes(g));
             })
@@ -1129,11 +1129,68 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
                 if (buscaRes.ok) {
                   const buscaData = await buscaRes.json();
                   const resultados = buscaData?.resultados || {};
-                  // Pegar TODOS os produtos de TODAS as chaves
+                  const resultKeys = Object.keys(resultados);
+                  console.log(`[OFERTAS-DIA] buscar-lote raw: total_itens=${buscaData?.total_itens}, keys=[${resultKeys.join(", ")}]`);
+                  if (resultKeys.length > 0) {
+                    const firstKey = resultKeys[0];
+                    const firstVal = resultados[firstKey];
+                    console.log(`[OFERTAS-DIA] buscar-lote key "${firstKey}": type=${typeof firstVal}, isArray=${Array.isArray(firstVal)}, length=${Array.isArray(firstVal) ? firstVal.length : "N/A"}`);
+                    if (Array.isArray(firstVal) && firstVal.length > 0) {
+                      console.log(`[OFERTAS-DIA] buscar-lote sample: ${JSON.stringify(firstVal[0]).substring(0, 200)}`);
+                    }
+                  }
+                  // Pegar TODOS os produtos de TODAS as chaves (sem depender de匹配 exata da chave)
                   allProdutos = [];
                   for (const key of Object.keys(resultados)) {
                     if (Array.isArray(resultados[key])) allProdutos.push(...resultados[key]);
                   }
+                  console.log(`[OFERTAS-DIA] buscar-lote: ${allProdutos.length} produtos de ${resultKeys.length} chave(s)`);
+                  
+                  // Fallback 1: se buscar-lote retornou vazio, tentar com wildcards (Trier usa %)
+                  if (allProdutos.length === 0 && descCompleta.length >= 3) {
+                    const palavras = descCompleta.split(/\s+/).filter((w: string) => w.length >= 3 && !/^\d+$/.test(w));
+                    const termoSimples = palavras[0] || descCompleta; // ex: "CETOCONAZOL"
+                    // Tentar: principio ativo + % (wildcard Trier)
+                    const termosFallback = [`${termoSimples}%`, termoSimples];
+                    for (const termo of termosFallback) {
+                      if (allProdutos.length > 0) break;
+                      try {
+                        const buscaSimplesRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ itens: [termo] }),
+                        });
+                        if (buscaSimplesRes.ok) {
+                          const buscaSimplesData = await buscaSimplesRes.json();
+                          const resSimples = buscaSimplesData?.resultados || {};
+                          for (const key of Object.keys(resSimples)) {
+                            if (Array.isArray(resSimples[key])) allProdutos.push(...resSimples[key]);
+                          }
+                          if (allProdutos.length > 0) {
+                            console.log(`[OFERTAS-DIA] buscar-lote WILDCARD: ${allProdutos.length} produtos via "${termo}"`);
+                          }
+                        }
+                      } catch {}
+                    }
+                  }
+
+                  // Fallback 2: se ainda vazio, tentar similares/{ean}
+                  if (allProdutos.length === 0 && product.ean) {
+                    try {
+                      const simRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${product.ean}`);
+                      if (simRes.ok) {
+                        const simData = await simRes.json();
+                        const sims = simData?.produtos || [];
+                        if (sims.length > 0) {
+                          allProdutos = sims;
+                          console.log(`[OFERTAS-DIA] SIMILARES-FALLBACK: ${sims.length} produtos via similares/${product.ean}`);
+                        }
+                      }
+                    } catch (simErr: any) {
+                      console.log(`[OFERTAS-DIA] SIMILARES-FALLBACK erro: ${simErr.message}`);
+                    }
+                  }
+
                   // Filtrar por DCB do EAN original
                   const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
                   if (dcb) {
@@ -1141,7 +1198,16 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
                       .filter((p: any) => p.cod_dcb === dcb && (p.ean || p.cod_barra))
                       .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
                     eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                    console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (busca: "${descCompleta}")`);
+                    console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb})`);
+                  } else if (allProdutos.length > 0) {
+                    // DCB não encontrado — usar TODOS os produtos do grupo (mesma descrição)
+                    eansGrupo = allProdutos
+                      .filter((p: any) => (p.ean || p.cod_barra))
+                      .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
+                    eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
+                    console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado, usando todos)`);
+                  } else {
+                    console.log(`[OFERTAS-DIA] DCB: EAN original ${product.ean} não encontrado em allProdutos (${allProdutos.length} produtos)`);
                   }
                 }
               }
@@ -1149,8 +1215,9 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
           }
 
           // PASSO 1.5: Buscar EANs extras via SmartPed Produtos/Buscar com wildcards
-          // O buscar-lote só tem EANs do ERP local. Produtos/Buscar descobre EANs
-          // de TODOS os distribuidores da SmartPed (Gauchofarma, CervoSul, etc.)
+          // Esses EANs são usados APENAS para buscar preços na SmartPed (Condicoes/Ean)
+          // NÃO devem entrar no cálculo de vendas/estoque (SmartPed não tem dados do ERP)
+          const smartPedOnlyEans: string[] = [];
           if (product.ean && product.description) {
             try {
               const smartPedToken = process.env.SMARTPED_PRODUCTION_TOKEN;
@@ -1175,28 +1242,39 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
                     }
                   } catch {}
                 }
-                // Adicionar EANs descobertos que não estão na lista atual
+                // EANs extras da SmartPed: só para pricing, NÃO para vendas/estoque
                 const newEans = Array.from(smartPedEans).filter(ean => !eanList.includes(ean));
                 if (newEans.length > 0) {
-                  for (const ean of newEans) {
-                    eansGrupo.push({ ean, lab: "", estoque: 0, origem: "smartped_buscar" });
-                  }
+                  smartPedOnlyEans.push(...newEans);
+                  // Adicionar ao eanList apenas para analisarUmProduto (pricing SmartPed)
                   eanList = [...new Set([...eanList, ...newEans])];
-                  console.log(`[OFERTAS-DIA] SMARTPED-BUSCAR: +${newEans.length} EANs via wildcards [${wildcards[0]}] (total: ${eanList.length})`);
+                  console.log(`[OFERTAS-DIA] SMARTPED-BUSCAR: +${newEans.length} EANs via wildcards [${wildcards[0]}] (total eanList: ${eanList.length}, erpEans: ${eansGrupo.length})`);
                 }
               }
             } catch {}
           }
 
+          // erpEans: EANs do Ferramentinhas (ERP local) — usados para vendas e estoque
+          // SmartPed EANs NÃO entram aqui (não têm dados de venda/estoque no ERP)
+          // Fallback: se eansGrupo vazio (key mismatch no buscar-lote), usar allProdutos
+          let erpEans = eansGrupo.filter((e: any) => e.ean && !smartPedOnlyEans.includes(e.ean)).map((e: any) => e.ean);
+          if (erpEans.length === 0 && allProdutos.length > 0) {
+            // Fallback: extrair EANs direto de allProdutos (resultados buscar-lote)
+            erpEans = allProdutos.filter((p: any) => (p.ean || p.cod_barra) && !smartPedOnlyEans.includes(p.ean || p.cod_barra)).map((p: any) => p.ean || p.cod_barra);
+            console.log(`[OFERTAS-DIA] ERP-FALLBACK: eansGrupo vazio, usando ${erpEans.length} EANs de allProdutos`);
+          }
+          const erpEanSet = new Set(erpEans);
+
           // PASSO 2: Analisar com TODOS os EANs do grupo
           const analysis = await analisarUmProduto(product, cnpj, eanList);
           
-          // PASSO 3: Agregar vendas/compras de TODOS os EANs (com filtro de apresentação)
+          // PASSO 3: Agregar vendas/compras de TODOS os EANs do ERP (com filtro de apresentação)
+          // Usar erpEans (Ferramentinhas), NÃO eanList (que inclui SmartPed EANs sem dados de venda)
           let vendasAgregadas = analysis.vendasMensais;
           let comprasAgregadas = analysis.comprasHistorico || [];
           
-          fs.appendFileSync('debug-vendas.log', `[${new Date().toISOString()}] PRE-CHECK eanList.length=${eanList.length} analysis.vendasMensais=${analysis.vendasMensais}\n`);
-          if (eanList.length > 1) {
+          fs.appendFileSync('debug-vendas.log', `[${new Date().toISOString()}] PRE-CHECK erpEans.length=${erpEans.length} eanList.length=${eanList.length} analysis.vendasMensais=${analysis.vendasMensais}\n`);
+          if (erpEans.length >= 1) {
             try {
               // Filtrar eans por apresentação usando descrições do allProdutos (resultados buscar-lote)
               const _PRES_KW_V = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG"];
@@ -1206,7 +1284,7 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
                 ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"]
               ];
               const origDescV = (product.description || product.produto || "").toUpperCase();
-              const origPresSetV = new Set(_PRES_KW_V.filter(k => origDescV.includes(k)));
+              const origPresSetV = new Set(_PRES_KW_V.filter(k => hasWordBoundary(origDescV, k)));
               const getGrupoIdxV = (pres: Set<string>): number[] => {
                 const idx: number[] = [];
                 for (let i = 0; i < _PRES_GRUPOS_V.length; i++) {
@@ -1228,11 +1306,11 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
               if (product.ean) eanToDesc.set(product.ean, product.description || product.produto || "");
 
               const eanListFiltrado: string[] = [];
-              for (const ean of eanList) {
+              for (const ean of erpEans) {
                 if (origGruposV.length === 0) { eanListFiltrado.push(ean); continue; }
                 const pDesc = (eanToDesc.get(ean) || "").toUpperCase();
                 if (!pDesc) continue; // sem descrição = excluir (SmartPed wildcards sem dados locais)
-                const pPres = new Set(_PRES_KW_V.filter(k => pDesc.includes(k)));
+                const pPres = new Set(_PRES_KW_V.filter(k => hasWordBoundary(pDesc, k)));
                 const pGrupos = getGrupoIdxV(pPres);
                 if (origGruposV.some(g => pGrupos.includes(g))) eanListFiltrado.push(ean);
               }
@@ -1310,8 +1388,9 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string) 
           const estoqueGrupoCalc = eansGrupo.length > 0
             ? eansGrupo.reduce((sum: number, e: any) => sum + (e.estoque || 0), 0)
             : 0;
-          // Se eansGrupo não tem estoque (ERPs locais sem cadastro), usar estoque do similares API
-          const estoqueGrupo = estoqueGrupoCalc > 0 ? estoqueGrupoCalc : analysis.estoqueTotal;
+          // Usar estoque do similares API (Ferramentinhas) — é a fonte correta
+          // eansGrupo pode ter dados desatualizados ou incompletos do buscar-lote
+          const estoqueGrupo = analysis.estoqueTotal || estoqueGrupoCalc;
           
           // Extrair laboratórios únicos do grupo DCB para o campo "laboratorio" do card
           const labsUnicos = [...new Set(eansGrupo.map((e: any) => e.lab).filter(Boolean))];
@@ -3556,7 +3635,8 @@ app.post("/api/optimize", async (req, res) => {
                   const similaresAtuais = marketSimilarMap[origEan] || [];
                   const jaExisteEmSimilares = similaresAtuais.some((s: any) => cleanEan(s.cod_barra || s.Ean || s.ean || "") === eanResp);
                   if (!jaExisteEmSimilares && eanResp !== origEan) {
-                     similaresAtuais.push({ cod_barra: eanResp, nom_produto: itemPedido.Descricao || entry.Descricao || `Descoberto via Fallback ${tag}` });
+                     // Marcar como SmartPed — NÃO usar para vendas/estoque (só para pricing)
+                     similaresAtuais.push({ cod_barra: eanResp, nom_produto: itemPedido.Descricao || entry.Descricao || `Descoberto via Fallback ${tag}`, _origem: "smartped" });
                      marketSimilarMap[origEan] = similaresAtuais;
                   }
                 }
@@ -3610,7 +3690,7 @@ app.post("/api/optimize", async (req, res) => {
                   const similaresAtuais = marketSimilarMap[origEan] || [];
                   const jaExisteEmSimilares = similaresAtuais.some((s: any) => cleanEan(s.cod_barra || s.Ean || s.ean || "") === subEan);
                   if (!jaExisteEmSimilares && subEan !== origEan) {
-                     similaresAtuais.push({ cod_barra: subEan, nom_produto: sub.Descricao || "Descoberto via Fallback Buscar" });
+                     similaresAtuais.push({ cod_barra: subEan, nom_produto: sub.Descricao || "Descoberto via Fallback Buscar", _origem: "smartped" });
                      marketSimilarMap[origEan] = similaresAtuais;
                   }
                 });
@@ -3663,15 +3743,15 @@ app.post("/api/optimize", async (req, res) => {
         if (!origEan) continue;
         eanToOriginal.set(origEan, origEan);
         const origDesc = (item.descricao || "").toUpperCase();
-        const origPres = _PRES_KW_VENDAS.filter(k => origDesc.includes(k));
+        const origPres = _PRES_KW_VENDAS.filter(k => hasWordBoundary(origDesc, k));
         const origGrupos = _getGrupoIdxVendas(origPres);
-        const similares = marketSimilarMap[origEan] || [];
+        const similares = (marketSimilarMap[origEan] || []).filter((s: any) => s._origem !== "smartped");
         for (const s of similares) {
           const sEan = cleanEan(s.cod_barra || s.Ean || s.ean || "");
           if (sEan && !eanToOriginal.has(sEan)) {
             // Filtrar por apresentação: só adicionar se mesmo grupo
             const sDesc = (s.nom_produto || s.descricao || "").toUpperCase();
-            const sPres = _PRES_KW_VENDAS.filter(k => sDesc.includes(k));
+            const sPres = _PRES_KW_VENDAS.filter(k => hasWordBoundary(sDesc, k));
             const sGrupos = _getGrupoIdxVendas(sPres);
             if (origGrupos.length > 0) {
               const match = origGrupos.some(g => sGrupos.includes(g));

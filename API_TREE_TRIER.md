@@ -188,6 +188,17 @@ POST /api/produtos/buscar-lote
 - Limpar termos: remover "GENÉRICO", nomes de marca (Sandoz, EMS, etc.) antes de enviar (AGENTS.md #41)
 - Buscar por princípio ativo (primeira palavra) + filtrar dosagem no JS (AGENTS.md #47)
 
+**⚠️ WILDCARD `%`:**
+- A Trier usa `%` como curinga no SQL (`ILIKE %termo%`)
+- O endpoint `buscar-lote` JÁ adiciona `%` automaticamente: `LIKE '%{termo}%'`
+- **PORÉM:** termos com `/` (ex: "20MG/ML") ou palavras extras podem não casar
+- **SOLUÇÃO:** quando `buscar-lote` retorna vazio, tentar com `%` no termo:
+  1. `buscar-lote(["CETOCONAZOL%"])` → wildcard força匹配 mais amplo
+  2. `buscar-lote(["CETOCONAZOL"])` → sem dosagem
+  3. `similares/{ean}` → fallback por EAN direto
+- **EXEMPLO:** "CETOCONAZOL 20MG/ML SH 100ML" retorna 0 resultados.
+  "CETOCONAZOL%" retorna 16 produtos (wildcard match).
+
 **Resposta (200 OK):**
 ```json
 {

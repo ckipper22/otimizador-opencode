@@ -1,45 +1,42 @@
 # Contexto Ativo — Última Sessão: 2026-08-25 (noite)
 
 ## Status do Sistema
-- **Versão:** v2026-08-24-0000 (deploy smartped-cli-00063-qf4)
+- **Versão:** v2026-08-25 (deploy smartped-cli-00065-mz7)
+- **URL:** https://smartped-cli-887122622666.us-east1.run.app
 - **Servidor local:** Rodando (precisa restart para aplicar mudanças)
-- **Últimas alterações:** Promoções do Dia - filtro apresentação estoque/vendas, mesesDiff real
 
-## O Que Funciona
+## Sessão Atual — Correções Encomendas + Faturamento
+
+### Bugs Corrigidos
+1. **saveOrder depois de res.json() (server.ts)** — `saveOrder` + `saveOrderItem` agora rodam ANTES de `res.json()`. Flag `orderSaved` controla se confirmação de encomenda pode disparar. Catch loga erros em vez de engolir silenciosamente.
+2. **Confirmação encomenda incondicional (server.ts)** — Agora só confirma no sistema externo SE `orderSaved = true`. Elimina bug de marcar "Encomendado" sem pedido salvo no Turso.
+3. **CodProdutoDist vazio no batch de encomendas (server.ts)** — Adicionado enriquecimento: mapa `Ean_CodDist → CodProdutoDist` a partir de ofertas que têm o campo. Substitutos do Molecula (sem CodProdutoDist) recebem valor do mapa. Normalização agora inclui `codProdutoDist` e `codProduto` explicitamente.
+4. **codProduto vazio em 4 pontos (App.tsx, useManualSearch.ts, useOptimizationResult.ts)** — `codProduto` agora herda de `codProdutoDist` como fallback em: handleAddEncomendaItem, handleConfirmImportEncomendas, handleSelectCondition, useManualSearch. Se a SmartPed retorna `codProduto: ""` mas `codProdutoDist: "776661"`, o item agora usa "776661".
+
+### O Que Funciona
 - SICF: vendas/estoque com filtro 4 meses e apresentação ✅
 - P button (EanPromoButton): expande EANs via buscar-produto ✅
-- Promoções do Dia - Estoque: card mostra estoqueTotal (soma labs) ✅
-- Promoções do Dia - Filtro apresentação estoque (SH≠CR) ✅
-- Promoções do Dia - Fallback estoqueGrupo→analysis.estoqueTotal ✅
-- Reprocessamento: normalizeProducts() reduz falsos positivos ✅
-- UI: badges "(4m)" em todos os componentes ✅
+- Promoções do Dia - Estoque/Filtro apresentação ✅
+- **Encomendas: codProdutoDist + codProduto nunca vazios** ✅
+- **Encomendas: confirmação só dispara após saveOrder OK** ✅
 
-## O Que Está Pendente (Testar)
-- **Vendas:** Filtro apresentação no background (eanToDesc de allProdutos) - implementado mas não testado
-- **MesesDiff real:** Divisor calculado das datas reais em vez de hardcoded /4 - implementado mas não testado
-
-## Tarefa Pendente (Próxima Sessão)
-- **Testar vendas do Promoções do Dia:** Após restart do servidor, verificar se CETOCONAZOL SH mostra "1/mês" em vez de "2/mês"
-- **Deploy:** Todas as mudanças precisam de deploy quando validadas localmente
-
-## Regras Importantes (AGENTS.md)
-- #54: Cálculo de vendas — método único nos 3 fluxos (ANDAM JUNTOS)
-- #55: Filtro de apresentação obrigatório na expansão de EANs
-- #56: normalizeProducts() antes de comparar products
-- **NOVA #29-31:** Bugs de estoque/vendas no Promoções do Dia (corrigidos nesta sessão)
+### O Que Está Pendente (Testar)
+- **Encomenda real:** Testar importação de encomenda → selecionar oferta → faturar → verificar que item aparece no faturamento SmartPed
+- **Dropdown:** Verificar que selecting different offer in ConditionSelector herda codProduto corretamente
+- **Vendas Promoções do Dia:** CETOCONAZOL SH deve mostrar "1/mês" (filtro apresentação)
 
 ## Arquivos Modificados Nesta Sessão
-- `server.ts`: filtro apresentação estoque (analisarUmProduto:543-571), fallback estoqueGrupo (1224-1228), filtro apresentação vendas background (1198-1240), mesesDiff real (1270-1273, 1773-1774), allProdutos escopo (1106)
-- `OfertasDoDiaModal.tsx`: estoqueTotal em vez de estoqueMesmoEan (520, 883)
-- `EanPromoButton.tsx`: estoqueTotal em vez de estoqueMesmoEan (260, 482)
-- `AGENTS.md`: bugs #29-31 adicionados
-- `LLM_CONTEXT.md`: seção 1.2.1 (filtro apresentação) adicionada, bugs atualizados, referência api ferramentinhas.txt
+- `server.ts`: saveOrder antes de res.json (6207-6226), confirmação condicional (6240-6265), enriquecimento CodProdutoDist batch (2152-2172), normalização codProduto (2175-2192)
+- `src/App.tsx`: offerCodProd fallback para offerCodProdDist (548, 731)
+- `src/hooks/useManualSearch.ts`: offerCodProd fallback (270)
+- `src/hooks/useOptimizationResult.ts`: codProduto fallback duplo (400-404)
 
-## Decisões Arquiteturais
-- **eanToDesc** é construído de `allProdutos` (resultados buscar-lote), NÃO de `eansGrupo` (que fica vazio quando produto sem EAN)
-- **SmartPed wildcards** (estoque=0, sem descrição) são excluídos do cálculo de vendas via filtro
-- **mesesDiff** calculado das datas reais (primeiraData/ultimaData), não hardcoded /4
-- **Fallback estoqueGrupo:** quando eansGrupo não tem estoque, usar analysis.estoqueTotal (similares API)
+## Regras Importantes
+- **AGENTS.md #24/#25:** Deploy APENAS com autorização explícita do usuário
+- **AGENTS.md #35:** CodProdutoDist vem EXCLUSIVAMENTE de Condicoes/Ean
+- **AGENTS.md #36:** Dropdown NUNCA mostra alternativas com codProdutoDist vazio
+- **AGENTS.md #54:** Cálculo de vendas — método único nos 3 fluxos (ANDAM JUNTOS)
+- **AGENTS.md #55:** Filtro de apresentação obrigatório na expansão de EANs
 
 ## Documentação
 - `api ferramentinhas.txt` disponível na pasta raiz — SEMPRE consultar antes de usar endpoints Ferramentinhas
