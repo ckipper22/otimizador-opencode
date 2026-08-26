@@ -364,6 +364,30 @@ export async function getCache(key: string): Promise<any | null> {
   } catch { return null; }
 }
 
+export async function getCacheBatch(keys: string[]): Promise<Record<string, any>> {
+  const result: Record<string, any> = {};
+  const d = getDb();
+  if (!d || keys.length === 0) return result;
+  try {
+    const placeholders = keys.map(() => "?").join(",");
+    const sql = `SELECT cache_key, data_json, expires_at FROM api_cache WHERE cache_key IN (${placeholders})`;
+    let rows: any[];
+    if (USE_TURSO) { const r = await d.all(sql, ...keys); rows = r; } else { rows = d.prepare(sql).all(...keys); }
+    const now = new Date();
+    const expiredKeys: string[] = [];
+    for (const row of rows) {
+      if (new Date(row.expires_at) < now) { expiredKeys.push(row.cache_key); continue; }
+      result[row.cache_key] = JSON.parse(row.data_json);
+    }
+    if (expiredKeys.length > 0) {
+      const delPlaceholders = expiredKeys.map(() => "?").join(",");
+      const delSql = `DELETE FROM api_cache WHERE cache_key IN (${delPlaceholders})`;
+      if (USE_TURSO) { await d.run(delSql, ...expiredKeys); } else { d.prepare(delSql).run(...expiredKeys); }
+    }
+  } catch {}
+  return result;
+}
+
 export async function purgeExpiredCache() {
   const d = getDb();
   if (!d) return 0;

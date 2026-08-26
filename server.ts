@@ -6,7 +6,7 @@ import { runEngineSelfTests } from "./backend-tests";
 import { validateSwapEquivalence } from "./swap-validation";
 
 import { CONFIG, PORT } from "./server/config";
-import { cacheKey, getFromCache, setInCache, MINIMOS_GLOBAL_CACHE, updateMinimosCache, getMinimoFromCache, DYNAMIC_EANS_CACHE, FATURAMENTO_ITEMS_CACHE, SIMULATED_CHECKS, startCachePurgeInterval } from "./server/cache";
+import { cacheKey, getFromCache, getFromCacheBatch, setInCache, MINIMOS_GLOBAL_CACHE, updateMinimosCache, getMinimoFromCache, DYNAMIC_EANS_CACHE, FATURAMENTO_ITEMS_CACHE, SIMULATED_CHECKS, startCachePurgeInterval } from "./server/cache";
 import { rateLimitMiddleware, startRateLimitPurge } from "./server/rate-limiter";
 import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatabaseRecord, loadEanDatabase } from "./server/ean-utils";
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
@@ -153,11 +153,43 @@ app.use(rateLimitMiddleware);
 // Cache purge interval
 startCachePurgeInterval(EAN_DATABASE, MINIMOS_GLOBAL_CACHE);
 
+// Turso warmup endpoint
+app.get("/api/warmup", async (_req, res) => {
+  try {
+    const d = getDb();
+    if (d) { USE_TURSO ? await d.all("SELECT 1") : d.prepare("SELECT 1").get(); }
+  } catch {}
+  res.json({ ok: true });
+});
+
+// Turso keep-alive ping (a cada 4 minutos)
+setInterval(async () => {
+  try {
+    const d = getDb();
+    if (d) { USE_TURSO ? await d.all("SELECT 1") : d.prepare("SELECT 1").get(); }
+  } catch {}
+}, 4 * 60 * 1000);
+
 // Load EAN database on startup
 loadEanDatabase();
 
-// Initialize Turso schema (async, non-blocking)
-initTursoSchema().catch(e => console.error("[DB] Erro ao inicializar schema Turso:", e.message));
+// Initialize Turso schema (async, non-blocking, with retry for cold start)
+async function initTursoSchemaWithRetry(maxTentativas = 4) {
+  for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+    try {
+      await initTursoSchema();
+      if (tentativa > 1) console.log(`[DB] Schema Turso inicializado com sucesso na tentativa ${tentativa}`);
+      return;
+    } catch (e: any) {
+      console.error(`[DB] Tentativa ${tentativa}/${maxTentativas} de inicializar schema Turso falhou: ${e.message}`);
+      if (tentativa < maxTentativas) {
+        await new Promise(r => setTimeout(r, tentativa * 1000));
+      }
+    }
+  }
+  console.error(`[DB] Desistindo de inicializar schema Turso após ${maxTentativas} tentativas.`);
+}
+initTursoSchemaWithRetry();
 
 // Start SQLite cache purge
 startDbCachePurge();
@@ -1396,19 +1428,18 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
               }
 
               // Somar vendas dos EANs filtrados e dividir por meses reais
+              const vendasBatch = await fetchVendasResumoBatch(eanListFiltrado);
               let totalVendasRaw = 0;
               let primeiraData: Date | null = null;
               let ultimaData: Date | null = null;
-              const vendasPromises = eanListFiltrado.map(async (ean: string) => {
-                const { totalVendas, primeira, ultima } = await fetchVendasResumo(ean);
-                if (totalVendas > 0 && primeira && ultima) {
-                  if (!primeiraData || primeira < primeiraData) primeiraData = primeira;
-                  if (!ultimaData || ultima > ultimaData) ultimaData = ultima;
+              for (const ean of eanListFiltrado) {
+                const v = vendasBatch[ean];
+                if (v && v.totalVendas > 0 && v.primeira && v.ultima) {
+                  totalVendasRaw += v.totalVendas;
+                  if (!primeiraData || v.primeira < primeiraData) primeiraData = v.primeira;
+                  if (!ultimaData || v.ultima > ultimaData) ultimaData = v.ultima;
                 }
-                return totalVendas;
-              });
-              const vendasResults = await Promise.all(vendasPromises);
-              totalVendasRaw = vendasResults.reduce((a, b) => a + b, 0);
+              }
               // Calcular mesesDiff das datas reais (mesmo método do SICF server.ts:3611)
               const mesesDiff = (primeiraData && ultimaData)
                 ? Math.max(1, (ultimaData.getFullYear() - primeiraData.getFullYear()) * 12 + (ultimaData.getMonth() - primeiraData.getMonth()) + 1)
@@ -1968,23 +1999,21 @@ app.post("/api/ofertas-dia/analisar-referencia", async (req, res) => {
 
     // Buscar vendas de TODOS os EANs UNICOS via vendas-resumo (agregado sem limite)
     // AGREGAR vendas e depois dividir por meses reais (mesmo método do SICF)
+    const vendasBatch = await fetchVendasResumoBatch(uniqueEans.map((e: any) => e.ean));
     let totalVendasRaw = 0;
     let totalVendas = 0;
     let primeiraDataRef: Date | null = null;
     let ultimaDataRef: Date | null = null;
     const eansComMovimento: any[] = [];
-    const vendasPromises = uniqueEans
-      .map(async (e: any) => {
-        const { totalVendas, primeira, ultima } = await fetchVendasResumo(e.ean);
-        if (totalVendas > 0 && primeira && ultima) {
-          eansComMovimento.push(e);
-          if (!primeiraDataRef || primeira < primeiraDataRef) primeiraDataRef = primeira;
-          if (!ultimaDataRef || ultima > ultimaDataRef) ultimaDataRef = ultima;
-        }
-        return totalVendas;
-      });
-    const vendasResults = await Promise.all(vendasPromises);
-    totalVendasRaw = vendasResults.reduce((a, b) => a + b, 0);
+    for (const e of uniqueEans as any[]) {
+      const v = vendasBatch[e.ean];
+      if (v && v.totalVendas > 0 && v.primeira && v.ultima) {
+        eansComMovimento.push(e);
+        totalVendasRaw += v.totalVendas;
+        if (!primeiraDataRef || v.primeira < primeiraDataRef) primeiraDataRef = v.primeira;
+        if (!ultimaDataRef || v.ultima > ultimaDataRef) ultimaDataRef = v.ultima;
+      }
+    }
     // Calcular mesesDiff das datas reais (mesmo método do SICF server.ts:3611)
     const mesesDiffRef = (primeiraDataRef && ultimaDataRef)
       ? Math.max(1, (ultimaDataRef.getFullYear() - primeiraDataRef.getFullYear()) * 12 + (ultimaDataRef.getMonth() - primeiraDataRef.getMonth()) + 1)
@@ -2481,6 +2510,40 @@ async function fetchVendasResumo(ean: string): Promise<{ totalVendas: number; pr
   return { totalVendas: 0, primeira: null, ultima: null };
 }
 
+async function fetchVendasResumoBatch(eans: string[]): Promise<Record<string, { totalVendas: number; primeira: Date | null; ultima: Date | null }>> {
+  const result: Record<string, { totalVendas: number; primeira: Date | null; ultima: Date | null }> = {};
+  const MAX_BATCH = 40;
+  const parseData = (s: string) => {
+    const parts = (s || "").split("/");
+    return new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+  };
+  const uniqueEans = Array.from(new Set(eans.filter(e => e && e.trim())));
+  for (let i = 0; i < uniqueEans.length; i += MAX_BATCH) {
+    const lote = uniqueEans.slice(i, i + MAX_BATCH);
+    try {
+      const response = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-resumo/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eans: lote }),
+        signal: AbortSignal.timeout(30000)
+      });
+      if (!response.ok) { for (const ean of lote) result[ean] = { totalVendas: 0, primeira: null, ultima: null }; continue; }
+      const data = await response.json();
+      for (const ean of lote) {
+        const d = data[ean];
+        if (!d || !d.total_qtd || !d.primeira_venda || !d.ultima_venda) { result[ean] = { totalVendas: 0, primeira: null, ultima: null }; continue; }
+        const primeira = parseData(d.primeira_venda);
+        const ultima = parseData(d.ultima_venda);
+        if (isNaN(primeira.getTime()) || isNaN(ultima.getTime())) { result[ean] = { totalVendas: 0, primeira: null, ultima: null }; continue; }
+        result[ean] = { totalVendas: Number(d.total_qtd), primeira, ultima };
+      }
+    } catch {
+      for (const ean of lote) result[ean] = { totalVendas: 0, primeira: null, ultima: null };
+    }
+  }
+  return result;
+}
+
 const SYNC_STATE = { running: false, logs: [] as string[], totalSync: 0, totalPrincipios: 0, totalLancamentos: 0, totalSugestoes: 0 };
 
 async function syncEnrichAndSave(ean: string, token: string, cnpj: string, lanc: any, sug: any, logs: string[]) {
@@ -2681,6 +2744,8 @@ setInterval(checkAndRunPriceSync, 60 * 1000);
 // Main Optimization Endpoint
 app.post("/api/optimize", async (req, res) => {
   const logs: string[] = [];
+  const _phaseStart = Date.now();
+  let _p1 = 0, _p2 = 0, _p3 = 0, _p4 = 0, _p5 = 0, _p6 = 0;
   try {
     const {
       fileContent,
@@ -2768,6 +2833,9 @@ app.post("/api/optimize", async (req, res) => {
     }
 
     logs.push(`[PARSER] ConcluÃ­do. Total de itens de dados (tipo 2) encontrados: ${parsedItems.length}`);
+    _p1 = Date.now() - _phaseStart;
+    logs.push(`[FASE-1-PARSE] ${_p1}ms`);
+    console.log(`[FASE-1-PARSE] ${_p1}ms`);
 
     if (!headerLine) {
       logs.push(`[ERRO] CabeÃ§alho do arquivo (tipo 1) nÃ£o foi encontrado.`);
@@ -2835,6 +2903,7 @@ app.post("/api/optimize", async (req, res) => {
     // PrÃ©-carregar similares de mercado via BATCH (uma sÃ³ chamada pra todos os EANs)
     logs.push(`[PROCESSAMENTO] PrÃ©-carregando dicionÃ¡rio dinÃ¢mico de similares de mercado para ${uniqueEans.length} EANs (batch)...`);
     const marketSimilarMap: Record<string, any[]> = {};
+    const _f2Start = Date.now();
     try {
       const startTimeSimilar = Date.now();
       const batchResult = await fetchSimilarGenericsBatch(uniqueEans);
@@ -2847,8 +2916,12 @@ app.post("/api/optimize", async (req, res) => {
     } catch (err: any) {
       logs.push(`[AVISO] Falha ao prÃ©-carregar produtos similares de mercado via batch: ${err.message}`);
     }
+    _p2 = Date.now() - _f2Start;
+    logs.push(`[FASE-2-SIMILARES-BATCH] ${_p2}ms`);
+    console.log(`[FASE-2-SIMILARES-BATCH] ${_p2}ms`);
 
     // Gerar conjunto estendido de EANs a serem cotados (EAN original + equivalentes locais + similares de mercado)
+    const parsedItemsByEan = new Map(parsedItems.map(it => [cleanEan(it.ean), it]));
     const eansToQuoteSet = new Set<string>();
     uniqueEans.forEach(ean => {
       const orig = cleanEan(ean);
@@ -2857,7 +2930,7 @@ app.post("/api/optimize", async (req, res) => {
       eansToQuoteSet.add(orig);
 
       // Localizar descriÃ§Ã£o do item para enriquecimento estÃ¡tico local
-      const itemPedidoOriginal = parsedItems.find(it => cleanEan(it.ean) === orig);
+      const itemPedidoOriginal = parsedItemsByEan.get(orig);
       const descStr = itemPedidoOriginal ? itemPedidoOriginal.descricao : "";
       
       // Enriquecer com equivalentes locais (DicionÃ¡rio EstÃ¡tico)
@@ -3087,6 +3160,33 @@ app.post("/api/optimize", async (req, res) => {
       return null;
     }
 
+    // Build lookup index: EAN → {descricao, laboratorio} from apiResponses (built once, used per-item)
+    function buildDescLabIndex(): Map<string, { descricao: string; laboratorio: string }> {
+      const index = new Map<string, { descricao: string; laboratorio: string }>();
+      for (const origEan of Object.keys(apiResponses)) {
+        const entry = apiResponses[origEan];
+        if (!entry) continue;
+        // Priority 1: direct ItemPedido match
+        if (entry.ItemPedido) {
+          const ean = cleanEan(entry.ItemPedido.Ean || entry.ItemPedido.ean);
+          if (ean && !index.has(ean)) {
+            const d = entry.ItemPedido.Descricao || entry.ItemPedido.descricao;
+            if (d) index.set(ean, { descricao: d, laboratorio: entry.ItemPedido.Laboratorio || entry.ItemPedido.laboratorio || "GENÃ‰RICO" });
+          }
+        }
+        // Priority 2: Substitutos
+        const subs = entry.Substitutos || entry.substitutos || [];
+        for (const sub of subs) {
+          const ean = cleanEan(sub.Ean || sub.ean || sub.CodBarra || sub.codBarra);
+          if (ean && !index.has(ean)) {
+            const d = sub.Descricao || sub.descricao;
+            if (d) index.set(ean, { descricao: d, laboratorio: sub.Laboratorio || sub.laboratorio || "GENÃ‰RICO" });
+          }
+        }
+      }
+      return index;
+    }
+
     const allMinimos: any[] = [];
 
     if (simulationMode) {
@@ -3129,6 +3229,7 @@ app.post("/api/optimize", async (req, res) => {
       }
       logs.push(`[API CONEXÃƒO] Token de Acesso: ${actualToken.substring(0, 6)}...`);
 
+      const _f3Start = Date.now();
       // Batch call (SmartPed endpoint CondicoesMolecula handles multiple EANs separated by comma)
       // Chunk EANs in batches of 10 — COM CACHE L1+L2
       // Sequencial (CONCURRENCY=1) para evitar rate limit da SmartPed
@@ -3136,14 +3237,16 @@ app.post("/api/optimize", async (req, res) => {
       const eanMolCacheKey = (ean: string) => cacheKey("Condicoes/Molecula", ean, actualToken, apiCnpj);
       const eanEanCacheKey = (ean: string) => cacheKey("Condicoes/Ean", ean, actualToken, apiCnpj);
 
-      // 1. Checar cache para todos os EANs antes de batchar
+      // 1. Checar cache para todos os EANs — batch (uma única query no Turso)
+      const eanCacheKeys = eansToQuote.map(ean => eanMolCacheKey(ean));
+      const cachedBatch = await getFromCacheBatch(eanCacheKeys);
       const eansComCache: string[] = [];
       const eansSemCache: string[] = [];
       for (const ean of eansToQuote) {
-        const cachedMol = await getFromCache(eanMolCacheKey(ean));
-        if (cachedMol) {
+        const key = eanMolCacheKey(ean);
+        if (cachedBatch[key]) {
           eansComCache.push(ean);
-          apiResponses[ean] = cachedMol;
+          apiResponses[ean] = cachedBatch[key];
         } else {
           eansSemCache.push(ean);
         }
@@ -3184,7 +3287,12 @@ app.post("/api/optimize", async (req, res) => {
             })
           }, 15000, 1);
 
+          const _redeStart = Date.now();
           const [responseMolecula, responseEan] = await Promise.all([pMolecula, pEan]);
+          const _redeMs = Date.now() - _redeStart;
+          _condTotalMs += _redeMs;
+          _condLotesChamados++;
+          logs.push(`[TIMING-CONDICOES] Lote ${batchNum}: rede levou ${_redeMs}ms`);
           const duration = Date.now() - startTime;
           logs.push(`[API RESPOSTA] Lotes respondidos em ${duration}ms (Molecula: ${responseMolecula.status}, Ean: ${responseEan.status}).`);
 
@@ -3363,6 +3471,8 @@ app.post("/api/optimize", async (req, res) => {
 
       // Executar batches SEQUENCIALMENTE (1 por vez) para evitar rate limit da SmartPed
       // Cada batch: Chamada Molecula + Chamada Ean em paralelo (regra #12 AGENTS.md)
+      let _condTotalMs = 0;
+      let _condLotesChamados = 0;
       const CONCURRENCY = 1;
       const BATCH_DELAY_MS = 200;
       const totalBatches = Math.ceil(eansSemCache.length / batchSize);
@@ -3378,6 +3488,11 @@ app.post("/api/optimize", async (req, res) => {
           await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
         }
       }
+      logs.push(`[TIMING-CONDICOES-MOLECULA] ${_condTotalMs}ms somados em ${_condLotesChamados} lotes de até ${batchSize} EANs (${eansToQuote.length} EANs no total)`);
+      console.log(`[TIMING-CONDICOES-MOLECULA] ${_condTotalMs}ms somados em ${_condLotesChamados} lotes de até ${batchSize} EANs (${eansToQuote.length} EANs no total)`);
+      _p3 = Date.now() - _f3Start;
+      logs.push(`[FASE-3-CONDICOES] ${_p3}ms`);
+      console.log(`[FASE-3-CONDICOES] ${_p3}ms`);
     }
 
     // Passo de Enriquecimento por Fallback de Busca Textual (PrincÃ­pio Ativo) para itens sem ofertas/estoque
@@ -3832,6 +3947,7 @@ app.post("/api/optimize", async (req, res) => {
     const queriedEanSet = new Set<string>();
 
     // ===== VENDAS + ESTOQUE (Ferramentinhas) — Batch para todos os EANs do SICF + similares =====
+    const _f5Start = Date.now();
     const vendasEstoqueMap: Record<string, { vendasMensais: number; estoqueTotal: number }> = {};
     {
       // 1. Mapear cada EAN expandido → EAN original do SICF (filtrado por apresentação)
@@ -3858,8 +3974,8 @@ app.post("/api/optimize", async (req, res) => {
       {
         const eanCatMap = new Map<string, string>();
         for (const item of parsedItems) {
-          const origEan = cleanEan(item.ean);
-          if (!origEan) continue;
+      const origEan = cleanEan(item.ean);
+      if (!origEan) continue;
           const similares = (marketSimilarMap[origEan] || []).filter((s: any) => s._origem !== "smartped");
           for (const s of similares) {
             const sEan = cleanEan(s.cod_barra || s.Ean || s.ean || "");
@@ -3878,17 +3994,17 @@ app.post("/api/optimize", async (req, res) => {
 
       logs.push(`[METRICAS] Buscando vendas para ${allEansForVendas.length} EANs (${parsedItems.filter(i => i.ean).length} originais + ${allEansForVendas.length - parsedItems.filter(i => i.ean).length} similares)...`);
 
-      // 2. Buscar vendas de TODOS os EANs (expandidos) via vendas-resumo (agregado)
+      // 2. Buscar vendas de TODOS os EANs (expandidos) via vendas-resumo batch
       const vendasByOriginal: Record<string, { total: number; meses: number }> = {};
-      const vendasPromises = allEansForVendas.map(async (ean) => {
-        const { totalVendas, primeira, ultima } = await fetchVendasResumo(ean);
-        if (totalVendas > 0 && primeira && ultima) {
-          const mesesDiff = Math.max(1, (ultima.getFullYear() - primeira.getFullYear()) * 12 + (ultima.getMonth() - primeira.getMonth()) + 1);
-          return { ean, totalVendas, meses: mesesDiff };
+      const vendasBatch = await fetchVendasResumoBatch(allEansForVendas);
+      const vendasResults = allEansForVendas.map((ean) => {
+        const v = vendasBatch[ean];
+        if (v && v.totalVendas > 0 && v.primeira && v.ultima) {
+          const mesesDiff = Math.max(1, (v.ultima.getFullYear() - v.primeira.getFullYear()) * 12 + (v.ultima.getMonth() - v.primeira.getMonth()) + 1);
+          return { ean, totalVendas: v.totalVendas, meses: mesesDiff };
         }
         return { ean, totalVendas: 0, meses: 0 };
       });
-      const vendasResults = await Promise.all(vendasPromises);
       // Agregar por EAN original
       for (const r of vendasResults) {
         const origEan = eanToOriginal.get(r.ean) || r.ean;
@@ -3901,40 +4017,50 @@ app.post("/api/optimize", async (req, res) => {
         vendasEstoqueMap[origEan] = { vendasMensais: mediaMensal, estoqueTotal: vendasEstoqueMap[origEan]?.estoqueTotal || 0 };
       }
 
-      // 3. Buscar estoque apenas dos EANs originais (com filtro de apresentação)
+      // 3. Buscar estoque apenas dos EANs originais (com filtro de apresentação) — via batch
       const uniqueOriginalEans = Array.from(new Set(parsedItems.map(item => cleanEan(item.ean)).filter(Boolean)));
-      const estPromises = uniqueOriginalEans.map(async (ean) => {
+      const similaresBatch: Record<string, any[]> = {};
+      for (const ean of uniqueOriginalEans) {
+        similaresBatch[ean] = (marketSimilarMap[ean] || []).filter((s: any) => s._origem !== "smartped");
+      }
+      for (const ean of uniqueOriginalEans) {
         let estoqueTotal = 0;
         try {
-          const itemOrig = parsedItems.find(it => cleanEan(it.ean) === ean);
-          const estRes = await fetchWithRetry(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${ean}`, {}, 10000, 1).catch(() => null);
-          if (estRes?.ok) {
-            const estData = await estRes.json().catch(() => ({}));
-            const produtos = estData?.produtos || [];
-            const produtosSemRef = produtos.filter((p: any) => resolveCategoria(p) !== "marca");
-            // Enriquecer itemOrig com DCB do catálogo para comparação correta
-            const dcbRef2 = produtos[0]?.cod_dcb;
-            const concRef2 = produtos[0]?.cod_concentracao;
-            const itemOrigComDcb = (itemOrig && dcbRef2 && concRef2) ? { ...itemOrig, cod_dcb: dcbRef2, cod_concentracao: concRef2 } : itemOrig;
-            const produtosFiltrados = itemOrigComDcb
-              ? produtosSemRef.filter((p: any) => mesmaApresentacao(itemOrigComDcb, p))
-              : produtosSemRef;
-            estoqueTotal = produtosFiltrados.reduce((s: number, p: any) => s + (p.qtd_estoque || 0), 0);
-          }
+          const itemOrig = parsedItemsByEan.get(ean);
+          const produtos = similaresBatch[ean] || [];
+          const produtosSemRef = produtos.filter((p: any) => resolveCategoria(p) !== "marca");
+          const dcbRef2 = produtos[0]?.cod_dcb;
+          const concRef2 = produtos[0]?.cod_concentracao;
+          const itemOrigComDcb = (itemOrig && dcbRef2 && concRef2) ? { ...itemOrig, cod_dcb: dcbRef2, cod_concentracao: concRef2 } : itemOrig;
+          const produtosFiltrados = itemOrigComDcb
+            ? produtosSemRef.filter((p: any) => mesmaApresentacao(itemOrigComDcb, p))
+            : produtosSemRef;
+          estoqueTotal = produtosFiltrados.reduce((s: number, p: any) => s + (p.qtd_estoque || 0), 0);
         } catch {}
-        return { ean, estoqueTotal };
-      });
-      const estResults = await Promise.all(estPromises);
-      for (const r of estResults) {
-        if (!vendasEstoqueMap[r.ean]) vendasEstoqueMap[r.ean] = { vendasMensais: 0, estoqueTotal: 0 };
-        vendasEstoqueMap[r.ean].estoqueTotal = r.estoqueTotal;
+        if (!vendasEstoqueMap[ean]) vendasEstoqueMap[ean] = { vendasMensais: 0, estoqueTotal: 0 };
+        vendasEstoqueMap[ean].estoqueTotal = estoqueTotal;
       }
 
       const comVendas = Object.values(vendasEstoqueMap).filter(v => v.vendasMensais > 0).length;
       const comEstoque = Object.values(vendasEstoqueMap).filter(v => v.estoqueTotal > 0).length;
       logs.push(`[METRICAS] ${comVendas}/${uniqueOriginalEans.length} EANs com vendas, ${comEstoque} com estoque.`);
+      _p5 = Date.now() - _f5Start;
+      logs.push(`[FASE-5-VENDAS-ESTOQUE] ${_p5}ms`);
+      console.log(`[FASE-5-VENDAS-ESTOQUE] ${_p5}ms`);
     }
 
+    let _ruturaTotalMs = 0;
+    let _ruturaCount = 0;
+    let _descLookupTotalMs = 0;
+    let _descLookupCount = 0;
+    let _descHadDesc = 0;
+    let _descNeededLookup = 0;
+    let _tValidate = 0, _tDistName = 0, _tPrice = 0;
+    let _cValidate = 0, _cDistName = 0, _cPrice = 0;
+    let _tFindBest = 0, _cFindBest = 0, _maxFindBest = 0, _maxFindBestCands = 0;
+    let _tTargetEanApi = 0, _cTargetEanApi = 0, _cTargetEanCacheHit = 0;
+    let _tFallbackSimilares = 0, _cFallbackSimilares = 0;
+    const _f4Start = Date.now();
     for (const item of parsedItems) {
       // ===== DEBUG: Rastrear caminho WhatsApp =====
       const waMatch = whatsappItemsMap.get(item.lineIndex);
@@ -4052,6 +4178,7 @@ app.post("/api/optimize", async (req, res) => {
       }
 
       const origEan = cleanEan(item.ean);
+      try {
       const localEquivs = getLocalEquivalents(origEan, item.descricao);
       const apiSimilars = (marketSimilarMap[origEan] || []).map(s => cleanEan(s.cod_barra || s.Ean || s.ean || ""));
       
@@ -4362,29 +4489,25 @@ app.post("/api/optimize", async (req, res) => {
             return c;
         });
 
+        const _descLabIndex = buildDescLabIndex();
         let itemAlternatives = [...condicoesEnriched, ...substitutos]
           .filter((s: any) => {
             const est = s.Estoque !== undefined ? s.Estoque : (s.estoque || 0);
-            if (getUnitCost(s) <= 0) return false;
+            { const _t0 = Date.now(); const _r = getUnitCost(s) <= 0; _tPrice += Date.now() - _t0; _cPrice++; if (_r) return false; }
             if (est <= 0) return false;
-            const distName = resolveDistName(s);
-            if (isNotFoundName(distName)) {
-              return false;
-            }
+            { const _t0 = Date.now(); const _dn = resolveDistName(s); const _nf = isNotFoundName(_dn); _tDistName += Date.now() - _t0; _cDistName++; if (_nf) return false; }
             const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
             const altEan = cleanEan(s.Ean || s.ean || "");
             // Bloquear fornecedores que falharam por falta de estoque nos últimos 2 dias
             if (blockedSuppliers.has(altEan) && blockedSuppliers.get(altEan)!.has(Number(codDist))) return false;
-            return validateSwapEquivalence(itemPedido, s);
+            { const _t0 = Date.now(); const _r = validateSwapEquivalence(itemPedido, s); _tValidate += Date.now() - _t0; _cValidate++; return _r; }
           })
           .map((s: any) => {
             const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
             const condicao = s.Condicao || s.condicao || "FIXA";
             const prazo = s.Prazo !== undefined ? s.Prazo : (s.prazo !== undefined ? s.prazo : 0);
-            const unitPrice = getUnitCost(s);
-            const tablePrice = extractTablePrice(s);
+            { const _t0 = Date.now(); var unitPrice = getUnitCost(s); var tablePrice = extractTablePrice(s); var apiPmc = extractPmc(s); _tPrice += Date.now() - _t0; _cPrice++; }
             const baseForPmc = tablePrice > 0 ? tablePrice : unitPrice;
-            let apiPmc = extractPmc(s);
             if (!apiPmc && cleanEan(s.Ean || s.ean || "") === cleanEan(item.ean)) {
               apiPmc = extractPmc(itemPedido);
             }
@@ -4400,11 +4523,17 @@ app.post("/api/optimize", async (req, res) => {
             }
 
             if (!altDesc || !resolvedLab) {
-              const resolved = findDescAndLabFromApiResponses(altEan);
-              if (resolved) {
-                if (!altDesc) altDesc = resolved.descricao;
-                if (!resolvedLab) resolvedLab = resolved.laboratorio;
+              _descNeededLookup++;
+              const _dlStart = Date.now();
+              const _idx = _descLabIndex.get(altEan);
+              _descLookupTotalMs += Date.now() - _dlStart;
+              _descLookupCount++;
+              if (_idx) {
+                if (!altDesc) altDesc = _idx.descricao;
+                if (!resolvedLab) resolvedLab = _idx.laboratorio;
               }
+            } else {
+              _descHadDesc++;
             }
 
             if (!altDesc) {
@@ -4660,11 +4789,17 @@ app.post("/api/optimize", async (req, res) => {
               
               logs.push(`[${!originalHasStock ? 'RUPTURA' : 'GENÉRICO'}-REGEX] Chamando Produtos/Buscar com texto="${searchPattern}"`);
               
+              const _ruturaStart = Date.now();
               const descResp = await fetchWithRetry(`${baseUrl.replace(/\/$/, "")}/api/Produtos/Buscar`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0" },
                 body: descSearchBody
               }, 15000, 1).then(r => r.ok ? r.json() : null).catch(() => null);
+              const _ruturaMs = Date.now() - _ruturaStart;
+              _ruturaTotalMs += _ruturaMs;
+              _ruturaCount++;
+              logs.push(`[TIMING-RUPTURA] EAN ${item.ean} levou ${_ruturaMs}ms`);
+              console.log(`[TIMING-RUPTURA] EAN ${item.ean} levou ${_ruturaMs}ms`);
               
               const descProdutos = descResp?.Retorno || descResp?.retorno || [];
               logs.push(`[RUPTURA-REGEX] Produtos/Buscar retornou ${descProdutos.length} produtos`);
@@ -4929,27 +5064,25 @@ condicoesEnriched = condicoes.map((c: any) => {
           }
 
           // Rebuild itemAlternatives e finalAlternatives (dropdown do usuário)
+          const _descLabIndex2 = buildDescLabIndex();
           itemAlternatives = [...condicoesEnriched, ...substitutos]
             .filter((s: any) => {
               const est = s.Estoque !== undefined ? s.Estoque : (s.estoque || 0);
-              if (getUnitCost(s) <= 0) return false;
+              { const _t0 = Date.now(); const _r = getUnitCost(s) <= 0; _tPrice += Date.now() - _t0; _cPrice++; if (_r) return false; }
               if (est <= 0) return false;
-              const distName = resolveDistName(s);
-              if (isNotFoundName(distName)) return false;
+              { const _t0 = Date.now(); const _dn = resolveDistName(s); const _nf = isNotFoundName(_dn); _tDistName += Date.now() - _t0; _cDistName++; if (_nf) return false; }
               const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
               const altEan = cleanEan(s.Ean || s.ean || "");
               // Bloquear fornecedores que falharam por falta de estoque nos últimos 2 dias
               if (blockedSuppliers.has(altEan) && blockedSuppliers.get(altEan)!.has(Number(codDist))) return false;
-              return validateSwapEquivalence(itemPedido, s);
+              { const _t0 = Date.now(); const _r = validateSwapEquivalence(itemPedido, s); _tValidate += Date.now() - _t0; _cValidate++; return _r; }
             })
             .map((s: any) => {
               const codDist = s.CodDist !== undefined ? s.CodDist : (s.codDist !== undefined ? s.codDist : 0);
               const condicao = s.Condicao || s.condicao || "FIXA";
               const prazo = s.Prazo !== undefined ? s.Prazo : (s.prazo !== undefined ? s.prazo : 0);
-              const unitPrice = getUnitCost(s);
-              const tablePrice = extractTablePrice(s);
+              { const _t0 = Date.now(); var unitPrice = getUnitCost(s); var tablePrice = extractTablePrice(s); var apiPmc = extractPmc(s); _tPrice += Date.now() - _t0; _cPrice++; }
               const baseForPmc = tablePrice > 0 ? tablePrice : unitPrice;
-              let apiPmc = extractPmc(s);
               if (!apiPmc && cleanEan(s.Ean || s.ean || "") === cleanEan(item.ean)) {
                 apiPmc = extractPmc(itemPedido);
               }
@@ -4962,10 +5095,13 @@ condicoesEnriched = condicoes.map((c: any) => {
                 if (!resolvedLab) resolvedLab = originalLab;
               }
               if (!altDesc || !resolvedLab) {
-                const resolved = findDescAndLabFromApiResponses(altEan);
-                if (resolved) {
-                  if (!altDesc) altDesc = resolved.descricao;
-                  if (!resolvedLab) resolvedLab = resolved.laboratorio;
+                const _dlStart2 = Date.now();
+                const _idx2 = _descLabIndex2.get(altEan);
+                _descLookupTotalMs += Date.now() - _dlStart2;
+                _descLookupCount++;
+                if (_idx2) {
+                  if (!altDesc) altDesc = _idx2.descricao;
+                  if (!resolvedLab) resolvedLab = _idx2.laboratorio;
                 }
               }
               if (!altDesc) {
@@ -5055,7 +5191,11 @@ condicoesEnriched = condicoes.map((c: any) => {
           logs.push(`[MOTOR-DEBUG]   ${i+1}. EAN:${ean} "${desc.substring(0, 30)}" | dist:${dist} | preco:${preco} | estoque:${est}`);
         });
         
+        const _fbsT0 = Date.now();
         const result = findBestSubstitute(itemPedido, [...condicoesEnriched, ...substitutos], margemMinima, tiposAceitos, exigirEstoque, item.precoOriginal, effectiveOriginalHasStock, isGeneric, cortesRecentes);
+        const _fbsMs = Date.now() - _fbsT0;
+        _tFindBest += _fbsMs; _cFindBest++;
+        if (_fbsMs > _maxFindBest) { _maxFindBest = _fbsMs; _maxFindBestCands = condicoesEnriched.length + substitutos.length; }
         let finalResult = result;
         
         // LOG DEPOIS DO MOTOR DE TROCA
@@ -5110,7 +5250,11 @@ condicoesEnriched = condicoes.map((c: any) => {
                       return !(cEan === failedEan && cCodDist === failedCodDist);
                     });
                     logs.push(`[RETRY-CODPRODDIST] Re-run motor: ${remainingCandidates.length} candidatos restantes (excluído EAN=${failedEan} CodDist=${failedCodDist})`);
+                    const _fbsR0 = Date.now();
                     const retryResult = findBestSubstitute(itemPedido, remainingCandidates, margemMinima, tiposAceitos, exigirEstoque, item.precoOriginal, effectiveOriginalHasStock, isGeneric, cortesRecentes);
+                    const _fbsRMs = Date.now() - _fbsR0;
+                    _tFindBest += _fbsRMs; _cFindBest++;
+                    if (_fbsRMs > _maxFindBest) { _maxFindBest = _fbsRMs; _maxFindBestCands = remainingCandidates.length; }
                     if (retryResult) {
                       const rm = retryResult.melhor;
                       const rCpd = rm.CodProdutoDist || rm.codProdutoDist;
@@ -5151,7 +5295,10 @@ condicoesEnriched = condicoes.map((c: any) => {
 
         if (!finalResult && !originalHasStock) {
           logs.push(`[ALERTA] Medicamento ${item.ean} sem estoque suficiente (${requestedQty}). Buscando alternativas similares...`);
-           const similares = await fetchSimilarGenerics(item.ean);
+           const _fsT0 = Date.now();
+           const similares = marketSimilarMap[cleanEan(item.ean)] || [];
+           _tFallbackSimilares += Date.now() - _fsT0;
+           _cFallbackSimilares++;
             const mappedSimilares = similares.map((s: any) => {
                const est = parseInt(String(s.qtd_estoque !== undefined ? s.qtd_estoque : (s.Estoque !== undefined ? s.Estoque : (s.estoque !== undefined ? s.estoque : 0))), 10) || 0;
                const smartPedPrice = getUnitCost(s);
@@ -5483,6 +5630,7 @@ condicoesEnriched = condicoes.map((c: any) => {
               let allTargetCondicoes: any[] = [];
               if (apiResponses[novoEan]) {
                 logs.push(`[TARGET-EAN-CHECK] EAN ${novoEan} encontrado no cache do batch — pulando chamada API`);
+                _cTargetEanCacheHit++;
                 const cachedResp = apiResponses[novoEan];
                 const cachedItem = cachedResp?.ItemPedido;
                 const cachedSubs = cachedResp?.Substitutos || [];
@@ -5497,10 +5645,13 @@ condicoesEnriched = condicoes.map((c: any) => {
               const targetHeaders = { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0" };
               const targetBody = JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Ean: novoEan, AceitaOntem: 1 } });
               const targetBodyMol = JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, Ean: novoEan, ConsideraTipo: 1 } });
+              const _teT0 = Date.now();
               const [targetEanResp, targetMolResp] = await Promise.all([
                 fetch(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`, { method: "POST", headers: targetHeaders, body: targetBody }).then(r => r.ok ? r.json() : null).catch(() => null),
                 fetch(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Molecula`, { method: "POST", headers: targetHeaders, body: targetBodyMol }).then(r => r.ok ? r.json() : null).catch(() => null)
               ]);
+              _tTargetEanApi += Date.now() - _teT0;
+              _cTargetEanApi++;
               // Extrair condições de ambas as respostas
               const eanItens = targetEanResp?.Retorno?.itens || [];
               const molItens = targetMolResp?.Retorno?.itens || [];
@@ -5597,10 +5748,13 @@ condicoesEnriched = condicoes.map((c: any) => {
           }
 
           if (!novaDescricao || !novoLab) {
-            const resolved = findDescAndLabFromApiResponses(novoEan);
-            if (resolved) {
-              if (!novaDescricao) novaDescricao = resolved.descricao;
-              if (!novoLab) novoLab = resolved.laboratorio;
+            const _dlStart3 = Date.now();
+            const _idx3 = _descLabIndex.get(novoEan);
+            _descLookupTotalMs += Date.now() - _dlStart3;
+            _descLookupCount++;
+            if (_idx3) {
+              if (!novaDescricao) novaDescricao = _idx3.descricao;
+              if (!novoLab) novoLab = _idx3.laboratorio;
             }
           }
 
@@ -6037,8 +6191,30 @@ condicoesEnriched = condicoes.map((c: any) => {
         lineFinal = item.originalLine;
       }
       finalLines.push(lineFinal);
+    } catch (itemErr: any) {
+      logs.push(`[ITEM-ERRO-FATAL] EAN ${item.ean} (${item.descricao}) — erro não tratado: ${itemErr?.message || itemErr}\nStack: ${itemErr?.stack || 'sem stack'}`);
+      console.error(`[ITEM-ERRO-FATAL] EAN ${item.ean}:`, itemErr);
+      finalLines.push(item.originalLine);
+    }
     }
 
+    logs.push(`[TIMING-RUPTURA-TOTAL] ${_ruturaTotalMs}ms somados em ${_ruturaCount} chamadas RUPTURA-REGEX`);
+    console.log(`[TIMING-RUPTURA-TOTAL] ${_ruturaTotalMs}ms somados em ${_ruturaCount} chamadas RUPTURA-REGEX`);
+    logs.push(`[TIMING-DESC-LOOKUP] ${_descLookupTotalMs}ms em ${_descLookupCount} buscas de descrição (via Map index) | ${_descHadDesc} já tinham desc, ${_descNeededLookup} precisaram lookup`);
+    console.log(`[TIMING-DESC-LOOKUP] ${_descLookupTotalMs}ms em ${_descLookupCount} buscas de descrição (via Map index) | ${_descHadDesc} já tinham desc, ${_descNeededLookup} precisaram lookup`);
+    logs.push(`[TIMING-BREAKDOWN] validateSwapEquivalence: ${_tValidate}ms/${_cValidate} | resolveDistName: ${_tDistName}ms/${_cDistName} | preco: ${_tPrice}ms/${_cPrice}`);
+    console.log(`[TIMING-BREAKDOWN] validateSwapEquivalence: ${_tValidate}ms/${_cValidate} | resolveDistName: ${_tDistName}ms/${_cDistName} | preco: ${_tPrice}ms/${_cPrice}`);
+    logs.push(`[TIMING-FINDBEST] total: ${_tFindBest}ms/${_cFindBest} chamadas | pior chamada: ${_maxFindBest}ms com ${_maxFindBestCands} candidatos`);
+    console.log(`[TIMING-FINDBEST] total: ${_tFindBest}ms/${_cFindBest} chamadas | pior chamada: ${_maxFindBest}ms com ${_maxFindBestCands} candidatos`);
+    logs.push(`[TIMING-TARGET-EAN] API: ${_tTargetEanApi}ms/${_cTargetEanApi} chamadas | cache-hit: ${_cTargetEanCacheHit}x`);
+    console.log(`[TIMING-TARGET-EAN] API: ${_tTargetEanApi}ms/${_cTargetEanApi} chamadas | cache-hit: ${_cTargetEanCacheHit}x`);
+    logs.push(`[TIMING-FALLBACK-SIMILARES] ${_tFallbackSimilares}ms/${_cFallbackSimilares} chamadas`);
+    console.log(`[TIMING-FALLBACK-SIMILARES] ${_tFallbackSimilares}ms/${_cFallbackSimilares} chamadas`);
+    _p4 = Date.now() - _f4Start;
+    logs.push(`[FASE-4-LOOP-ITENS] ${_p4}ms`);
+    console.log(`[FASE-4-LOOP-ITENS] ${_p4}ms`);
+
+    const _f6Start = Date.now();
     if (footerLine) {
       finalLines.push(footerLine);
     }
@@ -6071,6 +6247,14 @@ condicoesEnriched = condicoes.map((c: any) => {
       fs.writeFileSync(logFile, logs.join("\n"), "utf-8");
       logs.push(`[LOG-SALVO] ${logFile}`);
     } catch (e) { /* ignore */ }
+
+    _p6 = Date.now() - _f6Start;
+    const _totalPhases = _p1 + _p2 + _p3 + _p4 + _p5 + _p6;
+    const _totalReal = Date.now() - _phaseStart;
+    logs.push(`[FASE-6-RESTO] ${_p6}ms`);
+    logs.push(`[FASE-TOTAL-SOMA] ${_totalPhases}ms (fases 1-6 somadas) | real: ${_totalReal}ms`);
+    console.log(`[FASE-6-RESTO] ${_p6}ms`);
+    console.log(`[FASE-TOTAL-SOMA] ${_totalPhases}ms (fases 1-6 somadas) | real: ${_totalReal}ms`);
 
     res.json({
       optimizedFileContent,

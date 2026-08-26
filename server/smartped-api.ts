@@ -95,8 +95,12 @@ export async function fetchSimilarGenericsBatch(eans: string[]): Promise<Record<
   const uniqueEans = Array.from(new Set(eans.filter(e => e && e.trim()))).map(e => cleanEan(e)).filter(Boolean);
   if (uniqueEans.length === 0) return result;
 
+  const lotes: string[][] = [];
   for (let i = 0; i < uniqueEans.length; i += MAX_BATCH) {
-    const lote = uniqueEans.slice(i, i + MAX_BATCH);
+    lotes.push(uniqueEans.slice(i, i + MAX_BATCH));
+  }
+
+  await Promise.all(lotes.map(async (lote) => {
     try {
       const response = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/batch`, {
         method: "POST",
@@ -106,7 +110,8 @@ export async function fetchSimilarGenericsBatch(eans: string[]): Promise<Record<
       });
       if (!response.ok) {
         console.error(`Batch similares falhou: HTTP ${response.status}`);
-        continue;
+        for (const ean of lote) result[ean] = [];
+        return;
       }
       const data = await response.json();
       for (const ean of lote) {
@@ -118,12 +123,12 @@ export async function fetchSimilarGenericsBatch(eans: string[]): Promise<Record<
         }
       }
     } catch (error) {
-      console.error(`Erro no batch de similares (lote ${i}-${i + lote.length}):`, error);
+      console.error(`Erro no batch de similares:`, error);
       for (const ean of lote) {
         result[ean] = [];
       }
     }
-  }
+  }));
 
   return result;
 }

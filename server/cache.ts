@@ -1,4 +1,4 @@
-import { getCache, setCache } from "./database";
+import { getCache, getCacheBatch, setCache } from "./database";
 
 const SMARTPED_CACHE_TTL_MS = 5 * 60 * 1000;
 const smartpedCache = new Map<string, { data: any; ts: number }>();
@@ -24,6 +24,31 @@ export async function getFromCache(key: string): Promise<any | null> {
   }
 
   return null;
+}
+
+export async function getFromCacheBatch(keys: string[]): Promise<Record<string, any>> {
+  const result: Record<string, any> = {};
+  const l2Keys: string[] = [];
+  const now = Date.now();
+  for (const key of keys) {
+    const entry = smartpedCache.get(key);
+    if (entry && (now - entry.ts) < SMARTPED_CACHE_TTL_MS) {
+      result[key] = entry.data;
+    } else {
+      if (entry) smartpedCache.delete(key);
+      l2Keys.push(key);
+    }
+  }
+  if (l2Keys.length > 0) {
+    const dbData = await getCacheBatch(l2Keys);
+    for (const key of l2Keys) {
+      if (dbData[key] !== undefined) {
+        result[key] = dbData[key];
+        smartpedCache.set(key, { data: dbData[key], ts: now });
+      }
+    }
+  }
+  return result;
 }
 
 export function setInCache(key: string, data: any): void {

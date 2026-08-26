@@ -2460,6 +2460,96 @@ def chatbot_produto_vendas_resumo(ean):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/chatbot/produto/vendas-resumo/batch', methods=['POST'])
+def chatbot_produto_vendas_resumo_batch():
+    """
+    Versão em lote do vendas-resumo.
+    Aceita até 40 EANs e retorna o total agregado de vendas (últimos 4 meses) para cada um.
+    """
+    MAX_EANS = 40
+    data = request.get_json(force=True, silent=True)
+    if not data or not isinstance(data.get('eans'), list):
+        return jsonify({'success': False, 'error': 'Body deve conter {"eans": ["...", "..."]}'}), 400
+
+    eans = [str(e).strip() for e in data['eans'] if str(e).strip()]
+    if not eans:
+        return jsonify({'success': False, 'error': 'Lista de EANs vazia.'}), 400
+    if len(eans) > MAX_EANS:
+        return jsonify({'success': False, 'error': f'Máximo de {MAX_EANS} EANs por chamada.'}), 400
+
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        with psycopg2.connect(**DB_CONFIG) as conn:
+            with conn.cursor() as cur:
+                # Batch lookup: EANs → cod_reduzido
+                cur.execute("""
+                    SELECT cod_barra::text, cod_reduzido
+                    FROM cadcdbar
+                    WHERE cod_barra::text = ANY(%s)
+                """, (eans,))
+                ean_map = {row[0]: row[1] for row in cur.fetchall()}
+
+                resultado = {}
+                for ean in eans:
+                    if ean not in ean_map:
+                        resultado[ean] = {
+                            "total_qtd": 0, "num_vendas": 0,
+                            "primeira_venda": None, "ultima_venda": None
+                        }
+
+                cod_reduzidos = list(set(ean_map.values()))
+                if not cod_reduzidos:
+                    return jsonify(resultado), 200
+
+                # Batch query: vendas agregadas por cod_reduzido
+                cur.execute("""
+                    SELECT
+                        iv.cod_reduzido,
+                        COALESCE(SUM(iv.qtd_produto), 0) AS total_qtd,
+                        COUNT(*) AS num_vendas,
+                        TO_CHAR(MIN(v.dat_emissao), 'DD/MM/YYYY') AS primeira_venda,
+                        TO_CHAR(MAX(v.dat_emissao), 'DD/MM/YYYY') AS ultima_venda
+                    FROM cadcvend v
+                    INNER JOIN cadivend iv ON v.num_nota = iv.num_nota
+                        AND v.cod_rede = iv.cod_rede
+                        AND v.cod_filial = iv.cod_filial
+                    WHERE iv.cod_reduzido = ANY(%s)
+                      AND v.dat_emissao >= CURRENT_DATE - INTERVAL '4 months'
+                      AND v.cod_rede = %s
+                      AND v.cod_filial = %s
+                      AND v.tip_venda = 'V'
+                      AND (v.flg_excluido IS NULL OR v.flg_excluido = 'N')
+                      AND (iv.flg_excluido IS NULL OR iv.flg_excluido = 'N')
+                    GROUP BY iv.cod_reduzido
+                """, (cod_reduzidos, cod_rede, cod_filial))
+
+                vendas_map = {}
+                for row in cur.fetchall():
+                    vendas_map[row[0]] = {
+                        "total_qtd": float(row[1]) if row[1] else 0,
+                        "num_vendas": int(row[2]) if row[2] else 0,
+                        "primeira_venda": row[3],
+                        "ultima_venda": row[4]
+                    }
+
+                # Montar resposta: cada EAN aponta para seus dados
+                for ean, cod_red in ean_map.items():
+                    if ean in resultado:
+                        continue
+                    resultado[ean] = vendas_map.get(cod_red, {
+                        "total_qtd": 0, "num_vendas": 0,
+                        "primeira_venda": None, "ultima_venda": None
+                    })
+
+                return jsonify(resultado), 200
+
+    except Exception as e:
+        print(f"Erro em vendas_resumo_batch: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 
 @app.route('/api/chatbot/produto/vendas-semanais/<string:ean>', methods=['GET'])
 def chatbot_produto_vendas_semanais(ean):

@@ -1,3 +1,18 @@
+const SENSITIVE_TERMS = [
+  "LIMAO", "GUARANA", "LARANJA", "MORANGO", "ABACAXI", "UVA", "MENTA",
+  "TUTTI FRUTTI", "EUCALIPTO", "TRADICIONAL", "SEM SABOR",
+  "CHOCOLATE", "BAUNILHA", "NEUTRO", "COCO", "MACA", "CEREJA",
+  "MELANCIA", "MARACUJA", "PESSEGO", "TANGERINA", "SALADA DE FRUTAS",
+  "FRUTAS VERMELHAS", "FRUTAS TROPICAIS", "FRUTAS SILVESTRES",
+  "VERMELHO", "ROSA", "AZUL", "AMARELO", "VERDE", "BRANCO", "PRETO", "CINZA",
+  "DOURADO", "PRATA", "ALFAZEMA", "LAVANDA", "ERVA DOCE", "CALENDULA",
+  "CAMOMILA", "ALECRIM", "FRAMBOESA", "AMETISTA", "RENDA", "RENDINHA", "AMARELINDO",
+  "NUDE", "LILAS", "CORAL", "VINHO", "MARROM", "BEGE", "CREME"
+];
+const SENSITIVE_REGEXES = SENSITIVE_TERMS.map(
+  term => new RegExp(`\\b${term.replace(/\s+/g, "\\s+")}\\b`, 'i')
+);
+
 export function validateSwapEquivalence(
   orig: any,
   alt: any
@@ -146,23 +161,8 @@ export function validateSwapEquivalence(
   }
 
   // 2. Dicionário de Palavras-Chave de Sabores, Fragrâncias e Cores
-  const SENSITIVE_TERMS = [
-    // Lista estrita de termos de sabor
-    "LIMAO", "GUARANA", "LARANJA", "MORANGO", "ABACAXI", "UVA", "MENTA", 
-    "TUTTI FRUTTI", "EUCALIPTO", "TRADICIONAL", "SEM SABOR",
-    // Outras fragrâncias, sabores e cores para proteção estrita em perfumaria e correlatos
-    "CHOCOLATE", "BAUNILHA", "NEUTRO", "COCO", "MACA", "CEREJA", 
-    "MELANCIA", "MARACUJA", "PESSEGO", "TANGERINA", "SALADA DE FRUTAS",
-    "FRUTAS VERMELHAS", "FRUTAS TROPICAIS", "FRUTAS SILVESTRES",
-    "VERMELHO", "ROSA", "AZUL", "AMARELO", "VERDE", "BRANCO", "PRETO", "CINZA", 
-    "DOURADO", "PRATA", "ALFAZEMA", "LAVANDA", "ERVA DOCE", "CALENDULA", 
-    "CAMOMILA", "ALECRIM", "FRAMBOESA", "AMETISTA", "RENDA", "RENDINHA", "AMARELINDO",
-    "NUDE", "LILAS", "CORAL", "VINHO", "MARROM", "BEGE", "CREME"
-  ];
-
   // 3. Regra de Rejeição Absoluta (Hard Block de Sabores/Cores/Fragrâncias)
-  for (const term of SENSITIVE_TERMS) {
-    const termRegex = new RegExp(`\\b${term.replace(/\s+/g, "\\s+")}\\b`, 'i');
+  for (const termRegex of SENSITIVE_REGEXES) {
     const origHas = termRegex.test(normOrig);
     const altHas = termRegex.test(normAlt);
     if (origHas !== altHas) {
