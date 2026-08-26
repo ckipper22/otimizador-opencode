@@ -450,7 +450,8 @@ export function resolveCategoria(item: any): CategoriaProduto {
   if (!item) return "outros";
 
   // 1. FONTE PRIMARIA: Ferramentinhas "grupo" (mais confiavel, 100% nos testes)
-  const grupo = (item.grupo || item.classificacao || "").toLowerCase();
+  // Normalizar acentos: "Genérico" → "generico", "Referência" → "referencia"
+  const grupo = (item.grupo || item.classificacao || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if (grupo.includes("generico")) return "generico";
   if (grupo.includes("similar")) return "similar";
   if (grupo.includes("referencia") || grupo.includes("marca")) return "marca";
@@ -475,4 +476,124 @@ export function resolveCategoria(item: any): CategoriaProduto {
   if (desc.includes(" GEN ") || desc.includes("GENERICO") || desc.includes("GENÉRICO")) return "generico";
 
   return "outros";
+}
+
+export interface ClassificacaoProduto {
+  formaFarmaceutica: string;
+  unidadeApresentacao: number | null;
+  /** Fonte primária: cod_dcb:cod_concentracao (dosagem terapêutica real, só medicamento).
+   *  Fallback: regex de texto (ex: "500MG", "20MG/ML", ou volume "300ML" em cosmético).
+   *  Usado como critério de compatibilidade entre dois produtos — não é sempre "dosagem" no sentido farmacológico. */
+  identificadorApresentacao: string | null;
+  /** Identificador via cod_dcb:cod_concentracao (quando ambos existem). Ex: "06827:91" */
+  dcbConcentracao: string | null;
+  /** Identificador via regex de dosagem na descrição (sempre calculado quando possível). Ex: "750MG" */
+  dosagemTexto: string | null;
+  codDcb: string | null;
+  codConcentracao: string | null;
+  liberacaoProlongada: boolean;
+}
+
+const FORMAS_FARMaceuticas: string[][] = [
+  ["ENV", "ENVELOPE"], ["CP", "COMPRIMIDO"], ["CAP", "CAPSULA"], ["SH", "SHAMPOO"],
+  ["CR", "CREME"], ["DERM"], ["GEL"], ["LOCAO", "LOÇÃO"],
+  ["POM", "POMADA"], ["SOL", "SOLUCAO"], ["AER", "AEROSOL"],
+  ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"],
+  ["SACHET"], ["FR", "FRASCO"]
+];
+
+const DOSAGEM_REGEX = /\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i;
+
+export function classificarProduto(item: any): ClassificacaoProduto {
+  const desc = (item.descricao || item.nom_produto || item.Descricao || "").toUpperCase();
+  const nomDesc = (item.nom_descapresentacao || "").toUpperCase();
+
+  // 1. unidade_apresentacao (campo novo da API Ferramentinhas)
+  let unidade: number | null = item.unidade_apresentacao ?? null;
+  if (unidade === null && nomDesc) {
+    const m = nomDesc.match(/C\/\s*(\d+)/);
+    if (m) unidade = parseInt(m[1], 10);
+  }
+  if (unidade === null && desc) {
+    const m = desc.match(/(\d+)\s*(?:CP|COMP|CAPS|CAP|DRG|BL|AMB|AMP|SACHET|ENVEL|UN)\b/);
+    if (m) unidade = parseInt(m[1], 10);
+  }
+
+  // 2. Dosagem/volume: dois identificadores independentes
+  const codDcb = item.cod_dcb || item.CodDcb || null;
+  const codConc = item.cod_concentracao || item.CodConcentracao || null;
+
+  // 2a. dcbConcentracao: cod_dcb:cod_concentracao (estruturado, só quando ambos existem)
+  const dcbConcentracao = (codDcb && codConc) ? `${codDcb}:${codConc}` : null;
+
+  // 2b. dosagemTexto: regex na descrição (sempre calculado, funciona para SICF sem DCB)
+  const dosMatch = desc.match(DOSAGEM_REGEX);
+  const dosagemTexto = dosMatch ? dosMatch[0].toUpperCase().replace(/\s+/g, "") : null;
+
+  // identificadorApresentacao: mantido para retrocompatibilidade (DCB tem prioridade, fallback regex)
+  let identificador: string | null = dcbConcentracao || dosagemTexto;
+
+  // 3. Forma farmacêutica por keyword
+  let forma = "";
+  for (const grupo of FORMAS_FARMaceuticas) {
+    if (grupo.some(k => hasWordBoundary(desc, k))) {
+      forma = grupo[0];
+      break;
+    }
+  }
+
+  // 4. Liberação prolongada (L.P/XR) — nunca intercambiável com versão normal
+  const liberacaoProlongada = hasWordBoundary(desc, "L.P") || hasWordBoundary(desc, "LP") || hasWordBoundary(desc, "XR");
+
+  return { formaFarmaceutica: forma, unidadeApresentacao: unidade, identificadorApresentacao: identificador, dcbConcentracao, dosagemTexto, codDcb, codConcentracao: codConc, liberacaoProlongada };
+}
+
+export function mesmaApresentacao(a: any, b: any): boolean {
+  const ca = classificarProduto(a);
+  const cb = classificarProduto(b);
+
+  const aTemDados = ca.unidadeApresentacao !== null || ca.formaFarmaceutica !== "" || ca.identificadorApresentacao !== null;
+  const bTemDados = cb.unidadeApresentacao !== null || cb.formaFarmaceutica !== "" || cb.identificadorApresentacao !== null;
+
+  // FAIL-SAFE: se nenhum dos dois tem qualquer dado → excluir
+  if (!aTemDados && !bTemDados) return false;
+
+  // Critério 1: identificador de dosagem — dois modos de comparação
+  const temDcbA = !!ca.dcbConcentracao;
+  const temDcbB = !!cb.dcbConcentracao;
+  if (temDcbA && temDcbB) {
+    // Ambos têm DCB+concentração → comparar por estrutura (catálogo vs catálogo)
+    if (ca.dcbConcentracao !== cb.dcbConcentracao) return false;
+  } else {
+    // Pelo menos um sem DCB (ex: item SICF cru) → comparar por regex de dosagem
+    const temDosagemA = !!ca.dosagemTexto;
+    const temDosagemB = !!cb.dosagemTexto;
+    if (temDosagemA !== temDosagemB) return false;
+    if (temDosagemA && temDosagemB && ca.dosagemTexto !== cb.dosagemTexto) return false;
+  }
+
+  // Trava de exclusão: se ambos têm forma farmacêutica conhecida e ela diverge → excluir
+  if (ca.formaFarmaceutica && cb.formaFarmaceutica && ca.formaFarmaceutica !== cb.formaFarmaceutica) {
+    return false;
+  }
+
+  // Trava de exclusão: liberação prolongada (L.P/XR) nunca é a mesma
+  // apresentação que a versão normal do mesmo remédio, mesmo com
+  // DCB/concentração/unidade iguais.
+  if (ca.liberacaoProlongada !== cb.liberacaoProlongada) {
+    return false;
+  }
+
+  // Critério 2: unidade_apresentacao — se ambos têm, comparar direto
+  if (ca.unidadeApresentacao !== null && cb.unidadeApresentacao !== null) {
+    return ca.unidadeApresentacao === cb.unidadeApresentacao;
+  }
+
+  // Critério 3: forma farmacêutica — se ambos têm, devem ser iguais
+  if (ca.formaFarmaceutica && cb.formaFarmaceutica) {
+    return ca.formaFarmaceutica === cb.formaFarmaceutica;
+  }
+
+  // Sem overlap suficiente → excluir (fail-safe)
+  return false;
 }

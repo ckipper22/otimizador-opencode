@@ -10,7 +10,7 @@ import { cacheKey, getFromCache, setInCache, MINIMOS_GLOBAL_CACHE, updateMinimos
 import { rateLimitMiddleware, startRateLimitPurge } from "./server/rate-limiter";
 import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatabaseRecord, loadEanDatabase } from "./server/ean-utils";
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
-import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary } from "./server/parsers";
+import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
 import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
@@ -581,38 +581,12 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
     const baseUrl = process.env.SMARTPED_PRODUCTION_URL || "https://api.smartped.com.br";
     const token = process.env.SMARTPED_PRODUCTION_TOKEN;
 
-    // Buscar vendas via vendas-detalhadas (mais confiável que vendas-semanais)
+    // Buscar vendas via vendas-resumo (agregado sem limite de linhas)
     try {
-      const vendasUrl = `${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-detalhadas/${product.ean}`;
-      const vendasRes = await fetch(vendasUrl);
-      if (vendasRes.ok) {
-        const vendasData = await vendasRes.json();
-        const vendasArray = vendasData?.data || [];
-        if (vendasArray.length > 0) {
-          // Filtrar apenas últimos 4 meses
-          const hoje = new Date();
-          const quatroMesesAtras = new Date(hoje.getFullYear(), hoje.getMonth() - 4, hoje.getDate());
-          const vendasFiltradas = vendasArray.filter((v: any) => {
-            const parts = (v.data_venda || "").split("/");
-            const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
-            return !isNaN(d.getTime()) && d >= quatroMesesAtras;
-          });
-          if (vendasFiltradas.length > 0) {
-            const dates = vendasFiltradas.map((v: any) => {
-              const parts = (v.data_venda || "").split("/");
-              return new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
-            }).filter((d: Date) => !isNaN(d.getTime()));
-            if (dates.length > 0) {
-              const primeira = new Date(Math.min(...dates.map(d => d.getTime())));
-              const ultima = new Date(Math.max(...dates.map(d => d.getTime())));
-              const mesesDiff = Math.max(1, (ultima.getFullYear() - primeira.getFullYear()) * 12 + (ultima.getMonth() - primeira.getMonth()) + 1);
-              const totalVendas = vendasFiltradas.reduce((s: number, v: any) => s + parseFloat(String(v.quantidade || "1")), 0);
-              vendasMensais = Math.round(totalVendas / mesesDiff);
-            }
-          }
-        }
-      } else {
-        console.log(`[ANALISE] vendas HTTP ${vendasRes.status} para EAN ${product.ean}`);
+      const { totalVendas, primeira, ultima } = await fetchVendasResumo(product.ean);
+      if (totalVendas > 0 && primeira && ultima) {
+        const mesesDiff = Math.max(1, (ultima.getFullYear() - primeira.getFullYear()) * 12 + (ultima.getMonth() - primeira.getMonth()) + 1);
+        vendasMensais = Math.round(totalVendas / mesesDiff);
       }
     } catch (err: any) {
       console.log(`[ANALISE] vendas erro: ${err.message} para EAN ${product.ean}`);
@@ -626,33 +600,18 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const estoqueData = await estoqueRes.json();
         const produtosRaw = estoqueData?.produtos || [];
 
-        // Filtro de apresentação (mesmo padrão do SICF server.ts:3610-3640)
-        const _PRES_KW = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG", "AMP", "AMPOLA", "SUSP", "SUSPENSAO", "GTS", "INJ", "INJETAVEL"];
-        const _PRES_GRUPOS = [
-          ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
-          ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
-          ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"],
-          ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
-        ];
-        const origDesc = (product.description || product.produto || "").toUpperCase();
-        const origPresSet = new Set(_PRES_KW.filter(k => hasWordBoundary(origDesc, k)));
-        const getGrupoIndex = (pres: Set<string>): number[] => {
-          const indices: number[] = [];
-          for (let i = 0; i < _PRES_GRUPOS.length; i++) {
-            if (_PRES_GRUPOS[i].some(k => pres.has(k))) indices.push(i);
-          }
-          return indices;
-        };
-        const origGrupos = getGrupoIndex(origPresSet);
+        // Filtro: excluir Referência/Ético (categoria "marca") — só incluir genéricos e similares
+        const produtosFiltered = produtosRaw.filter((p: any) => {
+          const cat = resolveCategoria(p);
+          return cat !== "marca";
+        });
 
-        const produtos = origGrupos.length > 0
-          ? produtosRaw.filter((p: any) => {
-              const pDesc = (p.nom_produto || p.descricao || "").toUpperCase();
-              const pPres = new Set(_PRES_KW.filter(k => hasWordBoundary(pDesc, k)));
-              const pGrupos = getGrupoIndex(pPres);
-              return origGrupos.some(g => pGrupos.includes(g));
-            })
-          : produtosRaw;
+        // Filtro de apresentação (mesmo padrão do SICF server.ts:3610-3640)
+        // Enriquecer product com DCB do catálogo para comparação correta
+        const dcbRef1 = produtosRaw[0]?.cod_dcb;
+        const concRef1 = produtosRaw[0]?.cod_concentracao;
+        const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
+        const produtos = produtosFiltered.filter((p: any) => mesmaApresentacao(productComDcb, p));
 
         estoqueTotal = produtos.reduce((sum: number, p: any) => sum + (p.qtd_estoque || 0), 0);
         
@@ -1384,6 +1343,24 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
             erpEans = allProdutos.filter((p: any) => (p.ean || p.cod_barra) && !smartPedOnlyEans.includes(p.ean || p.cod_barra)).map((p: any) => p.ean || p.cod_barra);
             console.log(`[OFERTAS-DIA] ERP-FALLBACK: eansGrupo vazio, usando ${erpEans.length} EANs de allProdutos`);
           }
+
+          // Filtro: excluir EANs de Referência/Ético (categoria "marca") — só incluir genéricos e similares
+          if (allProdutos.length > 0) {
+            const eanCategoriaMap = new Map<string, string>();
+            for (const p of allProdutos) {
+              const ean = p.ean || p.cod_barra || "";
+              if (ean) eanCategoriaMap.set(ean, resolveCategoria(p));
+            }
+            const beforeRefFilter = erpEans.length;
+            erpEans = erpEans.filter(ean => {
+              const cat = eanCategoriaMap.get(ean);
+              return !cat || cat !== "marca"; // se não tem info, incluir (fallback seguro)
+            });
+            if (beforeRefFilter !== erpEans.length) {
+              console.log(`[REF-FILTER] ${beforeRefFilter} erpEans → ${erpEans.length} após excluir Referência/Ético (${beforeRefFilter - erpEans.length} removidos)`);
+            }
+          }
+
           const erpEanSet = new Set(erpEans);
 
           // PASSO 2: Analisar com TODOS os EANs do grupo
@@ -1397,43 +1374,25 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
           fs.appendFileSync('debug-vendas.log', `[${new Date().toISOString()}] PRE-CHECK erpEans.length=${erpEans.length} eanList.length=${eanList.length} analysis.vendasMensais=${analysis.vendasMensais}\n`);
           if (erpEans.length >= 1) {
             try {
-              // Filtrar eans por apresentação usando descrições do allProdutos (resultados buscar-lote)
-              const _PRES_KW_V = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG"];
-              const _PRES_GRUPOS_V = [
-                ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
-                ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
-                ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"]
-              ];
+              // Filtrar eans por apresentação usando classificarProduto()
               const origDescV = (product.description || product.produto || "").toUpperCase();
-              const origPresSetV = new Set(_PRES_KW_V.filter(k => hasWordBoundary(origDescV, k)));
-              const getGrupoIdxV = (pres: Set<string>): number[] => {
-                const idx: number[] = [];
-                for (let i = 0; i < _PRES_GRUPOS_V.length; i++) {
-                  if (_PRES_GRUPOS_V[i].some(k => pres.has(k))) idx.push(i);
-                }
-                return idx;
-              };
-              const origGruposV = getGrupoIdxV(origPresSetV);
 
-              // Mapa EAN → nom_produto de TODAS as fontes (buscar-lote + eansGrupo)
-              const eanToDesc = new Map<string, string>();
+              // Mapa EAN → produto de TODAS as fontes (buscar-lote + eansGrupo)
+              const eanToProduto = new Map<string, any>();
               for (const p of allProdutos) {
                 const e = p.ean || p.cod_barra || "";
-                if (e && p.nom_produto) eanToDesc.set(e, p.nom_produto);
+                if (e) eanToProduto.set(e, p);
               }
               for (const e of eansGrupo) {
-                if (e.ean && e.nom_produto) eanToDesc.set(e.ean, e.nom_produto);
+                if (e.ean) eanToProduto.set(e.ean, e);
               }
-              if (product.ean) eanToDesc.set(product.ean, product.description || product.produto || "");
+              if (product.ean) eanToProduto.set(product.ean, product);
 
               const eanListFiltrado: string[] = [];
               for (const ean of erpEans) {
-                if (origGruposV.length === 0) { eanListFiltrado.push(ean); continue; }
-                const pDesc = (eanToDesc.get(ean) || "").toUpperCase();
-                if (!pDesc) continue; // sem descrição = excluir (SmartPed wildcards sem dados locais)
-                const pPres = new Set(_PRES_KW_V.filter(k => hasWordBoundary(pDesc, k)));
-                const pGrupos = getGrupoIdxV(pPres);
-                if (origGruposV.some(g => pGrupos.includes(g))) eanListFiltrado.push(ean);
+                const pProd = eanToProduto.get(ean);
+                if (!pProd) continue;
+                if (mesmaApresentacao(product, pProd)) eanListFiltrado.push(ean);
               }
 
               // Somar vendas dos EANs filtrados e dividir por meses reais
@@ -1441,32 +1400,12 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
               let primeiraData: Date | null = null;
               let ultimaData: Date | null = null;
               const vendasPromises = eanListFiltrado.map(async (ean: string) => {
-                try {
-                  const vendasRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-detalhadas/${ean}`);
-                  if (vendasRes.ok) {
-                    const vendasData = await vendasRes.json();
-                    const vendasArray = vendasData?.data || [];
-                    const hoje = new Date();
-                    const quatroMesesAtras = new Date(hoje.getFullYear(), hoje.getMonth() - 4, hoje.getDate());
-                    const vendasFiltradas = vendasArray.filter((v: any) => {
-                      const parts = (v.data_venda || "").split("/");
-                      const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
-                      return !isNaN(d.getTime()) && d >= quatroMesesAtras;
-                    });
-                    if (vendasFiltradas.length === 0) return 0;
-                    // Rastrear primeira/ultima data para calcular mesesDiff real
-                    for (const v of vendasFiltradas) {
-                      const parts = (v.data_venda || "").split("/");
-                      const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
-                      if (!isNaN(d.getTime())) {
-                        if (!primeiraData || d < primeiraData) primeiraData = d;
-                        if (!ultimaData || d > ultimaData) ultimaData = d;
-                      }
-                    }
-                    return vendasFiltradas.reduce((s: number, v: any) => s + parseFloat(String(v.quantidade || "1")), 0);
-                  }
-                } catch {}
-                return 0;
+                const { totalVendas, primeira, ultima } = await fetchVendasResumo(ean);
+                if (totalVendas > 0 && primeira && ultima) {
+                  if (!primeiraData || primeira < primeiraData) primeiraData = primeira;
+                  if (!ultimaData || ultima > ultimaData) ultimaData = ultima;
+                }
+                return totalVendas;
               });
               const vendasResults = await Promise.all(vendasPromises);
               totalVendasRaw = vendasResults.reduce((a, b) => a + b, 0);
@@ -2027,8 +1966,8 @@ app.post("/api/ofertas-dia/analisar-referencia", async (req, res) => {
     // Deduplicar EANs (mesmo EAN pode aparecer em mais de 1 lab)
     const uniqueEans = [...new Map(eanList.filter((e: any) => e.ean).map((e: any) => [e.ean, e])).values()];
 
-    // Buscar vendas de TODOS os EANs UNICOS via vendas-detalhadas (últimos 4 meses)
-    // AGREGAR vendas e depois dividir por 4 meses (mesmo método do SICF)
+    // Buscar vendas de TODOS os EANs UNICOS via vendas-resumo (agregado sem limite)
+    // AGREGAR vendas e depois dividir por meses reais (mesmo método do SICF)
     let totalVendasRaw = 0;
     let totalVendas = 0;
     let primeiraDataRef: Date | null = null;
@@ -2036,34 +1975,13 @@ app.post("/api/ofertas-dia/analisar-referencia", async (req, res) => {
     const eansComMovimento: any[] = [];
     const vendasPromises = uniqueEans
       .map(async (e: any) => {
-        try {
-          const vendasRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-detalhadas/${e.ean}`);
-          if (vendasRes.ok) {
-            const vendasData = await vendasRes.json();
-            const vendasArray = vendasData?.data || [];
-            const hoje = new Date();
-            const quatroMesesAtras = new Date(hoje.getFullYear(), hoje.getMonth() - 4, hoje.getDate());
-            const vendasFiltradas = vendasArray.filter((v: any) => {
-              const parts = (v.data_venda || "").split("/");
-              const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
-              return !isNaN(d.getTime()) && d >= quatroMesesAtras;
-            });
-            if (vendasFiltradas.length === 0) return 0;
-            eansComMovimento.push(e);
-            // Rastrear primeira/ultima data para mesesDiff real
-            for (const v of vendasFiltradas) {
-              const parts = (v.data_venda || "").split("/");
-              const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
-              if (!isNaN(d.getTime())) {
-                if (!primeiraDataRef || d < primeiraDataRef) primeiraDataRef = d;
-                if (!ultimaDataRef || d > ultimaDataRef) ultimaDataRef = d;
-              }
-            }
-            const totalVendasEan = vendasFiltradas.reduce((s: number, v: any) => s + parseFloat(String(v.quantidade || "1")), 0);
-            return totalVendasEan;
-          }
-        } catch {}
-        return 0;
+        const { totalVendas, primeira, ultima } = await fetchVendasResumo(e.ean);
+        if (totalVendas > 0 && primeira && ultima) {
+          eansComMovimento.push(e);
+          if (!primeiraDataRef || primeira < primeiraDataRef) primeiraDataRef = primeira;
+          if (!ultimaDataRef || ultima > ultimaDataRef) ultimaDataRef = ultima;
+        }
+        return totalVendas;
       });
     const vendasResults = await Promise.all(vendasPromises);
     totalVendasRaw = vendasResults.reduce((a, b) => a + b, 0);
@@ -2538,6 +2456,31 @@ async function fetchWithRetry(url: string, options: RequestInit, timeoutMs = 150
   throw lastError;
 }
 
+async function fetchVendasResumo(ean: string): Promise<{ totalVendas: number; primeira: Date | null; ultima: Date | null }> {
+  try {
+    const vendasRes = await fetchWithRetry(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-resumo/${ean}`, {}, 10000, 1).catch(() => null);
+    if (vendasRes?.ok) {
+      const vendasData = await vendasRes.json().catch(() => ({}));
+      const d = vendasData?.data || {};
+      const totalVendas = Number(d.total_qtd || 0);
+      if (totalVendas === 0 || !d.primeira_venda || !d.ultima_venda) {
+        return { totalVendas: 0, primeira: null, ultima: null };
+      }
+      const parseData = (s: string) => {
+        const parts = (s || "").split("/");
+        return new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
+      };
+      const primeira = parseData(d.primeira_venda);
+      const ultima = parseData(d.ultima_venda);
+      if (isNaN(primeira.getTime()) || isNaN(ultima.getTime())) {
+        return { totalVendas: 0, primeira: null, ultima: null };
+      }
+      return { totalVendas, primeira, ultima };
+    }
+  } catch {}
+  return { totalVendas: 0, primeira: null, ultima: null };
+}
+
 const SYNC_STATE = { running: false, logs: [] as string[], totalSync: 0, totalPrincipios: 0, totalLancamentos: 0, totalSugestoes: 0 };
 
 async function syncEnrichAndSave(ean: string, token: string, cnpj: string, lanc: any, sug: any, logs: string[]) {
@@ -2980,44 +2923,10 @@ app.post("/api/optimize", async (req, res) => {
             let rejeitados = 0;
             for (const desc of DESCRICOES_PARA_BUSCAR) {
               const prods = resultados[desc.termo] || [];
-              const origDescUpper = (desc.item.descricao || "").toUpperCase();
-              // Extrair indicadores de apresentação do produto original
-              const PRESKeywords = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG", "AMP", "AMPOLA", "SUSP", "SUSPENSAO", "GTS", " gotas", "INJ", "INJETAVEL"];
-              const PRES_GRUPOS = [
-                ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
-                ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
-                ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"],
-                ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
-              ];
-              const getGrupoIdx = (pres: string[]): number[] => {
-                const idx: number[] = [];
-                for (let i = 0; i < PRES_GRUPOS.length; i++) {
-                  if (PRES_GRUPOS[i].some(k => pres.includes(k))) idx.push(i);
-                }
-                return idx;
-              };
-              const origPresTerms = PRESKeywords.filter(k => origDescUpper.includes(k));
-              const origDosMatch = origDescUpper.match(/\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i);
-              const origDosage = origDosMatch ? origDosMatch[0].toUpperCase().replace(/\s+/g, "") : "";
-              const origGrupos = getGrupoIdx(origPresTerms);
               for (const p of prods) {
                 const ean = cleanEan(p.ean || p.cod_barra || "");
                 if (ean && !eansToQuoteSet.has(ean)) {
-                  const prodDescUpper = (p.nom_produto || p.descricao || "").toUpperCase();
-                  if (origGrupos.length > 0 || origDosage) {
-                    const prodPresTerms = PRESKeywords.filter(k => prodDescUpper.includes(k));
-                    const prodGrupos = getGrupoIdx(prodPresTerms);
-                    let hasPresDivergence = false;
-                    for (const g of origGrupos) {
-                      if (!prodGrupos.includes(g)) { hasPresDivergence = true; break; }
-                    }
-                    if (hasPresDivergence) { rejeitados++; continue; }
-                    if (origDosage) {
-                      const prodDosMatch = prodDescUpper.match(/\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i);
-                      const prodDosage = prodDosMatch ? prodDosMatch[0].toUpperCase().replace(/\s+/g, "") : "";
-                      if (prodDosage && origDosage !== prodDosage) { rejeitados++; continue; }
-                    }
-                  }
+                  if (!mesmaApresentacao(desc.item, p)) { rejeitados++; continue; }
                   const dbRec = getEanDatabaseRecord(ean);
                   if (!dbRec || validateSwapEquivalence(desc.item, p)) {
                     eansToQuoteSet.add(ean);
@@ -3039,6 +2948,29 @@ app.post("/api/optimize", async (req, res) => {
     const eansToQuote = Array.from(eansToQuoteSet);
     logs.push(`[MOTOR AGRUPAMENTO] Ampliado o leque de cotaÃ§Ã£o de ${uniqueEans.length} EANs originais para ${eansToQuote.length} EANs totais de concorrentes.`);
 
+    // ===== MAPA DE CATEGORIA POR EAN (reaproveita marketSimilarMap já buscado) =====
+    // Para cada EAN original do SICF, tenta encontrar o próprio produto na lista de similares
+    // (o endpoint /similares/{ean} retorna TODOS os produtos com mesma DCB+concentração,
+    // incluindo o próprio, desde que tenha estoque/demanda). Match por EAN normalizado via cleanEan.
+    // Se o item original não tem estoque/demand, não aparece na lista → fica sem entrada no map.
+    const eanCategoriaMap = new Map<string, CategoriaProduto>();
+    for (const origEan of uniqueEans) {
+      const eanClean = cleanEan(origEan);
+      if (!eanClean) continue;
+      const similares = marketSimilarMap[eanClean] || [];
+      const selfProduct = similares.find((s: any) => cleanEan(s.ean || s.cod_barra || "") === eanClean);
+      if (selfProduct) {
+        const cat = resolveCategoria(selfProduct);
+        if (cat !== "outros") {
+          eanCategoriaMap.set(eanClean, cat);
+        }
+      }
+    }
+    if (eanCategoriaMap.size > 0) {
+      const cats = [...eanCategoriaMap.values()].reduce((acc, c) => { acc[c] = (acc[c] || 0) + 1; return acc; }, {} as Record<string, number>);
+      logs.push(`[CATEGORIA] eanCategoriaMap populado: ${eanCategoriaMap.size} EANs (${Object.entries(cats).map(([k, v]) => `${k}:${v}`).join(", ")})`);
+    }
+
     // ===== WHATSAPP: Regras de Laboratório =====
     // Carregar regras ativas para o CNPJ e marcar itens que vão direto pro WhatsApp
     const whatsappRulesAtivas: any[] = [];
@@ -3056,11 +2988,24 @@ app.post("/api/optimize", async (req, res) => {
             const matches = labUpper.includes(termoUpper) || termoUpper.includes(labUpper);
             if (!matches) continue;
 
-            // Verificar filtro por tipo
+            // Verificar filtro por tipo — fonte primária: eanCategoriaMap (Ferramentinhas via marketSimilarMap)
             const tipoFiltro = rule.tipo_filtro || rule.tipoFiltro || "todos";
-            const descUpper = (item.descricao || "").toUpperCase();
-            const isGenerico = descUpper.includes("(G)") || descUpper.includes("GENERICO") || descUpper.includes("GENÉRICO");
-            const isSimilar = descUpper.includes("(S)") || descUpper.includes("SIMILAR");
+            const origEanForCat = cleanEan(item.ean);
+            const catFromMap = eanCategoriaMap.get(origEanForCat);
+
+            let isGenerico: boolean;
+            let isSimilar: boolean;
+            if (catFromMap) {
+              // Dado confiável da Ferramentinhas (match por EAN exato na lista de similares)
+              isGenerico = catFromMap === "generico";
+              isSimilar = catFromMap === "similar";
+            } else {
+              // Fallback: regex de texto na descrição SICF quando a Ferramentinhas não tem o dado
+              // (item sem estoque/demanda, ou EAN não encontrado no banco Trier)
+              const descUpper = (item.descricao || "").toUpperCase();
+              isGenerico = descUpper.includes("(G)") || descUpper.includes("GENERICO") || descUpper.includes("GENÉRICO");
+              isSimilar = descUpper.includes("(S)") || descUpper.includes("SIMILAR");
+            }
 
             let tipoMatch = true;
             if (tipoFiltro === "genericos") tipoMatch = isGenerico;
@@ -3073,23 +3018,23 @@ app.post("/api/optimize", async (req, res) => {
             }
           }
         }
-        // Remover EANs de itens WhatsApp do eansToQuote (não precisa consultar SmartPed)
+        // NÃO remover EANs WhatsApp do eansToQuote — precisamos consultar SmartPed para ter dados de comparação
         if (whatsappItemsMap.size > 0) {
-          const waEans = new Set<string>();
-          for (const { item } of whatsappItemsMap.values()) {
-            waEans.add(cleanEan(item.ean));
-          }
-          const originalCount = eansToQuote.length;
-          for (let i = eansToQuote.length - 1; i >= 0; i--) {
-            if (waEans.has(eansToQuote[i])) {
-              eansToQuote.splice(i, 1);
-            }
-          }
-          logs.push(`[WHATSAPP-RULES] ${whatsappItemsMap.size} item(s) redirecionados para WhatsApp. EANs removidos da cotação SmartPed: ${originalCount - eansToQuote.length}`);
+          logs.push(`[WHATSAPP-RULES] ${whatsappItemsMap.size} item(s) com regra WhatsApp. EANs mantidos na cotação SmartPed para dados de referência.`);
         }
       }
     } catch (err: any) {
       logs.push(`[WHATSAPP-RULES] Erro ao carregar regras: ${err.message}`);
+    }
+
+    // Set de nomes de laboratórios que têm regra WhatsApp (para filtrar substitutos)
+    const whatsappLabNames = new Set<string>();
+    for (const { rule } of whatsappItemsMap.values()) {
+      const termo = (rule.termo_filtro || rule.termoFiltro || "").toUpperCase().trim();
+      if (termo) whatsappLabNames.add(termo);
+    }
+    if (whatsappLabNames.size > 0) {
+      logs.push(`[WHATSAPP-RULES] Labs com regra WhatsApp: ${[...whatsappLabNames].join(", ")}`);
     }
 
     const apiResponses: Record<string, any> = {};
@@ -3890,75 +3835,57 @@ app.post("/api/optimize", async (req, res) => {
     const vendasEstoqueMap: Record<string, { vendasMensais: number; estoqueTotal: number }> = {};
     {
       // 1. Mapear cada EAN expandido → EAN original do SICF (filtrado por apresentação)
-      const _PRES_KW_VENDAS = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL"];
-      const _PRES_GRUPOS_VENDAS = [
-        ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
-        ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"]
-      ];
-      const _getGrupoIdxVendas = (pres: string[]): number[] => {
-        const idx: number[] = [];
-        for (let i = 0; i < _PRES_GRUPOS_VENDAS.length; i++) {
-          if (_PRES_GRUPOS_VENDAS[i].some(k => pres.includes(k))) idx.push(i);
-        }
-        return idx;
-      };
       const eanToOriginal = new Map<string, string>();
       for (const item of parsedItems) {
         const origEan = cleanEan(item.ean);
         if (!origEan) continue;
         eanToOriginal.set(origEan, origEan);
-        const origDesc = (item.descricao || "").toUpperCase();
-        const origPres = _PRES_KW_VENDAS.filter(k => hasWordBoundary(origDesc, k));
-        const origGrupos = _getGrupoIdxVendas(origPres);
         const similares = (marketSimilarMap[origEan] || []).filter((s: any) => s._origem !== "smartped");
+        // Enriquecer item com DCB do primeiro similar para comparação correta
+        const dcbRef3 = similares[0]?.cod_dcb;
+        const concRef3 = similares[0]?.cod_concentracao;
+        const itemComDcb = (dcbRef3 && concRef3) ? { ...item, cod_dcb: dcbRef3, cod_concentracao: concRef3 } : item;
         for (const s of similares) {
           const sEan = cleanEan(s.cod_barra || s.Ean || s.ean || "");
           if (sEan && !eanToOriginal.has(sEan)) {
-            // Filtrar por apresentação: só adicionar se mesmo grupo
-            const sDesc = (s.nom_produto || s.descricao || "").toUpperCase();
-            const sPres = _PRES_KW_VENDAS.filter(k => hasWordBoundary(sDesc, k));
-            const sGrupos = _getGrupoIdxVendas(sPres);
-            if (origGrupos.length > 0) {
-              const match = origGrupos.some(g => sGrupos.includes(g));
-              if (!match) continue;
-            }
-            eanToOriginal.set(sEan, origEan);
+            if (mesmaApresentacao(itemComDcb, s)) eanToOriginal.set(sEan, origEan);
           }
         }
       }
       const allEansForVendas = Array.from(eanToOriginal.keys());
+
+      // Filtro: excluir EANs de Referência/Ético (categoria "marca") — só incluir genéricos e similares
+      {
+        const eanCatMap = new Map<string, string>();
+        for (const item of parsedItems) {
+          const origEan = cleanEan(item.ean);
+          if (!origEan) continue;
+          const similares = (marketSimilarMap[origEan] || []).filter((s: any) => s._origem !== "smartped");
+          for (const s of similares) {
+            const sEan = cleanEan(s.cod_barra || s.Ean || s.ean || "");
+            if (sEan) eanCatMap.set(sEan, resolveCategoria(s));
+          }
+        }
+        const beforeRefFilter = allEansForVendas.length;
+        for (let i = allEansForVendas.length - 1; i >= 0; i--) {
+          const cat = eanCatMap.get(allEansForVendas[i]);
+          if (cat === "marca") allEansForVendas.splice(i, 1);
+        }
+        if (beforeRefFilter !== allEansForVendas.length) {
+          logs.push(`[METRICAS-REF-FILTER] ${beforeRefFilter} EANs → ${allEansForVendas.length} após excluir Referência/Ético (${beforeRefFilter - allEansForVendas.length} removidos)`);
+        }
+      }
+
       logs.push(`[METRICAS] Buscando vendas para ${allEansForVendas.length} EANs (${parsedItems.filter(i => i.ean).length} originais + ${allEansForVendas.length - parsedItems.filter(i => i.ean).length} similares)...`);
 
-      // 2. Buscar vendas de TODOS os EANs (expandidos) via vendas-detalhadas
+      // 2. Buscar vendas de TODOS os EANs (expandidos) via vendas-resumo (agregado)
       const vendasByOriginal: Record<string, { total: number; meses: number }> = {};
       const vendasPromises = allEansForVendas.map(async (ean) => {
-        try {
-          const vendasRes = await fetchWithRetry(`${CONFIG.FERRAMENTINHAS_API_URL}/api/chatbot/produto/vendas-detalhadas/${ean}`, {}, 10000, 1).catch(() => null);
-          if (vendasRes?.ok) {
-            const vendasData = await vendasRes.json().catch(() => ({}));
-            const vendasArray = vendasData?.data || [];
-            if (vendasArray.length === 0) return { ean, totalVendas: 0, meses: 0 };
-            // Filtrar apenas últimos 4 meses
-            const hoje = new Date();
-            const quatroMesesAtras = new Date(hoje.getFullYear(), hoje.getMonth() - 4, hoje.getDate());
-            const vendasFiltradas = vendasArray.filter((v: any) => {
-              const parts = (v.data_venda || "").split("/");
-              const d = new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
-              return !isNaN(d.getTime()) && d >= quatroMesesAtras;
-            });
-            if (vendasFiltradas.length === 0) return { ean, totalVendas: 0, meses: 0 };
-            const dates = vendasFiltradas.map((v: any) => {
-              const parts = (v.data_venda || "").split("/");
-              return new Date(parseInt(parts[2] || "2026"), parseInt(parts[1] || "1") - 1, parseInt(parts[0] || "1"));
-            }).filter((d: Date) => !isNaN(d.getTime()));
-            if (dates.length === 0) return { ean, totalVendas: 0, meses: 0 };
-            const primeira = new Date(Math.min(...dates.map(d => d.getTime())));
-            const ultima = new Date(Math.max(...dates.map(d => d.getTime())));
-            const mesesDiff = Math.max(1, (ultima.getFullYear() - primeira.getFullYear()) * 12 + (ultima.getMonth() - primeira.getMonth()) + 1);
-            const totalVendas = vendasFiltradas.reduce((s: number, v: any) => s + parseFloat(String(v.quantidade || "1")), 0);
-            return { ean, totalVendas, meses: mesesDiff };
-          }
-        } catch {}
+        const { totalVendas, primeira, ultima } = await fetchVendasResumo(ean);
+        if (totalVendas > 0 && primeira && ultima) {
+          const mesesDiff = Math.max(1, (ultima.getFullYear() - primeira.getFullYear()) * 12 + (ultima.getMonth() - primeira.getMonth()) + 1);
+          return { ean, totalVendas, meses: mesesDiff };
+        }
         return { ean, totalVendas: 0, meses: 0 };
       });
       const vendasResults = await Promise.all(vendasPromises);
@@ -3980,38 +3907,18 @@ app.post("/api/optimize", async (req, res) => {
         let estoqueTotal = 0;
         try {
           const itemOrig = parsedItems.find(it => cleanEan(it.ean) === ean);
-          const origDesc = (itemOrig?.descricao || "").toUpperCase();
-          const _PRES_KW2 = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL"];
-          const origPresSet = new Set(_PRES_KW2.filter(k => origDesc.includes(k)));
-          const PRES_GRUPOS = [
-            ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
-            ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
-            ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"],
-            ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
-          ];
-          const getGrupoIndex = (pres: Set<string>): number[] => {
-            const indices: number[] = [];
-            for (let i = 0; i < PRES_GRUPOS.length; i++) {
-              if (PRES_GRUPOS[i].some(k => pres.has(k))) indices.push(i);
-            }
-            return indices;
-          };
           const estRes = await fetchWithRetry(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${ean}`, {}, 10000, 1).catch(() => null);
           if (estRes?.ok) {
             const estData = await estRes.json().catch(() => ({}));
             const produtos = estData?.produtos || [];
-            const produtosFiltrados = origPresSet.size > 0
-              ? produtos.filter((p: any) => {
-                  const pDesc = (p.nom_produto || p.descricao || "").toUpperCase();
-                  const pPres = new Set(_PRES_KW2.filter(k => pDesc.includes(k)));
-                  const origGrupos = getGrupoIndex(origPresSet);
-                  const pGrupos = getGrupoIndex(pPres);
-                  for (const g of origGrupos) {
-                    if (!pGrupos.includes(g)) return false;
-                  }
-                  return true;
-                })
-              : produtos;
+            const produtosSemRef = produtos.filter((p: any) => resolveCategoria(p) !== "marca");
+            // Enriquecer itemOrig com DCB do catálogo para comparação correta
+            const dcbRef2 = produtos[0]?.cod_dcb;
+            const concRef2 = produtos[0]?.cod_concentracao;
+            const itemOrigComDcb = (itemOrig && dcbRef2 && concRef2) ? { ...itemOrig, cod_dcb: dcbRef2, cod_concentracao: concRef2 } : itemOrig;
+            const produtosFiltrados = itemOrigComDcb
+              ? produtosSemRef.filter((p: any) => mesmaApresentacao(itemOrigComDcb, p))
+              : produtosSemRef;
             estoqueTotal = produtosFiltrados.reduce((s: number, p: any) => s + (p.qtd_estoque || 0), 0);
           }
         } catch {}
@@ -4029,16 +3936,79 @@ app.post("/api/optimize", async (req, res) => {
     }
 
     for (const item of parsedItems) {
-      // ===== WHATSAPP: Item com regra de laboratório → vai direto pro WhatsApp =====
+      // ===== DEBUG: Rastrear caminho WhatsApp =====
       const waMatch = whatsappItemsMap.get(item.lineIndex);
+      if (item.laboratorio && (item.laboratorio || "").toUpperCase().includes("EUROFARMA")) {
+        logs.push(`[DEBUG-WA] lineIndex=${item.lineIndex}, lab="${item.laboratorio}", desc="${item.descricao}", waMatch=${!!waMatch}, mapSize=${whatsappItemsMap.size}`);
+      }
+      // ===== WHATSAPP: Item com regra de laboratório → vai pro WhatsApp com dados SmartPed =====
       if (waMatch) {
         const { rule } = waMatch;
         const qtdNum = parseFloat(item.qtd.replace(",", "."));
         const ruleName = rule.nome_regra || rule.nomeRegra || "WhatsApp";
         const rulePhone = rule.telefone || "";
-        logs.push(`[WHATSAPP-REPORT] Item "${item.descricao}" → WhatsApp via regra "${ruleName}"`);
+        logs.push(`[WHATSAPP-REPORT] Item "${item.descricao}" → WhatsApp via regra "${ruleName}" (com dados SmartPed)`);
 
-        const _metricasWa = vendasEstoqueMap[cleanEan(item.ean)] || { vendasMensais: 0, estoqueTotal: 0 };
+        const origEanWa = cleanEan(item.ean);
+        const respWa = apiResponses[origEanWa];
+
+        // Montar alternativas SmartPed, filtrando substitutos de labs com regra WhatsApp
+        const waAlternatives: any[] = [];
+        if (respWa) {
+          // Item original SmartPed (se tiver preço e estoque)
+          const origCostWa = getUnitCost(respWa.ItemPedido);
+          const origStockWa = parseInt(String(respWa.ItemPedido?.Estoque || respWa.ItemPedido?.estoque || 0), 10);
+          if (origCostWa > 0 && origStockWa > 0) {
+            const origLabWa = (respWa.ItemPedido?.Laboratorio || respWa.ItemPedido?.laboratorio || "").toUpperCase().trim();
+            const isFromRegisteredLab = [...whatsappLabNames].some(lab => origLabWa.includes(lab) || lab.includes(origLabWa));
+            if (!isFromRegisteredLab) {
+              waAlternatives.push({
+                ean: origEanWa,
+                descricao: respWa.ItemPedido?.Descricao || item.descricao,
+                laboratorio: respWa.ItemPedido?.Laboratorio || item.laboratorio,
+                distribuidora: resolveDistName(respWa.ItemPedido),
+                precoLiquido: origCostWa,
+                estoque: origStockWa,
+                condicao: respWa.ItemPedido?.Condicao || "",
+                prazo: respWa.ItemPedido?.Prazo || 0,
+                codDist: respWa.ItemPedido?.CodDist || 0,
+                codProdutoDist: respWa.ItemPedido?.CodProdutoDist || "",
+                codProduto: respWa.ItemPedido?.CodProduto || "",
+                isCurrent: true
+              });
+            }
+          }
+
+          // Substitutos SmartPed (filtrar labs com regra WhatsApp)
+          const subsWa = respWa.Substitutos || respWa.substitutos || [];
+          for (const s of subsWa) {
+            const sCost = getUnitCost(s);
+            const sStock = parseInt(String(s.Estoque || s.estoque || 0), 10);
+            if (sCost <= 0 || sStock <= 0) continue;
+            const sLab = (s.Laboratorio || s.laboratorio || "").toUpperCase().trim();
+            const isFromRegisteredLab = [...whatsappLabNames].some(lab => sLab.includes(lab) || lab.includes(sLab));
+            if (isFromRegisteredLab) {
+              logs.push(`[WHATSAPP-FILTER] Substituto "${s.Descricao || s.descricao}" (lab: ${s.Laboratorio || s.laboratorio}) filtrado — lab com regra WhatsApp`);
+              continue;
+            }
+            waAlternatives.push({
+              ean: s.Ean || s.ean || "",
+              descricao: s.Descricao || s.descricao || "",
+              laboratorio: s.Laboratorio || s.laboratorio || "",
+              distribuidora: resolveDistName(s),
+              precoLiquido: sCost,
+              estoque: sStock,
+              condicao: s.Condicao || "",
+              prazo: s.Prazo || 0,
+              codDist: s.CodDist || 0,
+              codProdutoDist: s.CodProdutoDist || "",
+              codProduto: s.CodProduto || ""
+            });
+          }
+          logs.push(`[WHATSAPP-REPORT] ${waAlternatives.length} alternativa(s) SmartPed disponível(is) para "${item.descricao}"`);
+        }
+
+        const _metricasWa = vendasEstoqueMap[origEanWa] || { vendasMensais: 0, estoqueTotal: 0 };
         report.push({
           codInterno: item.codInterno,
           originalEan: item.ean,
@@ -4053,7 +4023,7 @@ app.post("/api/optimize", async (req, res) => {
           economiaUnit: 0,
           economiaTotal: 0,
           distribuidora: `WhatsApp: ${ruleName}`,
-          estoque: 0,
+          estoque: _metricasWa.estoqueTotal || 0,
           codDist: 0,
           condicao: "WHATSAPP",
           prazo: 0,
@@ -4066,18 +4036,19 @@ app.post("/api/optimize", async (req, res) => {
           qtdMinima: 0,
           observacao: rulePhone ? `Fornecedor via WhatsApp: ${ruleName} (${rulePhone})` : `Fornecedor via WhatsApp: ${ruleName}`,
           motivoAcao: "whatsapp_regra_lab",
+          whatsappRuleId: rule.id,
           whatsappDestino: rulePhone,
           originalSemEstoque: false,
           isRupturaSubstitution: false,
           alertaConfirmarQtd: false,
           vendasMensais: _metricasWa.vendasMensais,
           estoqueTotal: _metricasWa.estoqueTotal,
-          alternatives: []
+          alternatives: waAlternatives
         });
 
         // Manter linha original no SICF
         finalLines.push(item.originalLine);
-        continue; // Pular processamento SmartPed
+        continue; // Pular processamento SmartPed (já feito acima)
       }
 
       const origEan = cleanEan(item.ean);
@@ -4283,6 +4254,19 @@ app.post("/api/optimize", async (req, res) => {
       // Filtrar estritamente combinedSubstitutos com o Hard Block de equivalÃªncia
       const preFilterCount = combinedSubstitutos.length;
       combinedSubstitutos = combinedSubstitutos.filter((s: any) => validateSwapEquivalence(mainItemPedido, s));
+
+      // Filtrar substitutos de labs com regra WhatsApp — esses itens vão pro grupo WhatsApp, não pro pré-pedido normal
+      if (whatsappLabNames.size > 0) {
+        const preWaFilter = combinedSubstitutos.length;
+        combinedSubstitutos = combinedSubstitutos.filter((s: any) => {
+          const sLab = (s.Laboratorio || s.laboratorio || "").toUpperCase().trim();
+          const isFromRegisteredLab = [...whatsappLabNames].some(lab => sLab.includes(lab) || lab.includes(sLab));
+          return !isFromRegisteredLab;
+        });
+        if (preWaFilter !== combinedSubstitutos.length) {
+          logs.push(`[WHATSAPP-FILTER] EAN ${item.ean} — ${preWaFilter} substitutos → ${combinedSubstitutos.length} após filtro WhatsApp (${preWaFilter - combinedSubstitutos.length} de labs WhatsApp removidos)`);
+        }
+      }
       
       // LOG: O que sobrou após filtro de equivalência
       if (preFilterCount !== combinedSubstitutos.length) {
@@ -4686,45 +4670,10 @@ app.post("/api/optimize", async (req, res) => {
               logs.push(`[RUPTURA-REGEX] Produtos/Buscar retornou ${descProdutos.length} produtos`);
               console.log(`[RUPTURA-REGEX] Produtos/Buscar retornou ${descProdutos.length} produtos`);
               
-              // FILTRO DE APRESENTAÇÃO: remover produtos com forma farmacêutica diferente
-              const _origDescUpper = (item.descricao || "").toUpperCase();
-              const _PRES_KW = ["SH", "SHAMPOO", "CR", "CREME", "DERM", "LOCAO", "LOÇÃO", "SOL", "SOLUCAO", "AER", "AEROSOL", "POM", "POMADA", "GEL", "CAP", "CAPSULA", "COM", "COMPRIMIDO", "CP", "DRG", "AMP", "AMPOLA", "SUSP", "SUSPENSAO", "GTS", "INJ", "INJETAVEL"];
-              const _PRES_GRUPOS = [
-                ["SH", "SHAMPOO"], ["CR", "CREME"], ["DERM"], ["LOCAO", "LOÇÃO"],
-                ["SOL", "SOLUCAO"], ["AER", "AEROSOL"], ["POM", "POMADA"], ["GEL"],
-                ["CAP", "CAPSULA"], ["COM", "COMPRIMIDO", "CP", "DRG"],
-                ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"]
-              ];
-              const _getGrupoIdx = (pres: Set<string>): number[] => {
-                const idx: number[] = [];
-                for (let i = 0; i < _PRES_GRUPOS.length; i++) {
-                  if (_PRES_GRUPOS[i].some(k => pres.has(k))) idx.push(i);
-                }
-                return idx;
-              };
-              const _origPres = new Set(_PRES_KW.filter(k => _origDescUpper.includes(k)));
-              const _origDosMatch = _origDescUpper.match(/\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i);
-              const _origDosage = _origDosMatch ? _origDosMatch[0].toUpperCase().replace(/\s+/g, "") : "";
-              let _descProdutosFiltrados = descProdutos;
-              if (_origPres.size > 0 || _origDosage) {
-                _descProdutosFiltrados = descProdutos.filter((p: any) => {
-                  const pDesc = (p.Descricao || p.descricao || p.Nome || "").toUpperCase();
-                  const pPres = new Set(_PRES_KW.filter(k => pDesc.includes(k)));
-                  const origGrupos = _getGrupoIdx(_origPres);
-                  const pGrupos = _getGrupoIdx(pPres);
-                  for (const g of origGrupos) {
-                    if (!pGrupos.includes(g)) return false;
-                  }
-                  if (_origDosage) {
-                    const pDosMatch = pDesc.match(/\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i);
-                    const pDosage = pDosMatch ? pDosMatch[0].toUpperCase().replace(/\s+/g, "") : "";
-                    if (pDosage && _origDosage !== pDosage) return false;
-                  }
-                  return true;
-                });
-                if (_descProdutosFiltrados.length < descProdutos.length) {
-                  logs.push(`[RUPTURA-REGEX] Filtro apresentação: ${descProdutos.length} → ${_descProdutosFiltrados.length} produtos (removidos ${descProdutos.length - _descProdutosFiltrados.length} com apresentação/dosagem diferente)`);
-                }
+              // FILTRO DE APRESENTAÇÃO: remover produtos com apresentação diferente
+              const _descProdutosFiltrados = descProdutos.filter((p: any) => mesmaApresentacao(item, p));
+              if (_descProdutosFiltrados.length < descProdutos.length) {
+                logs.push(`[RUPTURA-REGEX] Filtro apresentação: ${descProdutos.length} → ${_descProdutosFiltrados.length} produtos (removidos ${descProdutos.length - _descProdutosFiltrados.length} com apresentação diferente)`);
               }
 
               if (Array.isArray(_descProdutosFiltrados) && _descProdutosFiltrados.length > 0) {
@@ -4881,6 +4830,15 @@ app.post("/api/optimize", async (req, res) => {
         
         // Re-filtrar equivalência e rebuild substitutos/condicoes
           combinedSubstitutos = combinedSubstitutos.filter((s: any) => validateSwapEquivalence(mainItemPedido, s));
+
+          // Re-filtrar labs WhatsApp (pós-RUPTURA-REGEX)
+          if (whatsappLabNames.size > 0) {
+            combinedSubstitutos = combinedSubstitutos.filter((s: any) => {
+              const sLab = (s.Laboratorio || s.laboratorio || "").toUpperCase().trim();
+              const isFromRegisteredLab = [...whatsappLabNames].some(lab => sLab.includes(lab) || lab.includes(sLab));
+              return !isFromRegisteredLab;
+            });
+          }
           
           // Rebuild substitutosRaw e condicoesRaw
           substitutosRaw = combinedSubstitutos;

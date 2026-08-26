@@ -2086,7 +2086,9 @@ def api_produtos_similares(ean):
                 p.nom_obsvenda,
                 (SELECT b.cod_barra FROM cadcdbar b WHERE b.cod_reduzido = p.cod_reduzido ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC LIMIT 1) AS ean,
                 p.cod_grupo,
-                p.flg_tipoprod
+                p.flg_tipoprod,
+                p.unidade_apresentacao,
+                p.nom_descapresentacao
             FROM cadprodu p
             JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
                 AND e.cod_rede = %s
@@ -2139,6 +2141,8 @@ def api_produtos_similares(ean):
                 'ean':                   p[14],
                 'classificacao':         get_classificacao(p[16]),
                 'grupo':                 get_grupo(p[15]),
+                'unidade_apresentacao':  int(p[17]) if p[17] is not None else None,
+                'nom_descapresentacao':  p[18] if p[18] else None,
             })
 
         return jsonify({
@@ -2259,7 +2263,9 @@ def api_produtos_similares_batch():
                     p.nom_obsvenda,
                     (SELECT b.cod_barra FROM cadcdbar b WHERE b.cod_reduzido = p.cod_reduzido ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC LIMIT 1) AS ean,
                     p.cod_grupo,
-                    p.flg_tipoprod
+                    p.flg_tipoprod,
+                    p.unidade_apresentacao,
+                    p.nom_descapresentacao
                 FROM cadprodu p
                 JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
                     AND e.cod_rede = %s
@@ -2300,6 +2306,8 @@ def api_produtos_similares_batch():
                     'ean':                   p[14],
                     'classificacao':         get_classificacao(p[16]),
                     'grupo':                 get_grupo(p[15]),
+                    'unidade_apresentacao':  int(p[17]) if p[17] is not None else None,
+                    'nom_descapresentacao':  p[18] if p[18] else None,
                 })
             similares_cache[(cod_dcb, cod_concentracao)] = produtos_fmt
 
@@ -2391,6 +2399,64 @@ def chatbot_produto_vendas_detalhadas(ean):
                 
     except Exception as e:
         print(f"Erro em vendas_detalhadas: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/chatbot/produto/vendas-resumo/<string:ean>', methods=['GET'])
+def chatbot_produto_vendas_resumo(ean):
+    """
+    Retorna o total agregado de vendas de um produto nos últimos 4 meses.
+    Soma direto no banco (SUM/COUNT), sem limite de linhas.
+    """
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    try:
+        with psycopg2.connect(**DB_CONFIG) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT cod_reduzido FROM cadcdbar WHERE cod_barra = %s LIMIT 1", (ean,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"status": "success", "data": {
+                        "total_qtd": 0, "num_vendas": 0,
+                        "primeira_venda": None, "ultima_venda": None
+                    }})
+
+                cod_reduzido = row[0]
+
+                sql_query = """
+                    SELECT
+                        COALESCE(SUM(iv.qtd_produto), 0) AS total_qtd,
+                        COUNT(*) AS num_vendas,
+                        TO_CHAR(MIN(v.dat_emissao), 'DD/MM/YYYY') AS primeira_venda,
+                        TO_CHAR(MAX(v.dat_emissao), 'DD/MM/YYYY') AS ultima_venda
+                    FROM cadcvend v
+                    INNER JOIN cadivend iv ON v.num_nota = iv.num_nota
+                        AND v.cod_rede = iv.cod_rede
+                        AND v.cod_filial = iv.cod_filial
+                    WHERE iv.cod_reduzido = %s
+                      AND v.dat_emissao >= CURRENT_DATE - INTERVAL '4 months'
+                      AND v.cod_rede = %s
+                      AND v.cod_filial = %s
+                      AND v.tip_venda = 'V'
+                      AND (v.flg_excluido IS NULL OR v.flg_excluido = 'N')
+                      AND (iv.flg_excluido IS NULL OR iv.flg_excluido = 'N')
+                """
+                cur.execute(sql_query, (cod_reduzido, cod_rede, cod_filial))
+                row = cur.fetchone()
+
+                total_qtd = float(row[0]) if row[0] else 0
+                num_vendas = int(row[1]) if row[1] else 0
+
+                return jsonify({"status": "success", "data": {
+                    "total_qtd": total_qtd,
+                    "num_vendas": num_vendas,
+                    "primeira_venda": row[2],
+                    "ultima_venda": row[3]
+                }})
+
+    except Exception as e:
+        print(f"Erro em vendas_resumo: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -2516,7 +2582,9 @@ def api_produtos_buscar():
                     p.nom_obsvenda,
                     (SELECT b.cod_barra FROM cadcdbar b WHERE b.cod_reduzido = p.cod_reduzido ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC LIMIT 1) AS ean,
                     p.cod_grupo,
-                    p.flg_tipoprod
+                    p.flg_tipoprod,
+                    p.unidade_apresentacao,
+                    p.nom_descapresentacao
                 FROM cadprodu p
                 JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
                     AND e.cod_rede = %s
@@ -2566,6 +2634,8 @@ def api_produtos_buscar():
                 'ean':                   p[14],
                 'classificacao':         get_classificacao(p[16]),
                 'grupo':                 get_grupo(p[15]),
+                'unidade_apresentacao':  int(p[17]) if p[17] is not None else None,
+                'nom_descapresentacao':  p[18] if p[18] else None,
             })
         
         return jsonify({
@@ -2633,7 +2703,9 @@ def api_produtos_buscar_lote():
                         p.nom_obsvenda,
                         (SELECT b.cod_barra FROM cadcdbar b WHERE b.cod_reduzido = p.cod_reduzido ORDER BY b.flg_principal DESC NULLS LAST, b.tip_status = 'V' DESC, b.dat_cadastro DESC LIMIT 1) AS ean,
                         p.cod_grupo,
-                        p.flg_tipoprod
+                        p.flg_tipoprod,
+                        p.unidade_apresentacao,
+                        p.nom_descapresentacao
                     FROM cadprodu p
                     JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
                         AND e.cod_rede = %s
@@ -2676,6 +2748,8 @@ def api_produtos_buscar_lote():
                     'cod_concentracao':      p[10],
                     'classificacao':         get_classificacao(p[16]),
                     'grupo':                 get_grupo(p[15]),
+                    'unidade_apresentacao':  int(p[17]) if p[17] is not None else None,
+                    'nom_descapresentacao':  p[18] if p[18] else None,
                 })
             
             resultados[termo_original] = produtos_fmt
@@ -2875,7 +2949,9 @@ def api_produtos_buscar_por_ean(ean):
                     p.vlr_venda AS vlr_venda_tabela,
                     p.nom_obsvenda,
                     p.cod_grupo,
-                    p.flg_tipoprod
+                    p.flg_tipoprod,
+                    p.unidade_apresentacao,
+                    p.nom_descapresentacao
                 FROM cadprodu p
                 JOIN cadestoq e ON p.cod_reduzido = e.cod_reduzido
                     AND e.cod_rede = %s AND e.cod_filial = %s
@@ -2913,6 +2989,8 @@ def api_produtos_buscar_por_ean(ean):
                 'nom_obsvenda': row[13],
                 'grupo': get_grupo(row[14]),
                 'classificacao': get_classificacao(row[15]),
+                'unidade_apresentacao': int(row[16]) if row[16] is not None else None,
+                'nom_descapresentacao': row[17] if row[17] else None,
             }
 
             db_pool.putconn(conn)
