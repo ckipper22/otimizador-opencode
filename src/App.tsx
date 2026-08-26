@@ -238,6 +238,8 @@ export default function App() {
     try { sessionStorage.setItem("smartped_offer_cols", JSON.stringify({ vis, widths })); } catch {}
   }, [offerColVis, offerColWidths]);
 
+  useEffect(() => { fetch("/api/warmup").catch(() => {}); }, []);
+
   useEffect(() => {
     if (!resizingCol) return;
     const onMove = (e: MouseEvent) => {

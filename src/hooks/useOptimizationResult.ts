@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { OptimizationResponse, SwapReportItem, OptimizerConfig, DistributorOption, ExternalSupplier } from "../types";
 import { cleanEan } from "../utils";
 
@@ -614,6 +614,12 @@ export function useOptimizationResult({
       return item;
     });
   }, [result, activeReport, profarmaRecentOrdersEans]);
+
+  useEffect(() => {
+    if (pendingAlertItems.length > 0) {
+      setShowQuantityInterception(true);
+    }
+  }, [pendingAlertItems]);
 
   const handleConfirmQtyInInterception = (codInterno: string, newQty: number) => {
     if (newQty === 0) {

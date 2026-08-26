@@ -389,7 +389,7 @@ export function useBilling({
             const succeededEans = itens.filter((it: any) => parseFloat(it.QuantFaturada || it.quantFaturada || "0") > 0).map((it: any) => String(it.Ean || it.ean).trim());
 
             // Confirmar encomendas no sistema externo APENAS para itens que foram faturados
-            confirmarEncomendasAposRetorno(itens, itemsFaturados);
+            confirmarEncomendasAposRetorno(itens, itemsFaturados, relatedGroups);
 
             setBilledGroups(prev => {
               const next = { ...prev };
@@ -479,7 +479,7 @@ export function useBilling({
 
   // Confirmar encomendas no sistema externo APENAS após retorno do SmartPed
   // Só confirma itens que foram realmente faturados (QuantFaturada > 0)
-  const confirmarEncomendasAposRetorno = async (itensRetorno: any[], itemsFaturadosOriginais: any[]) => {
+  const confirmarEncomendasAposRetorno = async (itensRetorno: any[], itemsFaturadosOriginais: any[], relatedGroups: string[]) => {
     if (!billingContext?.encomendasPendentes || billingContext.encomendasPendentes.length === 0) return;
 
     try {
@@ -496,24 +496,47 @@ export function useBilling({
         });
 
         if (itensFaturadosDaEnc.length > 0) {
-          // Pelo menos 1 item faturado → confirmar encomenda
+          // Pelo menos 1 item faturado → confirmar encomenda (com retry)
           console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando encomenda ${encPendente.idEncomenda} (${itensFaturadosDaEnc.length} itens faturados)...`);
-          const respConfirmar = await fetch(`/api/integracao/encomendas/confirmar-pedido`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              itens: [{
-                id: encPendente.idEncomenda,
-                fornecedor: encPendente.fornecedor,
-                dataPrevisao: new Date().toISOString().split("T")[0]
-              }]
-            })
-          });
-          if (respConfirmar.ok) {
-            console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${encPendente.idEncomenda} confirmada com sucesso.`);
-          } else {
-            const errText = await respConfirmar.text().catch(() => "Sem detalhes");
-            console.error(`[ENCOMENDAS-CONFIRMACAO] Falha ao confirmar encomenda ${encPendente.idEncomenda}: ${respConfirmar.status} - ${errText}`);
+          let confirmada = false;
+          for (let tentativa = 1; tentativa <= 3; tentativa++) {
+            try {
+              const respConfirmar = await fetch(`/api/integracao/encomendas/confirmar-pedido`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  itens: [{
+                    id: encPendente.idEncomenda,
+                    fornecedor: encPendente.fornecedor,
+                    dataPrevisao: new Date().toISOString().split("T")[0]
+                  }]
+                })
+              });
+              if (respConfirmar.ok) {
+                console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${encPendente.idEncomenda} confirmada com sucesso.`);
+                confirmada = true;
+                break;
+              } else {
+                const errText = await respConfirmar.text().catch(() => "Sem detalhes");
+                console.error(`[ENCOMENDAS-CONFIRMACAO] Tentativa ${tentativa}/3 - Falha ao confirmar encomenda ${encPendente.idEncomenda}: ${respConfirmar.status} - ${errText}`);
+              }
+            } catch (fetchErr: any) {
+              console.error(`[ENCOMENDAS-CONFIRMACAO] Tentativa ${tentativa}/3 - Erro de rede ao confirmar encomenda ${encPendente.idEncomenda}: ${fetchErr.message}`);
+            }
+            if (tentativa < 3) await new Promise(r => setTimeout(r, 1000));
+          }
+          if (!confirmada) {
+            const msgFalha = `⚠️ Encomenda ${encPendente.idEncomenda} (fornecedor: ${encPendente.fornecedor}) faturada no SmartPed mas NÃO foi possível confirmar no sistema de Encomendas após 3 tentativas — verifique manualmente.`;
+            console.error(`[ENCOMENDAS-CONFIRMACAO] ${msgFalha}`);
+            setBilledGroups(prev => {
+              const next = { ...prev };
+              for (const g of relatedGroups) {
+                const currentLogs = prev[g]?.logs || [];
+                if (!currentLogs.includes(msgFalha)) currentLogs.push(msgFalha);
+                next[g] = { ...prev[g], logs: currentLogs };
+              }
+              return next;
+            });
           }
         } else {
           console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${encPendente.idEncomenda} NÃO confirmada — nenhum item foi faturado.`);
@@ -526,6 +549,7 @@ export function useBilling({
 
   const handleCheckOrderReturn = async () => {
     if (!billingContext) return;
+    if (isCheckingReturn) return;
     const { numPedido, itemsFaturados, relatedGroups, baseDistName } = billingContext;
 
     setIsCheckingReturn(true);
@@ -593,7 +617,7 @@ export function useBilling({
             const faltas = itens.filter((it: any) => parseFloat(it.QuantFaturada || it.quantFaturada || "0") === 0);
 
             // Confirmar encomendas no sistema externo APENAS para itens que foram faturados
-            confirmarEncomendasAposRetorno(itens, itemsFaturados);
+            confirmarEncomendasAposRetorno(itens, itemsFaturados, relatedGroups);
 
             setBilledGroups(prev => {
               const next = { ...prev };
