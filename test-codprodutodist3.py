@@ -1,7 +1,8 @@
+import os
 import json
 import urllib.request
 
-token = "fddfd9871b77f44f243e145207c8e93a"
+token = os.environ.get("SMARTPED_PRODUCTION_TOKEN", "")
 cnpj = "13408443000168"
 
 # EANs que deram codProdutoDist vazio no JSON final

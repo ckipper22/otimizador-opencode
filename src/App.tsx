@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, Suspense } from "react";
-import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, ArrowDown, ChevronRight, XCircle, Copy, Lock, Mail, Eye, EyeOff, Settings, ArrowUp, GripVertical, ShoppingBag, Package, Loader2, Check, AlertCircle as AlertCircleIcon, Tag } from "lucide-react";
+import { FileDown, CheckCircle, CheckCircle2, RefreshCw, AlertCircle, Sparkles, Wifi, WifiOff, Send, Truck, X, ShieldCheck, Search, Plus, AlertTriangle, Clock, ArrowLeft, Trash2, ArrowDown, ChevronRight, XCircle, Copy, Settings, ArrowUp, GripVertical, ShoppingBag, Package, Loader2, Check, AlertCircle as AlertCircleIcon, Tag } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "motion/react";
 import UploadBox from "./components/UploadBox";
 import ConfigurationPanel from "./components/ConfigurationPanel";
@@ -45,18 +45,11 @@ export default function App() {
   const {
     isAuthenticated,
     currentUserEmail,
-    loginEmail,
-    setLoginEmail,
-    loginPassword,
-    setLoginPassword,
-    showPassword,
-    setShowPassword,
     loginError,
     setLoginError,
     authorizedCompanies,
     setAuthorizedCompanies,
     isAdmin,
-    handleLoginSubmit,
     handleGoogleLogin,
     handleLogout,
   } = useAuth();
@@ -912,7 +905,7 @@ export default function App() {
       setFileContent(HOMOLOGACAO_SICF_FILE);
       setFileName("pedido_homologacao_smartped.txt");
       setConfig({
-        token: "79770c03eb119691f0355c5628c496e2",
+        token: "",
         cnpj: "13408443000168",
         margemMinima: 0.01,
         tipos: ["G", "O"],
@@ -927,7 +920,7 @@ export default function App() {
       setFileContent("");
       setFileName("");
       setConfig({
-        token: "fddfd9871b77f44f243e145207c8e93a",
+        token: "",
         cnpj: "13408443000168",
         margemMinima: 0.01,
         tipos: ["G", "O"],
@@ -975,74 +968,13 @@ export default function App() {
             </p>
           </div>
 
-          <form onSubmit={handleLoginSubmit} className="space-y-5">
-            <div>
-              <label className="block text-[10px] font-black uppercase tracking-wider text-[#141414] mb-1.5 flex items-center gap-1">
-                <Mail className="w-3 h-3" />
-                E-mail do Administrador
-              </label>
-              <div className="relative">
-                <input
-                  type="email"
-                  required
-                  value={loginEmail}
-                  onChange={(e) => {
-                    setLoginEmail(e.target.value);
-                    if (loginError) setLoginError("");
-                  }}
-                  placeholder="exemplo@email.com"
-                  className="w-full bg-white border-2 border-[#141414] px-4 py-2.5 text-sm font-bold text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:ring-2 focus:ring-[#141414]/20 rounded-none"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-black uppercase tracking-wider text-[#141414] mb-1.5 flex items-center gap-1">
-                <Lock className="w-3 h-3" />
-                Senha de Acesso
-              </label>
-              <div className="relative">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  required
-                  value={loginPassword}
-                  onChange={(e) => {
-                    setLoginPassword(e.target.value);
-                    if (loginError) setLoginError("");
-                  }}
-                  placeholder="••••••••••••"
-                  className="w-full bg-white border-2 border-[#141414] px-4 py-2.5 pr-10 text-sm font-bold text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:ring-2 focus:ring-[#141414]/20 rounded-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#141414]/60 hover:text-[#141414] transition-colors cursor-pointer"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
+          <div className="space-y-5">
             {loginError && (
               <div className="p-3 bg-rose-100 border-2 border-rose-500 text-rose-950 text-xs font-bold flex items-start gap-2 rounded-none">
                 <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                 <span>{loginError}</span>
               </div>
             )}
-
-            <button
-              type="submit"
-              className="w-full bg-[#141414] text-[#E4E3E0] hover:bg-[#141414]/90 py-3 text-xs font-black uppercase tracking-widest transition-all border-2 border-[#141414] active:translate-y-1 active:shadow-none shadow-[4px_4px_0px_0px_rgba(20,20,20,0.3)] cursor-pointer flex items-center justify-center gap-2"
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Autenticar Entrada</span>
-            </button>
-
-            <div className="relative flex py-2 items-center">
-              <div className="flex-grow border-t-2 border-[#141414]/20"></div>
-              <span className="flex-shrink mx-4 text-[10px] font-black uppercase text-[#141414]/50">OU</span>
-              <div className="flex-grow border-t-2 border-[#141414]/20"></div>
-            </div>
 
             <button
               type="button"
@@ -1057,7 +989,7 @@ export default function App() {
               </svg>
               <span>Entrar com Conta Google</span>
             </button>
-          </form>
+          </div>
 
           <div className="mt-8 pt-5 border-t border-[#141414]/10 text-center">
             <span className="text-[9px] text-[#141414]/50 uppercase tracking-widest font-extrabold block">

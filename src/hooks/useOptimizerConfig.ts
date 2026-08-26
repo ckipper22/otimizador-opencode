@@ -41,7 +41,7 @@ export function useOptimizerConfig() {
       console.error(err);
     }
     return {
-      token: "fddfd9871b77f44f243e145207c8e93a",
+      token: "",
       cnpj: "13408443000168",
       margemMinima: 0.01,
       tipos: ["G", "O"],

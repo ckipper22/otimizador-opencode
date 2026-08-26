@@ -1,4 +1,4 @@
-const TOKEN = "fddfd9871b77f44f243e145207c8e93a";
+const TOKEN = process.env.SMARTPED_PRODUCTION_TOKEN || "";
 const CNPJ = "13408443000168";
 
 function getUnitCost(item: any): number {

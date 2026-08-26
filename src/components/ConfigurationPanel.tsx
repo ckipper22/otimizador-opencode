@@ -424,7 +424,7 @@ export default function ConfigurationPanel({
               type="text"
               name="token"
               disabled={config.simulationMode}
-              value={config.simulationMode ? "79770c03eb119691f0355c5628c496e2" : config.token}
+              value={config.simulationMode ? "" : config.token}
               onChange={handleInputChange}
               placeholder="Digite o Token da sua API"
               className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2 px-3 text-xs font-mono text-slate-800 transition-all disabled:opacity-50 focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
@@ -449,7 +449,7 @@ export default function ConfigurationPanel({
               placeholder="Auto-extrair do arquivo"
               className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2 px-3 text-xs font-mono text-slate-800 transition-all disabled:opacity-50 focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
             />
-            {((config.token === "79770c03eb119691f0355c5628c496e2" || !config.token) && !config.simulationMode) && (
+            {((!config.token) && !config.simulationMode) && (
               <div className="mt-2 p-2.5 bg-emerald-50 border-l-2 border-emerald-500 rounded-r-lg text-[10px] text-emerald-800 leading-relaxed">
                 💡 <strong>Demonstração SmartPed</strong>: Ao usar o Token padrão de testes, o CNPJ é mapeado para <span className="font-bold">11111111111111</span> na API para evitar erros de vínculo. O arquivo baixado preserva seu CNPJ original intacto.
               </div>

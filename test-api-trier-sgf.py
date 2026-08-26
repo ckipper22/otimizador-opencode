@@ -1,7 +1,8 @@
+import os
 import json
 import urllib.request
 
-token = "eyJhbGciOiJIUzI1NiJ9.eyJjb2RfZmlsaWFsIjoiMSIsInNjb3BlIjpbImRyb2dhcmlhIl0sInRva2VuX2ludGVncmFjYW8iOiJ0cnVlIiwiY29kX2Zhcm1hY2lhIjoiMTIwMzkiLCJleHAiOjQxMDI0NTU2MDAsImlhdCI6MTc2NTMwMDg3NywianRpIjoiNjk4NzUzOGItZTM0ZS00ZjM0LWEyOGEtMzY3ZDg2MjIzYzk2IiwiY29kX3VzdWFyaW8iOiIxMSIsImF1dGhvcml0aWVzIjpbIkFQSV9JTlRFR1JBQ0FPIl19.B3HRuJj9MzXeMYgEFBB7bKdPB1qBz5O_-4JQcDZj8AY"
+token = os.environ.get("FERRAMENTINHAS_TOKEN", "")
 base = "https://api-sgf-gateway.triersistemas.com.br/sgfpod1/rest"
 eans = ["7896714208565", "7891150037458", "7897595605276", "7891058022136"]
 

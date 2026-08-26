@@ -10,16 +10,13 @@ export function useAuth() {
   const [currentUserEmail, setCurrentUserEmail] = useState<string>(() => {
     return localStorage.getItem("current_user_email") || "";
   });
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
 
   const [authorizedCompanies, setAuthorizedCompanies] = useState<AuthorizedCompany[]>(() => {
     try {
       const saved = localStorage.getItem("authorized_companies");
       return saved ? JSON.parse(saved) : [
-        { id: "comp_1", email: "aga706panambi@gmail.com", nome: "Farmácia Aga706 Panambi", token: "fddfd9871b77f44f243e145207c8e93a", cnpj: "13408443000168" }
+        { id: "comp_1", email: "aga706panambi@gmail.com", nome: "Farmácia Aga706 Panambi", token: "", cnpj: "13408443000168" }
       ];
     } catch {
       return [];
@@ -31,31 +28,6 @@ export function useAuth() {
   }, [authorizedCompanies]);
 
   const isAdmin = currentUserEmail === "ckipper22@gmail.com" || currentUserEmail === "aga706panambi@gmail.com" || !currentUserEmail;
-
-  const handleLoginSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanEmail = loginEmail.trim().toLowerCase();
-    const password = loginPassword;
-    
-    if ((cleanEmail === "ckipper22@gmail.com" || cleanEmail === "aga706panambi@gmail.com") && password === "Aq1sw2de#fr4") {
-      localStorage.setItem("app_authenticated", "true");
-      localStorage.setItem("current_user_email", cleanEmail);
-      setCurrentUserEmail(cleanEmail);
-      setIsAuthenticated(true);
-      setLoginError("");
-    } else {
-      const foundComp = authorizedCompanies.find(c => c.email.toLowerCase() === cleanEmail);
-      if (foundComp) {
-        localStorage.setItem("app_authenticated", "true");
-        localStorage.setItem("current_user_email", cleanEmail);
-        setCurrentUserEmail(cleanEmail);
-        setIsAuthenticated(true);
-        setLoginError("");
-      } else {
-        setLoginError("E-mail ou senha incorretos, ou farmácia não cadastrada.");
-      }
-    }
-  };
 
   const handleGoogleLogin = async () => {
     try {
@@ -116,18 +88,11 @@ export function useAuth() {
   return {
     isAuthenticated,
     currentUserEmail,
-    loginEmail,
-    setLoginEmail,
-    loginPassword,
-    setLoginPassword,
-    showPassword,
-    setShowPassword,
     loginError,
     setLoginError,
     authorizedCompanies,
     setAuthorizedCompanies,
     isAdmin,
-    handleLoginSubmit,
     handleGoogleLogin,
     handleLogout,
   };
