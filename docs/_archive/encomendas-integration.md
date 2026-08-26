@@ -20,7 +20,7 @@ O Otimizador atua como **cliente** — consulta e envia dados para o banco do En
 O sistema Encomendas valida o token via header HTTP:
 
 ```
-x-api-key: enc_sec_9f7a8b3c1d4e2f5061728394a5b6c7d8e9f01234
+x-api-key: SUA_CHAVE_INTEGRACAO
 ```
 
 **Fluxo de validação:**
@@ -33,7 +33,7 @@ x-api-key: enc_sec_9f7a8b3c1d4e2f5061728394a5b6c7d8e9f01234
 
 | Camada | Variável | Valor |
 |--------|----------|-------|
-| `.env` (dev local) | `ENCOMENDAS_INTEGRATION_KEY` | `enc_sec_9f7a8b3c1d4e2f5061728394a5b6c7d8e9f01234` |
+| `.env` (dev local) | `ENCOMENDAS_INTEGRATION_KEY` | `SUA_CHAVE_INTEGRACAO` |
 | Cloud Run | `ENCOMENDAS_INTEGRATION_KEY` | Mesma chave (via `--env-vars-file`) |
 | Backend (`server.ts:209`) | `ENCOMENDAS_API_KEY` | Lê de `process.env.ENCOMENDAS_INTEGRATION_KEY` |
 
@@ -55,7 +55,7 @@ O Otimizador **nunca** envia o token do frontend. O backend (`server.ts`) funcio
 **Request (do Otimizador → Encomendas):**
 ```http
 GET https://encomenda-com-smartped-887122622666.us-east1.run.app/api/integracao/encomendas/pendentes
-x-api-key: enc_sec_9f7a8b3c1d4e2f5061728394a5b6c7d8e9f01234
+x-api-key: SUA_CHAVE_INTEGRACAO
 Content-Type: application/json
 ```
 
@@ -103,7 +103,7 @@ Content-Type: application/json
 **Request (do Otimizador → Encomendas):**
 ```http
 POST https://encomenda-com-smartped-887122622666.us-east1.run.app/api/integracao/encomendas/confirmar-pedido
-x-api-key: enc_sec_9f7a8b3c1d4e2f5061728394a5b6c7d8e9f01234
+x-api-key: SUA_CHAVE_INTEGRACAO
 Content-Type: application/json
 
 {

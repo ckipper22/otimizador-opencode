@@ -867,18 +867,18 @@ $gcloud = "C:\Users\carlo\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gc
 
 **cloud-env.yaml** (runtime env vars — commitado, mas NÃO o .env):
 ```yaml
-SMARTPED_PRODUCTION_TOKEN: "fddfd9871b77f44f243e145207c8e93a"
-SMARTPED_SANDBOX_TOKEN: "79770c03eb119691f0355c5628c496e2"
+SMARTPED_PRODUCTION_TOKEN: "SUA_TOKEN_PRODUCAO"
+SMARTPED_SANDBOX_TOKEN: "SEU_TOKEN_SANDBOX"
 SMARTPED_DEFAULT_CNPJ: "13408443000168"
 SMARTPED_PRODUCTION_URL: "https://api.smartped.com.br"
 SMARTPED_SANDBOX_URL: "https://apitest.smartped.com.br"
 FERRAMENTINHAS_API_URL: "https://api.ferramentinhas.com.br"
 APP_ADMIN_EMAILS: "ckipper22@gmail.com,aga706panambi@gmail.com"
-APP_ADMIN_PASSWORD: "Aq1sw2de#fr4"
+APP_ADMIN_PASSWORD: "SUA_SENHA_SEGURA"
 ENCOMENDAS_API_URL: "https://encomenda-com-smartped-887122622666.us-east1.run.app"
-ENCOMENDAS_INTEGRATION_KEY: "enc_sec_9f7a8b3c1d4e2f5061728394a5b6c7d8e9f01234"
+ENCOMENDAS_INTEGRATION_KEY: "SUA_CHAVE_INTEGRACAO"
 TURSO_DATABASE_URL: "libsql://smartped-db-ckipper22.aws-us-east-1.turso.io"
-TURSO_AUTH_TOKEN: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+TURSO_AUTH_TOKEN: "SEU_TURSO_AUTH_TOKEN"
 NODE_ENV: "production"
 ```
 

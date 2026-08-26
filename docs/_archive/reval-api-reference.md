@@ -49,7 +49,7 @@ GET https://www.reval.net/login
 
 ### Credenciais de Teste
 - CNPJ: 13408443000168
-- Senha: revalAq1sw2d
+- Senha: SUA_SENHA_REVAL
 - Nao tem CAPTCHA
 
 ---

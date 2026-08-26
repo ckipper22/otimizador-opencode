@@ -237,7 +237,7 @@ Quando o usuÃ¡rio clica no Ã­cone de lixeira (excluir), o cÃ³digo interno 
     *   *Fluxo de AutenticaÃ§Ã£o:* A aplicaÃ§Ã£o possui um fluxo de login obrigatÃ³rio implementado no frontend (`src/App.tsx`) que intercepta toda a renderizaÃ§Ã£o se o usuÃ¡rio nÃ£o estiver autenticado.
     *   *Credenciais Administrativas Fixadas:*
         *   **E-mail:** `ckipper22@gmail.com`
-        *   **Senha:** `Aq1sw2de#fr4`
+        *   **Senha:** `SUA_SENHA_SEGURA`
     *   *PersistÃªncia da SessÃ£o:* A sessÃ£o autenticada Ã© guardada sob a chave `app_authenticated` no `localStorage` do navegador.
     *   *Controle de SessÃ£o (Logout):* Um botÃ£o funcional de "Sair" (ðŸšª Sair) foi integrado no cabeÃ§alho superior do painel, permitindo a desconexÃ£o manual e limpeza das credenciais com um Ãºnico clique.
 
