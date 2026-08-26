@@ -2,6 +2,14 @@
 
 ## Sessões Recentes (Agosto 2026)
 
+### 2026-08-26
+- `mesmaApresentacao()`: DCB emprestado de similares, dosagem por regex, L.P./XR separado
+- Endpoint `/vendas-resumo` substituiu `/vendas-detalhadas` (sem LIMIT 100)
+- Matching WhatsApp por `whatsappRuleId` (não mais texto)
+- Segurança: removidos token SmartPed/senha admin hardcoded + auth client-side insegura
+- Documentação reorganizada (`memorias/` + `docs/_archive/`)
+- Deploy v2026-08-26 (smartped-cli-00069-jzq), 4 commits, sem segredos no bundle
+
 ### 2026-08-25 (noite)
 - Timing de confirmação de encomendas (só após retorno SmartPed)
 - Herança de codProduto para itens manuais
