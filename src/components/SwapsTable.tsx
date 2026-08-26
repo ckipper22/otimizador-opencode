@@ -143,15 +143,9 @@ export default function SwapsTable({
   const ruleMatchesMap = useMemo(() => {
     const map = new Map<string, SwapReportItem[]>();
     activeWhatsAppRules.forEach(rule => {
-      const filterUpper = (rule.termoFiltro || "").trim().toUpperCase();
       const matched = report.filter((item) => {
         if (disabledItemCodes.has(item.codInterno)) return false;
-        if (!filterUpper) return true;
-        const labOriginal = (item.originalLaboratorio || "").toUpperCase();
-        const labNovo = (item.novoLaboratorio || "").toUpperCase();
-        const descNovo = (item.novaDescricao || "").toUpperCase();
-        const descOrig = (item.originalDescricao || "").toUpperCase();
-        return labOriginal.includes(filterUpper) || labNovo.includes(filterUpper) || descNovo.includes(filterUpper) || descOrig.includes(filterUpper);
+        return item.motivoAcao === "whatsapp_regra_lab" && item.whatsappRuleId === rule.id;
       });
       map.set(rule.id, matched);
     });
@@ -607,12 +601,12 @@ export default function SwapsTable({
                           {((item.vendasMensais ?? 0) > 0 || (item.estoqueTotal ?? 0) > 0) && (
                             <div className="flex items-center gap-2 mt-1">
                                {(item.vendasMensais ?? 0) > 0 && (
-                                <span className="text-[9px] font-sans font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
+                                <span className="text-sm font-sans font-bold text-indigo-700 bg-indigo-50 px-2 py-1 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
                                   📊 {item.vendasMensais} un/mês (4m)
                                 </span>
                               )}
                               {(item.estoqueTotal ?? 0) > 0 && (
-                                <span className="text-[9px] font-sans font-bold text-teal-700 bg-teal-50 px-1.5 py-0.5 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
+                                <span className="text-sm font-sans font-bold text-teal-700 bg-teal-50 px-2 py-1 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
                                   📦 {item.estoqueTotal} cx
                                 </span>
                               )}
@@ -777,42 +771,6 @@ export default function SwapsTable({
           </div>
         </div>
       )}
-
-      {/* Banners de Direcionamento WhatsApp por Regra */}
-      {config?.direcionarEurofarmaWhatsapp !== false && activeWhatsAppRules.map(rule => {
-        const matchedItems = ruleMatchesMap.get(rule.id) || [];
-        if (matchedItems.length === 0) return null;
-        return (
-          <div key={rule.id} className="bg-emerald-700 text-white border-2 border-emerald-900 p-4 mb-4 shadow-md flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div className="flex items-center space-x-3">
-              <div className="p-2 bg-emerald-800 border border-emerald-500/50 rounded-none shrink-0">
-                <MessageSquare className="w-5 h-5 text-emerald-200" />
-              </div>
-              <div>
-                <div className="text-xs font-black uppercase tracking-wider flex items-center gap-2">
-                  <span>💬 Parametrização Ativa: Pedido WhatsApp ({rule.nomeRegra})</span>
-                  <span className="bg-emerald-900 text-emerald-200 text-[9px] px-2 py-0.5 border border-emerald-500/50">
-                    {matchedItems.length} {matchedItems.length === 1 ? 'item' : 'itens'}
-                  </span>
-                </div>
-                <p className="text-[11px] text-emerald-100/90 font-sans mt-0.5">
-                  Itens com o termo "{rule.termoFiltro}" estão direcionados para pedido via WhatsApp ao vendedor {rule.nomeRepresentante || "cadastrado"}.
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={() => {
-                setSelectedWhatsAppRule(rule);
-                setIsWhatsAppModalOpen(true);
-              }}
-              className="bg-white hover:bg-emerald-50 text-emerald-900 text-xs font-black uppercase tracking-wider px-4 py-2 border-2 border-emerald-900 shadow-sm cursor-pointer shrink-0 transition-all flex items-center justify-center gap-2"
-            >
-              <MessageSquare className="w-4 h-4 text-emerald-700" />
-              <span>Gerar Pedido WhatsApp ({rule.nomeRegra})</span>
-            </button>
-          </div>
-        );
-      })}
 
       {/* 2. ORDER LIST - GROUPED BY DISTRIBUTOR WITH PDF LAYOUT */}
       <div className="bg-[#DCDAD7] border border-[#141414] p-5 rounded-none shadow-sm text-[#141414]">
@@ -1219,7 +1177,7 @@ export default function SwapsTable({
 
               const isExpanded = expandedGroups[group.name] ?? false;
               const billedStatus = billedGroups[group.name]?.status;
-              const isExternalManual = group.condicao === "MANUAL" || group.items.some(it => it.codDist === 9999 || it.origem === "lista_preco" || it.motivoAcao === "lista_preco");
+              const isExternalManual = group.condicao === "MANUAL" || group.items.some(it => it.codDist === 9999 || it.origem === "lista_preco" || it.motivoAcao === "lista_preco" || it.motivoAcao === "whatsapp_regra_lab");
 
               if (billedStatus === "faturando") {
                 containerBg = "bg-yellow-50 border-yellow-900";
@@ -1350,55 +1308,60 @@ export default function SwapsTable({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                      {isExternalManual ? (
-                        <>
-                          <span className="bg-emerald-200/80 text-emerald-950 text-[9px] font-black uppercase tracking-widest px-2.5 py-1 border border-emerald-500 rounded-none flex items-center gap-1">
-                            <MessageSquare className="w-3 h-3 text-[#059669]" /> WHATSAPP
-                          </span>
-                          <button
-                            onClick={() => {
-                              const activeGroupItems = group.items.filter((it: any) => !disabledItemCodes.has(it.codInterno));
-                              if (activeGroupItems.length === 0) {
-                                alert("Nenhum item ativo neste pedido para copiar.");
-                                return;
-                              }
-                              const today = new Date().toLocaleDateString("pt-BR");
-                              let text = `*PEDIDO - ${group.distribuidora}*\n`;
-                              text += `Data: ${today}\n\n`;
-                              text += `*Itens do Pedido:*\n`;
-                              text += `----------------------------------\n`;
-                              
-                              activeGroupItems.forEach((item: any) => {
-                                const isDisregarded = disregardedCodes.has(item.codInterno);
-                                const desc = isDisregarded ? item.originalDescricao : item.novaDescricao;
-                                const lab = isDisregarded ? item.originalLaboratorio : item.novoLaboratorio;
-                                const preco = isDisregarded ? item.originalPreco : item.novoPreco;
-                                const totalItem = preco * item.qtd;
-                                
-                                text += `• *${item.qtd} un* - ${desc} (${lab})\n`;
-                                text += `  Preço Unit.: R$ ${preco.toFixed(2).replace(".", ",")} | Total: R$ ${totalItem.toFixed(2).replace(".", ",")}\n\n`;
-                              });
-                              
-                              text += `----------------------------------\n`;
-                              text += `*Total do Pedido: R$ ${group.totalValue.toFixed(2).replace(".", ",")}*\n`;
-                              text += `_Gerado automaticamente pelo Otimizador SmartPed_`;
-
-                              navigator.clipboard.writeText(text)
-                                .then(() => {
-                                  alert(`📋 Pedido copiado para a Área de Transferência com sucesso!\n\nAgora você pode abrir a conversa com o fornecedor no WhatsApp e colar (CTRL+V) para enviar o pedido!`);
-                                })
-                                .catch((err) => {
-                                  console.error("Erro ao copiar para clipboard:", err);
-                                  alert("Erro ao copiar. Copie o texto manualmente se necessário.");
-                                });
-                            }}
-                            className="flex items-center space-x-1.5 bg-[#10B981] hover:bg-[#059669] text-white font-extrabold text-[9px] uppercase tracking-wider py-1 px-3 border border-[#10B981] cursor-pointer shadow-sm rounded-none"
-                          >
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>Copiar Pedido (WhatsApp)</span>
-                          </button>
-                        </>
-                      ) : !isVirtual ? (
+                      {isExternalManual ? (() => {
+                        const hasWaItems = group.items.some(it => it.motivoAcao === "whatsapp_regra_lab");
+                        const waRuleId = hasWaItems ? group.items.find(it => it.motivoAcao === "whatsapp_regra_lab")?.whatsappRuleId : null;
+                        const waRule = waRuleId ? activeWhatsAppRules.find(r => r.id === waRuleId) : null;
+                        return (
+                          <>
+                            <span className="bg-emerald-200/80 text-emerald-950 text-[9px] font-black uppercase tracking-widest px-2.5 py-1 border border-emerald-500 rounded-none flex items-center gap-1">
+                              <MessageSquare className="w-3 h-3 text-[#059669]" /> WHATSAPP
+                            </span>
+                            {hasWaItems && waRule ? (
+                              <button
+                                onClick={() => {
+                                  setSelectedWhatsAppRule(waRule);
+                                  setIsWhatsAppModalOpen(true);
+                                }}
+                                className="flex items-center space-x-1.5 bg-[#10B981] hover:bg-[#059669] text-white font-extrabold text-[9px] uppercase tracking-wider py-1 px-3 border border-[#10B981] cursor-pointer shadow-sm rounded-none"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                <span>📱 Enviar WhatsApp</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  const activeGroupItems = group.items.filter((it: any) => !disabledItemCodes.has(it.codInterno));
+                                  if (activeGroupItems.length === 0) {
+                                    alert("Nenhum item ativo neste pedido para copiar.");
+                                    return;
+                                  }
+                                  const today = new Date().toLocaleDateString("pt-BR");
+                                  let text = `*PEDIDO - ${group.distribuidora}*\n`;
+                                  text += `Data: ${today}\n\n`;
+                                  text += `*Itens do Pedido:*\n`;
+                                  text += `----------------------------------\n`;
+                                  activeGroupItems.forEach((item: any) => {
+                                    const desc = item.novaDescricao || item.originalDescricao;
+                                    const lab = item.novoLaboratorio || item.originalLaboratorio || "";
+                                    text += `• *${item.qtd} un* - ${desc} (${lab})\n\n`;
+                                  });
+                                  text += `----------------------------------\n`;
+                                  text += `*Total do Pedido: R$ ${group.totalValue.toFixed(2).replace(".", ",")}*\n`;
+                                  text += `_Gerado automaticamente pelo Otimizador SmartPed_`;
+                                  navigator.clipboard.writeText(text)
+                                    .then(() => alert(`📋 Pedido copiado! Cole (CTRL+V) no WhatsApp.`))
+                                    .catch(() => alert("Erro ao copiar. Copie o texto manualmente."));
+                                }}
+                                className="flex items-center space-x-1.5 bg-[#10B981] hover:bg-[#059669] text-white font-extrabold text-[9px] uppercase tracking-wider py-1 px-3 border border-[#10B981] cursor-pointer shadow-sm rounded-none"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>Copiar Pedido (WhatsApp)</span>
+                              </button>
+                            )}
+                          </>
+                        );
+                      })() : !isVirtual ? (
                         <>
                           {isMet ? (
                             <span className="bg-emerald-900/80 text-emerald-300 text-[9px] font-black uppercase tracking-widest px-2 py-1 border border-emerald-500 rounded-none">
@@ -1600,12 +1563,12 @@ export default function SwapsTable({
                                   {((item.vendasMensais ?? 0) > 0 || (item.estoqueTotal ?? 0) > 0) && (
                                     <div className="flex items-center gap-2 mt-1">
                                       {(item.vendasMensais ?? 0) > 0 && (
-                                        <span className="text-[9px] font-sans font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
+                                        <span className="text-sm font-sans font-bold text-indigo-700 bg-indigo-50 px-2 py-1 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
                                           📊 {item.vendasMensais} un/mês (4m)
                                         </span>
                                       )}
                                       {(item.estoqueTotal ?? 0) > 0 && (
-                                        <span className="text-[9px] font-sans font-bold text-teal-700 bg-teal-50 px-1.5 py-0.5 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
+                                        <span className="text-sm font-sans font-bold text-teal-700 bg-teal-50 px-2 py-1 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
                                           📦 {item.estoqueTotal} cx
                                         </span>
                                       )}

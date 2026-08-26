@@ -303,6 +303,7 @@ export function useManualSearch({
       origem: offer.origem || "manual",
       motivoAcao: offer.motivoAcao || "",
       whatsappDestino: offer.whatsappDestino || "",
+      whatsappRuleId: offer.whatsappRuleId || "",
       fornecedorLista: offer.fornecedorLista || "",
       fornecedorId: offer.fornecedorId || "",
       tiers: offer.tiers || [],
