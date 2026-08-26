@@ -1,4 +1,4 @@
-# Contexto Ativo — Última Sessão: 2026-08-26
+# Contexto Ativo — Última Sessão: 2026-08-26 (performance)
 
 ## Status do Sistema
 - **Versão:** v2026-08-26 (deploy smartped-cli-00069-jzq)
@@ -47,6 +47,35 @@
 - `server.ts` — `/api/chatbot/produto/vendas-resumo`, `fetchVendasResumo()`, matching WhatsApp por `whatsappRuleId`
 - Segurança: remoção de tokens/senhas hardcoded (frontend + backend)
 - `memorias/` + `docs/_archive/` — reorganização da documentação
+
+## Sessão 2026-08-26 (performance) — Otimização de /api/optimize
+
+### Fixes
+
+1. **Fallback ALERTA reusa marketSimilarMap (server.ts ~5295)**
+   - `fetchSimilarGenerics(item.ean)` trocado por `marketSimilarMap[cleanEan(item.ean)] || []`
+   - Elimina 43 chamadas de rede sequenciais (~1,7s cada) dentro do loop → FASE-4 de 84s para <10s
+
+2. **FASE-5 estoque reusa marketSimilarMap (server.ts ~4022)**
+   - Mesma correção aplicada ao cálculo de estoqueTotal, mantendo o filtro `_origem !== "smartped"` já usado em outros pontos do FASE-5
+   - FASE-5 de 42s para 8s
+
+3. **fetchSimilarGenericsBatch paralelizado (server/smartped-api.ts:91)**
+   - for sequencial → Promise.all nos lotes de 40 EANs
+   - FASE-2 de 33s para 11s
+   - Bônus: corrigido bug onde `!response.ok` pulava sem preencher `result[ean] = []`
+
+4. **Try/catch defensivo no loop principal (server.ts ~4181-6194)**
+   - Protege contra exceção não tratada em um item derrubar o processamento silenciosamente — loga `[ITEM-ERRO-FATAL]` com EAN + stack e preserva a linha original no output
+
+### O Que Funciona
+- Pedido real de 204 itens: 3min40s → 50s (~78% mais rápido) ✅
+- Nenhuma mudança de resultado/comportamento verificada across múltiplos testes reais ✅
+- Instrumentação de timing (TIMING-BREAKDOWN, TIMING-FINDBEST, TIMING-TARGET-EAN, TIMING-FALLBACK-SIMILARES) permanece no código pra futuras investigações ✅
+
+### Arquivos Modificados Nesta Sessão
+- `server.ts` — fallback ALERTA + estoque FASE-5 reusam marketSimilarMap, try/catch defensivo no loop principal, instrumentação de timing
+- `server/smartped-api.ts` — fetchSimilarGenericsBatch paralelizado
 
 ## Regras Importantes
 - **Tudo de vendas/estoque vem do Ferramentinhas** — SmartPed só para pricing

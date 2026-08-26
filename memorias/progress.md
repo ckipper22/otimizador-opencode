@@ -2,6 +2,13 @@
 
 ## Sessões Recentes (Agosto 2026)
 
+### 2026-08-26 (performance)
+- Investigação de performance do /api/optimize: 3min40s → 50s (~78% mais rápido)
+- 3 bugs de refetch redundante corrigidos (fallback similares, estoque FASE-5, batch sequencial)
+- fetchSimilarGenericsBatch: for sequencial → Promise.all
+- Instrumentação de timing adicionada em todo o FASE-4 (TIMING-BREAKDOWN, TIMING-FINDBEST, TIMING-TARGET-EAN, TIMING-FALLBACK-SIMILARES)
+- Try/catch defensivo em volta do loop principal de itens ([ITEM-ERRO-FATAL])
+
 ### 2026-08-26
 - `mesmaApresentacao()`: DCB emprestado de similares, dosagem por regex, L.P./XR separado
 - Endpoint `/vendas-resumo` substituiu `/vendas-detalhadas` (sem LIMIT 100)
