@@ -2211,7 +2211,7 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
       const observacoes = enc.observacoes || "";
       const fornecedorSugerido = enc.fornecedor || "";
       const dataPrevisao = enc.dataPrevisao || "";
-      const dataHora = enc.data ? new Date(enc.data).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : "";
+      const dataHora = enc.data ? new Date(enc.data).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo' }) : "";
 
       try {
         let ofertas: any[] = [];

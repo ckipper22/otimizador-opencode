@@ -111,9 +111,15 @@
 - Leitores Turso: `Promise.all` (já existia) ✅
 - WhatsApp lab: falso-positivo com string vazia eliminado ✅
 
+### Fixes
+
+5. **Fuso horário encomendas +3h (server.ts:2214)**
+   - `toLocaleString('pt-BR', ...)` sem `timeZone` → Cloud Run formatava em UTC em vez de Panambi (UTC-3)
+   - Adicionado `timeZone: 'America/Sao_Paulo'` — corrige os dois returns da função (linhas 2417 e 2439)
+
 ### Arquivos Modificados Nesta Sessão
 - `server/database.ts` — `savePrecosCacheBatch` batch Turso, nova `saveItensConfirmadosBatch`
-- `server.ts` — import `saveItensConfirmadosBatch`, loop itens confirmados → batch
+- `server.ts` — import `saveItensConfirmadosBatch`, loop itens confirmados → batch, fix timezone encomendas
 - `AGENTS.md` — entrada #18 (CEGUEIRA ANTIGA)
 
 ## Regras Importantes
