@@ -132,7 +132,7 @@ import { LOCAL_EQUIVALENTS_DB, getLocalEquivalents } from "./server/equivalents-
 import { findBestSubstitute } from "./server/swap-engine";
 import { enrichReturnedItem } from "./server/smartped-transforms";
 import { MOCK_API_DATABASE } from "./server/mock-data";
-import { startDbCachePurge, saveOrder, saveOrderItem, getOrder, initTursoSchema, saveItemConfirmado, saveItensConfirmadosBatch, getItensConfirmados, saveItemManual, getItensManuais, purgeOldData, savePrecosCacheBatch, getPrecoCacheByEan, getPrecoCacheByEans, countPrecosCache, getLastPrecoSync, saveProdutoCache, countProdutosCache, listPrecosCache, purgePrecosCache, saveEansFixos, getEansFixos, countEansFixos } from "./server/database";
+import { startDbCachePurge, saveOrder, saveOrderItem, getOrder, initTursoSchema, saveItemConfirmado, saveItensConfirmadosBatch, getItensConfirmados, getProfarmaFaturadosPendentes, saveItemManual, getItensManuais, purgeOldData, savePrecosCacheBatch, getPrecoCacheByEan, getPrecoCacheByEans, countPrecosCache, getLastPrecoSync, saveProdutoCache, countProdutosCache, listPrecosCache, purgePrecosCache, saveEansFixos, getEansFixos, countEansFixos } from "./server/database";
 
 runEngineSelfTests();
 
@@ -2761,7 +2761,10 @@ app.post("/api/optimize", async (req, res) => {
       customEndpoint,
       disabledDistributors = [],
       externalSuppliers = [],
-      cortesRecentes = {}
+      cortesRecentes = {},
+      alertaProfarma48h = true,
+      alertaConfirmarQtdCaixaMaster = true,
+      bypassMargemRuptura = true
     } = req.body;
 
     logs.push(`[INÃCIO] Iniciando processo de otimizaÃ§Ã£o.`);
@@ -5195,7 +5198,7 @@ condicoesEnriched = condicoes.map((c: any) => {
         });
         
         const _fbsT0 = Date.now();
-        const result = findBestSubstitute(itemPedido, [...condicoesEnriched, ...substitutos], margemMinima, tiposAceitos, exigirEstoque, item.precoOriginal, effectiveOriginalHasStock, isGeneric, cortesRecentes);
+        const result = findBestSubstitute(itemPedido, [...condicoesEnriched, ...substitutos], margemMinima, tiposAceitos, exigirEstoque, item.precoOriginal, effectiveOriginalHasStock, isGeneric, cortesRecentes, bypassMargemRuptura);
         const _fbsMs = Date.now() - _fbsT0;
         _tFindBest += _fbsMs; _cFindBest++;
         if (_fbsMs > _maxFindBest) { _maxFindBest = _fbsMs; _maxFindBestCands = condicoesEnriched.length + substitutos.length; }
@@ -5254,7 +5257,7 @@ condicoesEnriched = condicoes.map((c: any) => {
                     });
                     logs.push(`[RETRY-CODPRODDIST] Re-run motor: ${remainingCandidates.length} candidatos restantes (excluído EAN=${failedEan} CodDist=${failedCodDist})`);
                     const _fbsR0 = Date.now();
-                    const retryResult = findBestSubstitute(itemPedido, remainingCandidates, margemMinima, tiposAceitos, exigirEstoque, item.precoOriginal, effectiveOriginalHasStock, isGeneric, cortesRecentes);
+                    const retryResult = findBestSubstitute(itemPedido, remainingCandidates, margemMinima, tiposAceitos, exigirEstoque, item.precoOriginal, effectiveOriginalHasStock, isGeneric, cortesRecentes, bypassMargemRuptura);
                     const _fbsRMs = Date.now() - _fbsR0;
                     _tFindBest += _fbsRMs; _cFindBest++;
                     if (_fbsRMs > _maxFindBest) { _maxFindBest = _fbsRMs; _maxFindBestCands = remainingCandidates.length; }
@@ -5882,8 +5885,8 @@ condicoesEnriched = condicoes.map((c: any) => {
             cx: melhor.CX !== undefined ? melhor.CX : (melhor.cx !== undefined ? melhor.cx : 1),
             qtdMinima: (matchingMinimo && matchingMinimo.QtdMinima !== undefined) ? matchingMinimo.QtdMinima : ((matchingMinimo && matchingMinimo.qtdMinima !== undefined) ? matchingMinimo.qtdMinima : 0),
             observacao: stripHtmlTags(melhor.Mensagem || melhor.mensagem || melhor.Restricao || melhor.restricao || melhor.Observacao || melhor.observacao || melhor.Obs || melhor.obs || melhor.Motivo || melhor.motivo || ""),
-            alertaConfirmarQtd: alertResult.alertaConfirmarQtd,
-            motivoAlerta: alertResult.motivoAlerta,
+            alertaConfirmarQtd: alertaConfirmarQtdCaixaMaster ? alertResult.alertaConfirmarQtd : false,
+            motivoAlerta: alertaConfirmarQtdCaixaMaster ? alertResult.motivoAlerta : undefined,
             vendasMensais: (vendasEstoqueMap[cleanEan(item.ean)] || {}).vendasMensais || 0,
             estoqueTotal: (vendasEstoqueMap[cleanEan(item.ean)] || {}).estoqueTotal || 0,
             alternatives: (() => {
@@ -6082,8 +6085,8 @@ condicoesEnriched = condicoes.map((c: any) => {
             originalRupturaDescricao: undefined,
             originalRupturaLaboratorio: undefined,
             originalRupturaPreco: undefined,
-            alertaConfirmarQtd: alertResult.alertaConfirmarQtd,
-            motivoAlerta: alertResult.motivoAlerta,
+            alertaConfirmarQtd: alertaConfirmarQtdCaixaMaster ? alertResult.alertaConfirmarQtd : false,
+            motivoAlerta: alertaConfirmarQtdCaixaMaster ? alertResult.motivoAlerta : undefined,
             vendasMensais: (vendasEstoqueMap[cleanEan(item.ean)] || {}).vendasMensais || 0,
             estoqueTotal: (vendasEstoqueMap[cleanEan(item.ean)] || {}).estoqueTotal || 0,
             alternatives: (() => {
@@ -6228,20 +6231,6 @@ condicoesEnriched = condicoes.map((c: any) => {
     logs.push(`[SUCESSO] Itens Otimizados com Economia: ${itemsSwappedCount} de ${parsedItems.length}`);
     logs.push(`[SUCESSO] Economia Estimada Total: R$ ${totalSavings.toFixed(2)}`);
 
-    // Filtrar itens sem estoque real na SmartPed ("Não Encontrados" / estoque 0)
-    const filteredReport = report.filter((item: any) => {
-      const estoque = Number(item.estoque !== undefined ? item.estoque : 0);
-      const dist = item.distribuidora || "";
-      const passa = !isNotFoundName(dist) && estoque > 0;
-      if (!passa) {
-        logs.push(`[FILTRO-REMOVIDO] EAN=${item.originalEan || item.novoEan} | dist="${dist}" | estoque=${estoque} | motivo=${isNotFoundName(dist) ? "dist-invalida" : "estoque-zero"}`);
-      }
-      return passa;
-    });
-    if (filteredReport.length < report.length) {
-      logs.push(`[FILTRO ESTOQUE] Removidos ${report.length - filteredReport.length} itens sem estoque real na SmartPed.`);
-    }
-
     // Salvar logs em arquivo para debug (facilita leitura pelo agente)
     try {
       const logDir = "debug-logs";
@@ -6268,7 +6257,7 @@ condicoesEnriched = condicoes.map((c: any) => {
         itemsSwapped: itemsSwappedCount,
         totalSavings
       },
-      report: filteredReport,
+      report: report,
       minimos: allMinimos,
       logs
     });
@@ -6276,7 +6265,7 @@ condicoesEnriched = condicoes.map((c: any) => {
     try {
       const pedidoNum = `OPT_${Date.now()}`;
       saveOrder(pedidoNum, finalCnpj, new Date().toISOString(), { parsedItems: parsedItems.length, totalSavings });
-      for (const item of filteredReport) {
+      for (const item of report) {
         if (item.novoEan && item.novoEan !== item.originalEan) {
           saveOrderItem({
             numPedido: pedidoNum,
@@ -6893,9 +6882,13 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
       }
 
       if (pedDetalhes) {
+        const dataPedido = ped.DataPedido || ped.dataPedido || ped.data_pedido || ped.Data || ped.data || "";
+        if (!dataPedido) {
+          logs.push(`[PEDIDO-DIAG] dataPedido vazio para numPedido=${numPedido}. Grafias tentadas: DataPedido, dataPedido, data_pedido, Data, data. JSON raw: ${JSON.stringify({ DataPedido: ped.DataPedido, dataPedido: ped.dataPedido, data_pedido: ped.data_pedido, Data: ped.Data, data: ped.data })}`);
+        }
         relatorioFinal.push({
           numPedido,
-          dataPedido: ped.DataPedido || dataFim,
+          dataPedido,
           detalhes: pedDetalhes
         });
       }
@@ -7240,6 +7233,20 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
     console.log(`[ITENS CONFIRMADOS] ${resultadoFinal.length} da API + ${itensTursoNovos.length} do Turso = ${resultadoCombinado.length} itens únicos. Faturados salvos: ${itensFaturados.length}`);
 
     res.json({ itens: resultadoCombinado, logs });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint para buscar Profarma faturados sem entrada confirmada
+app.get("/api/profarma-faturados-pendentes", async (req, res) => {
+  try {
+    const cnpj = (req.query.cnpj as string || "").replace(/\D/g, "");
+    if (!cnpj) {
+      return res.status(400).json({ error: "cnpj é obrigatório" });
+    }
+    const result = await getProfarmaFaturadosPendentes(cnpj);
+    res.json({ eans: result });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -9390,6 +9397,23 @@ app.get("/api/vendas-semanais/:ean", async (req, res) => {
     return res.json(data);
   } catch (error: any) {
     console.error("Erro ao buscar vendas semanais:", error);
+    res.status(500).json({ status: "error", message: error.message });
+  }
+});
+
+// Proxy para compras-historico (usado na verificação de entrada Profarma 48h)
+app.get("/api/produtos/compras-historico/:ean", async (req, res) => {
+  const { ean } = req.params;
+  const meses = (req.query.meses as string) || "1";
+  try {
+    const response = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${ean}?meses=${meses}`);
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status}`);
+    }
+    const data = await response.json();
+    return res.json(data);
+  } catch (error: any) {
+    console.error("Erro ao buscar compras-historico:", error);
     res.status(500).json({ status: "error", message: error.message });
   }
 });

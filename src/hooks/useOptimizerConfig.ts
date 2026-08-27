@@ -50,7 +50,10 @@ export function useOptimizerConfig() {
       simulationMode: false,
       customProductionUrl: "https://api.smartped.com.br",
       customTestUrl: "https://apitest.smartped.com.br",
-      customEndpoint: "/api/Condicoes/Molecula"
+      customEndpoint: "/api/Condicoes/Molecula",
+      alertaProfarma48h: true,
+      alertaConfirmarQtdCaixaMaster: true,
+      bypassMargemRuptura: true,
     };
   });
 

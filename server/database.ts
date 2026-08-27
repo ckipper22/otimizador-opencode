@@ -497,6 +497,37 @@ export async function getItensConfirmados(cnpj: string, dataInicio?: string, dat
   } catch { return []; }
 }
 
+/**
+ * Retorna EANs faturados pela Profarma (último pedido conhecido por EAN).
+ * Usa created_at (setado apenas no INSERT, nunca reescrito no ON CONFLICT)
+ * pra obter a data real do faturamento, não updated_at (que é resetado a cada resync).
+ * Retorna apenas o pedido mais recente por EAN (created_at DESC, dedup por ean).
+ */
+export async function getProfarmaFaturadosPendentes(cnpj: string): Promise<Array<{ ean: string; dataFaturado: string }>> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const rows = await d.all(
+      `SELECT ean, created_at FROM itens_confirmados
+       WHERE cnpj = ? AND status = 'faturado'
+       AND (UPPER(nome_dist) LIKE '%PROFARMA%' OR cod_dist = 4)
+       ORDER BY created_at DESC`,
+      cnpj
+    );
+    if (!rows || rows.length === 0) return [];
+    // created_at DESC + dedup: mantém só a primeira ocorrência de cada ean (mais recente)
+    const seen = new Set<string>();
+    const result: Array<{ ean: string; dataFaturado: string }> = [];
+    for (const row of rows as any[]) {
+      if (!seen.has(row.ean)) {
+        seen.add(row.ean);
+        result.push({ ean: row.ean, dataFaturado: row.created_at });
+      }
+    }
+    return result;
+  } catch { return []; }
+}
+
 // Itens Manuais (items added manually via button "+")
 export async function saveItemManual(item: {
   codInterno: string; ean: string; descricao: string; laboratorio: string;

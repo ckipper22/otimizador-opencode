@@ -38,6 +38,7 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
     const altsCount = item.alternatives?.length ?? 0;
     const isRuptura = item.isRupturaSubstitution;
     const isManualOrEncomenda = item.origem === "encomenda" || item.origem === "manual";
+    const isNotFound = !item.distribuidora || item.distribuidora === "Não Encontrados" || item.distribuidora === "Sem Estoque" || item.distribuidora.toUpperCase().includes("NÃO ENCONTRADO");
     
     console.log(`[CONDITION-SELECTOR-DEBUG] EAN=${item.originalEan} | isRuptura=${isRuptura} | altsCount=${altsCount} | liveAlts=${liveAlternatives?.length ?? 'null'} | config=${!!config?.token} | origem=${item.origem}`);
 
@@ -49,6 +50,11 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
     // Itens manuais/encomenda nunca buscam em tempo real - já vieram com a oferta escolhida
     if (isManualOrEncomenda) {
       console.log(`[CONDITION-SELECTOR-DEBUG] PULANDO busca: item manual/encomenda (origem=${item.origem})`);
+      return;
+    }
+    // Itens "Não Encontrados"/"Sem Estoque" — busca já foi esgotada no backend
+    if (isNotFound) {
+      console.log(`[CONDITION-SELECTOR-DEBUG] PULANDO busca: item não encontrado/sem estoque (dist=${item.distribuidora})`);
       return;
     }
     if (!config?.token || !config?.cnpj) {

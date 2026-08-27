@@ -127,6 +127,9 @@ export interface OptimizerConfig {
   direcionarEurofarmaWhatsapp?: boolean;
   telefoneWhatsappEurofarma?: string;
   whatsAppRules?: WhatsAppRule[];
+  alertaProfarma48h?: boolean;
+  alertaConfirmarQtdCaixaMaster?: boolean;
+  bypassMargemRuptura?: boolean;
 }
 
 export interface DailyOrderDist {

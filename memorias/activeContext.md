@@ -117,10 +117,84 @@
    - `toLocaleString('pt-BR', ...)` sem `timeZone` → Cloud Run formatava em UTC em vez de Panambi (UTC-3)
    - Adicionado `timeZone: 'America/Sao_Paulo'` — corrige os dois returns da função (linhas 2417 e 2439)
 
+### Feature — Painel "Regras de Otimização" (Parte A + B)
+
+6. **3 toggles novos em OptimizerConfig (src/types.ts)**
+   - `alertaProfarma48h` — alerta de duplicidade Profarma 48h (default: true)
+   - `alertaConfirmarQtdCaixaMaster` — bloqueio caixa master/fracionado (default: true)
+   - `bypassMargemRuptura` — bypass margem na ruptura total (default: true)
+
+7. **Backend: bypassMargemRuptura (server/swap-engine.ts)**
+   - Novo param `bypassMargemRuptura` em `findBestSubstitute`
+   - Quando false, força filtro margemMinima mesmo em ruptura (antes ignorava)
+   - Threadado nas 2 chamadas em server.ts
+
+8. **Backend: alertaConfirmarQtdCaixaMaster (server.ts)**
+   - Quando false, força `alertaConfirmarQtd: false` no report (linhas 5885 e 6085)
+
+9. **Frontend: UI painel (src/components/UploadBox.tsx)**
+   - Painel "Regras de Otimização" abaixo de "Distribuidoras Disponíveis"
+   - 3 checkboxes com labels, mesmo padrão visual das distribuidoras
+   - Props config + onConfigChange passadas via App.tsx
+
+10. **Parte B: Profarma 48h com verificação de entrada (SwapsTable.tsx)**
+    - `profarmaRecentOrdersEans`: Set<string> → Map<string, string> (ean → dataPedido)
+    - Novo endpoint proxy `GET /api/produtos/compras-historico/:ean` (server.ts)
+    - useEffect assíncrono verifica se item já foi recebido (compras com fornecedor PROFARMA + dataEntrada >= dataPedido)
+    - `profarmaConfirmedEntries` state: itens com entrada confirmada são suprimidos do alerta
+    - Toggle `alertaProfarma48h === false` pula toda a checagem
+
+### Fix — "Não Encontrados" voltando ao relatório
+
+11. **Filtro removido em server.ts:6234-6246**
+    - Commit 7df0a0f (14/08) adicionou filtro que removia itens "Não Encontrados" (dist inválida ou estoque 0) do report final
+    - Frontend (SwapsTable.tsx) tem seção dedicada com badge "PRODUTOS NÃO ENCONTRADOS" e banner de busca manual — que nunca recebia dados
+    - Filtro removido: `report` volta ao frontend sem cortes
+    - Alerta registrado: NUNCA remover itens do report sem confirmar que o frontend não depende deles pra seção própria (entrada #19 CEGUEIRA ANTIGA)
+
+### Refatoração — Hook useProfarmaAlertCheck
+
+12. **Extração de hook compartilhado (src/hooks/useProfarmaAlertCheck.ts)**
+    - Lógica de detecção duplicidade Profarma 48h estava duplicada em SwapsTable.tsx (alerta visual) e useOptimizationResult.ts (modal de bloqueio)
+    - Versão do SwapsTable tinha fix de checagem de entrada (proxy compras-historico) e fix UTC vs local — versão do useOptimizationResult NÃO tinha
+    - Resultado: modal de bloqueio continuava alertando pra itens com entrada confirmada
+    - Hook expõe: `isEanProfarmaAlerted(ean)`, `getProfarmaOrderDate(ean)`
+    - Ambos os consumidores agora usam a mesma lógica centralizada
+    - Lição: quando a mesma regra de negócio precisa valer em 2+ lugares, extrair hook compartilhado (entrada #20 CEGUEIRA ANTIGA)
+
+### Feature — Grupo "Aguardando Chegar Profarma"
+
+13. **Reclassificação de itens faturados sem entrada (SwapsTable.tsx)**
+    - Regra: se item foi faturado pela Profarma recentemente (janela 48h) mas NÃO tem entrada confirmada, ofertas de outros fornecedores são ignoradas e item vai pra grupo novo "Aguardando Chegar Profarma"
+    - Motivo: Profarma às vezes segura pedido (não bate mínimo) mas já marca como faturado — vai entregar depois. Mostrar oferta normal arriscaria duplicar
+    - Implementação: reutiliza `isEanProfarmaAlerted()` do hook `useProfarmaAlertCheck` (já disponível em SwapsTable.tsx)
+    - Grupo tratado como virtual (junto com "Não Encontrados" e "Sem Estoque") no sort e na lógica de UI
+    - Badge: `⏳ AGUARDANDO CHEGAR PROFARMA` (amber)
+    - Banner explicativo com instrução de ação (aguardar entrega ou cancelar na Profarma)
+
+### Migração de fonte — Profarma: dailyOrders → itens_confirmados
+
+14. **Fonte de dados trocada de dailyOrders/SmartPed pra itens_confirmados/Turso**
+    - dailyOrders/DataPedido era pouco confiável (SmartPed retornava data que não batia com o pedido real)
+    - Nova fonte: tabela `itens_confirmados` (Turso), alimentada por `/api/itens-confirmados-do-dia` com status="faturado" e `created_at` (setado apenas no INSERT, nunca reescrito no ON CONFLICT — ao contrário de `updated_at` que é resetado a cada resync)
+    - Regra simplificada: teve faturado na Profarma + sem entrada depois = pendente (sem janela de 48h)
+    - Backend: `getProfarmaFaturadosPendentes(cnpj)` em database.ts + endpoint `/api/profarma-faturados-pendentes`
+    - Frontend: `useProfarmaAlertCheck(cnpj, enabled)` — busca do endpoint, checagem de entrada via compras-historico mantida
+    - Sync automático: `handleOptimize` agora chama `/api/itens-confirmados-do-dia` antes de otimizar
+
 ### Arquivos Modificados Nesta Sessão
-- `server/database.ts` — `savePrecosCacheBatch` batch Turso, nova `saveItensConfirmadosBatch`
-- `server.ts` — import `saveItensConfirmadosBatch`, loop itens confirmados → batch, fix timezone encomendas
-- `AGENTS.md` — entrada #18 (CEGUEIRA ANTIGA)
+- `server/database.ts` — `savePrecosCacheBatch` batch Turso, nova `saveItensConfirmadosBatch`, nova `getProfarmaFaturadosPendentes`
+- `server.ts` — import `saveItensConfirmadosBatch`/`getProfarmaFaturadosPendentes`, loop itens confirmados → batch, fix timezone encomendas, proxy compras-historico, params `bypassMargemRuptura`/`alertaConfirmarQtdCaixaMaster`, remoção filtro "Não Encontrados", novo endpoint `/api/profarma-faturados-pendentes`, fix dataPedido variações
+- `server/swap-engine.ts` — param `bypassMargemRuptura` em `findBestSubstitute`
+- `src/types.ts` — campos `alertaProfarma48h`, `alertaConfirmarQtdCaixaMaster`, `bypassMargemRuptura` em `OptimizerConfig`
+- `src/hooks/useOptimizerConfig.ts` — defaults `true` para os 3 novos campos
+- `src/hooks/useOptimizationResult.ts` — envio dos 3 novos campos, refatorado pra usar `useProfarmaAlertCheck`, sync itens_confirmados no handleOptimize
+- `src/hooks/useProfarmaAlertCheck.ts` — REESCRITO: fonte agora é itens_confirmados via endpoint (não mais dailyOrders)
+- `src/components/UploadBox.tsx` — painel "Regras de Otimização" com 3 toggles (textos simplificados)
+- `src/components/SwapsTable.tsx` — refatorado pra usar `useProfarmaAlertCheck(cnpj)`, fix UTC vs local, data no alerta, grupo "Aguardando Chegar Profarma"
+- `src/components/ConditionSelector.tsx` — skip para "Não Encontrados"/"Sem Estoque"
+- `src/App.tsx` — props config/onConfigChange no UploadBox
+- `AGENTS.md` — entradas #18, #19 e #20 (CEGUEIRA ANTIGA)
 
 ## Regras Importantes
 - **Tudo de vendas/estoque vem do Ferramentinhas** — SmartPed só para pricing

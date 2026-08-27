@@ -11,7 +11,8 @@ export function findBestSubstitute(
   fallbackOriginalPrice?: number,
   originalHasStock: boolean = true,
   isGeneric: boolean = false,
-  cortesRecentes: Record<string, string[]> = {}
+  cortesRecentes: Record<string, string[]> = {},
+  bypassMargemRuptura: boolean = true
 ): { melhor: any; economia: number; isFallback?: boolean } | null {
   let precoOriginal = (fallbackOriginalPrice !== undefined && fallbackOriginalPrice > 0)
     ? fallbackOriginalPrice
@@ -132,7 +133,7 @@ export function findBestSubstitute(
   let substitutosValidos = candidatosSubstitutos;
   let benchmarkPreco = precoOriginal;
 
-  if (originalTemEstoqueReal) {
+  if (originalTemEstoqueReal || !bypassMargemRuptura) {
     const origsComEstoque = (substitutos || []).filter(s => {
       const sEan = cleanEan(s.Ean || s.ean || "");
       if (sEan !== origEan) return false;

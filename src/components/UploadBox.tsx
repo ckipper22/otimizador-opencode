@@ -1,7 +1,7 @@
 import React, { useRef, useState } from "react";
-import { Upload, FileText, Trash2, CheckCircle, Sparkles, RefreshCw, AlertTriangle, Clipboard, FileDown } from "lucide-react";
+import { Upload, FileText, Trash2, CheckCircle, Sparkles, RefreshCw, AlertTriangle, Clipboard, FileDown, Settings2 } from "lucide-react";
 import { SAMPLE_SICF_FILE } from "../utils";
-import { DistributorOption } from "../types";
+import { DistributorOption, OptimizerConfig } from "../types";
 
 interface UploadBoxProps {
   fileContent: string;
@@ -17,6 +17,8 @@ interface UploadBoxProps {
   cnpj?: string;
   onImportDirectReport?: (injectedReport: any[], virtualFileContent: string, detectedCnpj?: string) => void;
   onImportPreDistributed?: (preDistributedMap: Record<string, { codDist: number, condicao: string, prazo: number, codProdutoDist: string, quant: number }>, virtualFileContent: string, detectedCnpj?: string) => void;
+  config?: OptimizerConfig;
+  onConfigChange?: (patch: Partial<OptimizerConfig>) => void;
 }
 
 export default function UploadBox({
@@ -32,7 +34,9 @@ export default function UploadBox({
   isLoadingDistributors,
   cnpj,
   onImportDirectReport,
-  onImportPreDistributed
+  onImportPreDistributed,
+  config,
+  onConfigChange
 }: UploadBoxProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -454,7 +458,54 @@ export default function UploadBox({
             </div>
           </div>
         )}
-        
+
+        {fileContent && config && onConfigChange && (
+          <div className="mt-3 bg-slate-50 border border-slate-200 rounded-xl p-3.5">
+            <div className="flex items-center space-x-2 mb-2.5">
+              <Settings2 className="w-3.5 h-3.5 text-slate-500" />
+              <span className="text-xs font-semibold text-slate-700">Regras de Otimização</span>
+            </div>
+            <div className="space-y-2">
+              <label className="flex items-center space-x-2.5 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={config.alertaProfarma48h !== false}
+                  onChange={() => onConfigChange({ alertaProfarma48h: config.alertaProfarma48h === false })}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 bg-white border-slate-300 w-4 h-4 cursor-pointer"
+                />
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium text-slate-700 group-hover:text-slate-900">Avisar pedido repetido pra Profarma</span>
+                  <span className="text-xs text-slate-400">Se você já pediu esse produto pra Profarma há menos de 2 dias, o sistema avisa antes de pedir de novo — pra não duplicar o pedido por engano. Mas se esse pedido anterior já chegou e entrou no estoque, o aviso não aparece, porque aí não é duplicidade de verdade.</span>
+                </div>
+              </label>
+              <label className="flex items-center space-x-2.5 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={config.alertaConfirmarQtdCaixaMaster !== false}
+                  onChange={() => onConfigChange({ alertaConfirmarQtdCaixaMaster: config.alertaConfirmarQtdCaixaMaster === false })}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 bg-white border-slate-300 w-4 h-4 cursor-pointer"
+                />
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium text-slate-700 group-hover:text-slate-900">Confirmar antes de trocar por caixa fechada</span>
+                  <span className="text-xs text-slate-400">Quando a troca sugerida parece ser uma caixa/fardo grande em vez da unidade que você pediu, o sistema para e pede pra você confirmar a quantidade antes de continuar.</span>
+                </div>
+              </label>
+              <label className="flex items-center space-x-2.5 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={config.bypassMargemRuptura !== false}
+                  onChange={() => onConfigChange({ bypassMargemRuptura: config.bypassMargemRuptura === false })}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 bg-white border-slate-300 w-4 h-4 cursor-pointer"
+                />
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium text-slate-700 group-hover:text-slate-900">Sugerir qualquer opção quando o produto está em falta total</span>
+                  <span className="text-xs text-slate-400">Se o produto original não tem estoque em lugar nenhum, o sistema sugere qualquer substituto disponível, mesmo que não seja mais barato — pra você não ficar sem o produto. Se desligar, ele só sugere troca quando for mais barato, mesmo com o produto em falta.</span>
+                </div>
+              </label>
+            </div>
+          </div>
+        )}
+
         {isLoadingDistributors && (
           <div className="flex items-center text-xs text-slate-500 space-x-2">
             <RefreshCw className="w-3.5 h-3.5 animate-spin" />

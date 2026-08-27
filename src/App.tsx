@@ -1275,6 +1275,8 @@ export default function App() {
               onToggleDistributor={handleToggleDistributor}
               isLoadingDistributors={isLoadingDistributors}
               cnpj={config.cnpj}
+              config={config}
+              onConfigChange={(patch) => setConfig(prev => ({ ...prev, ...patch }))}
               onImportPreDistributed={(map, virtualFileContent, detectedCnpj) => {
                 setFileContent(virtualFileContent);
                 setFileName(`importacao_log_${Date.now()}.txt`);

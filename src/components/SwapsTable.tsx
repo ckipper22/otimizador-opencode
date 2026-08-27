@@ -34,6 +34,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { InterchangeabilityModal } from "./InterchangeabilityModal";
 import { WhatsAppOrderModal } from "./WhatsAppOrderModal";
 import { ConditionSelector } from "./ConditionSelector";
+import { useProfarmaAlertCheck } from "../hooks/useProfarmaAlertCheck";
 
 function stripHtml(str: string | undefined | null): string {
   if (!str) return "";
@@ -239,63 +240,7 @@ export default function SwapsTable({
     return cleaned;
   };
 
-  // Detect recent successful orders at Profarma (last 2 business days)
-  const profarmaRecentOrdersEans = useMemo(() => {
-    if (!dailyOrders || !Array.isArray(dailyOrders)) return new Set<string>();
-
-    const eans = new Set<string>();
-    
-    // Calculate strings of the last 2 business days in DD/MM/YYYY
-    const getRecentBusinessDays = (count: number) => {
-      const dates = new Set<string>();
-      const d = new Date();
-      
-      const formatDateStr = (date: Date) => {
-        const dd = String(date.getDate()).padStart(2, '0');
-        const mm = String(date.getMonth() + 1).padStart(2, '0');
-        const yyyy = date.getFullYear();
-        return `${dd}/${mm}/${yyyy}`;
-      };
-
-      dates.add(formatDateStr(d));
-
-      let businessDaysFound = (d.getDay() === 0 || d.getDay() === 6) ? 0 : 1;
-      const tempDate = new Date(d.getTime());
-      
-      for (let i = 1; i <= 10; i++) {
-        tempDate.setDate(tempDate.getDate() - 1);
-        const dayOfWeek = tempDate.getDay();
-        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        dates.add(formatDateStr(tempDate));
-        if (!isWeekend) {
-          businessDaysFound++;
-          if (businessDaysFound >= count) {
-            break;
-          }
-        }
-      }
-      return dates;
-    };
-
-    const allowedDates = getRecentBusinessDays(2);
-
-    dailyOrders.forEach(order => {
-      const orderDate = String(order.dataPedido || order.DataPedido || "").trim();
-      const isWithinAllowedDates = allowedDates.has(orderDate);
-
-      if (isWithinAllowedDates && order.detalhes?.Itens) {
-        order.detalhes.Itens.forEach((item: any) => {
-          const codDist = item.CodDist !== undefined ? item.CodDist : (item.codDist !== undefined ? item.codDist : 0);
-          const ean = cleanEanLocal(item.Ean || item.ean || "");
-          if (ean && (codDist === 4 || String(item.NomeDist || "").toUpperCase().includes("PROFARMA"))) {
-            eans.add(ean);
-          }
-        });
-      }
-    });
-
-    return eans;
-  }, [dailyOrders]);
+  const { isEanProfarmaAlerted, getProfarmaOrderDate } = useProfarmaAlertCheck(config?.cnpj || "", config?.alertaProfarma48h !== false);
 
   const handleThresholdChange = (val: number) => {
     const safeVal = Math.max(0, isNaN(val) ? 0 : val);
@@ -379,8 +324,10 @@ export default function SwapsTable({
     }> = {};
     
     for (const item of processedReport) {
-      const dist = item.distribuidora || "Não Encontrados";
-      const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque";
+      // Reclassificar itens faturados pela Profarma sem entrada confirmada
+      const isProfarmaAguardando = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
+      const dist = isProfarmaAguardando ? "Aguardando Chegar Profarma" : (item.distribuidora || "Não Encontrados");
+      const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque" || dist === "Aguardando Chegar Profarma";
       const groupKey = isVirtual 
         ? dist 
         : `${dist} [${item.condicao || "FIXA"} | ${item.prazo !== undefined ? item.prazo : 0}d]`;
@@ -415,8 +362,8 @@ export default function SwapsTable({
     }
 
     return Object.values(map).sort((a, b) => {
-      const isAVirtual = a.distribuidora === "Não Encontrados" || a.distribuidora === "Sem Estoque";
-      const isBVirtual = b.distribuidora === "Não Encontrados" || b.distribuidora === "Sem Estoque";
+      const isAVirtual = a.distribuidora === "Não Encontrados" || a.distribuidora === "Sem Estoque" || a.distribuidora === "Aguardando Chegar Profarma";
+      const isBVirtual = b.distribuidora === "Não Encontrados" || b.distribuidora === "Sem Estoque" || b.distribuidora === "Aguardando Chegar Profarma";
 
       if (isAVirtual && !isBVirtual) return 1;
       if (!isAVirtual && isBVirtual) return -1;
@@ -439,6 +386,8 @@ export default function SwapsTable({
       // Ambos virtuais
       if (a.distribuidora === "Não Encontrados" && b.distribuidora === "Sem Estoque") return -1;
       if (a.distribuidora === "Sem Estoque" && b.distribuidora === "Não Encontrados") return 1;
+      if (a.distribuidora === "Aguardando Chegar Profarma") return 1;
+      if (b.distribuidora === "Aguardando Chegar Profarma") return -1;
       
       return 0;
     });
@@ -1163,9 +1112,10 @@ export default function SwapsTable({
               const minVal = distributorMinimums[group.name] !== undefined ? distributorMinimums[group.name] : group.pedidoMinimo;
               const isMet = group.totalValue >= minVal;
               const diff = minVal - group.totalValue;
-              const isVirtual = group.name === "Não Encontrados" || group.name === "Sem Estoque";
+              const isVirtual = group.name === "Não Encontrados" || group.name === "Sem Estoque" || group.name === "Aguardando Chegar Profarma";
               const isNaoEncontrados = group.name === "Não Encontrados";
               const isSemEstoque = group.name === "Sem Estoque";
+              const isAguardandoProfarma = group.name === "Aguardando Chegar Profarma";
               const hasShortages = group.items.some(item => item.isShortage);
 
               let containerBg = "bg-[#E4E3E0] border-[#141414]";
@@ -1443,6 +1393,11 @@ export default function SwapsTable({
                           ⚠️ PRODUTOS SEM ESTOQUE
                         </span>
                       )}
+                      {isAguardandoProfarma && (
+                        <span className="bg-amber-100 text-amber-900 text-[9px] font-black uppercase tracking-widest px-2.5 py-1 border border-amber-400">
+                          ⏳ AGUARDANDO CHEGAR PROFARMA
+                        </span>
+                      )}
 
                       <button
                         onClick={() => onDeleteDistributor(group.name)}
@@ -1478,6 +1433,15 @@ export default function SwapsTable({
                         </div>
                       </div>
                     )}
+                    {isAguardandoProfarma && (
+                      <div className="bg-amber-50 border-b border-[#141414]/15 p-3.5 text-amber-950 text-[11px] leading-relaxed flex items-start gap-2.5">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div>
+                          <strong>⏳ Aguardando Chegar Profarma:</strong> Estes produtos foram faturados pela Profarma recentemente mas ainda não tiveram entrada confirmada. A oferta de outros fornecedores foi ignorada pra evitar duplicidade — aguarde a entrega ou cancele na Profarma.
+
+                        </div>
+                      </div>
+                    )}
 <table className="w-full text-left border-collapse font-mono text-xs table-fixed">
                       <thead>
                         <tr className={`uppercase tracking-wider text-[9px] font-bold border-b ${tableHeaderBg}`}>
@@ -1500,8 +1464,7 @@ export default function SwapsTable({
                           const isDisregarded = disregardedCodes.has(item.codInterno);
                           const isTransferred = item.motivoAcao && (item.motivoAcao.startsWith('Dispersado') || item.motivoAcao.startsWith('Puxado'));
                           
-                          const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase() === "PROFARMA") &&
-                            (profarmaRecentOrdersEans.has(cleanEanLocal(item.novoEan)) || profarmaRecentOrdersEans.has(cleanEanLocal(item.originalEan)));
+                          const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase() === "PROFARMA") && (isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan));
                           
                           const itemQtd = item.qtd;
                           const cxAlerta = !!(item.cx && item.cx > 1 && (itemQtd % item.cx !== 0));
@@ -1719,14 +1682,19 @@ export default function SwapsTable({
                                      <div className="mt-2.5 p-3 rounded-lg border border-orange-200 bg-orange-50/90 text-orange-950 font-sans shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-pulse">
                                        <div className="flex items-start gap-2.5">
                                          <AlertTriangle className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
-                                         <div>
-                                           <p className="text-xs font-bold uppercase tracking-wider text-orange-800 leading-none">
-                                             Alerta de Duplicidade Profarma
-                                           </p>
-                                           <p className="text-xs font-medium mt-1">
-                                             Este item foi enviado para a Profarma nas últimas 48h. Deseja manter no pedido ou excluir do lote para evitar duplicidade?
-                                           </p>
-                                         </div>
+                                          <div>
+                                            <p className="text-xs font-bold uppercase tracking-wider text-orange-800 leading-none">
+                                              Alerta de Duplicidade Profarma
+                                            </p>
+                                            <p className="text-xs font-medium mt-1">
+                                              {(() => {
+                                                const orderDate = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
+                                                return orderDate
+                                                  ? `Este item foi enviado para a Profarma em ${orderDate} (dentro das últimas 48h). Deseja manter no pedido ou excluir do lote para evitar duplicidade?`
+                                                  : `Este item foi enviado para a Profarma nas últimas 48h. Deseja manter no pedido ou excluir do lote para evitar duplicidade?`;
+                                              })()}
+                                            </p>
+                                          </div>
                                        </div>
                                        <div className="flex items-center gap-2 shrink-0">
                                          <button

@@ -26,6 +26,9 @@
 | 16 | Refetch de similares já em memória | Sempre checar `marketSimilarMap[ean]` (carregado 1x no FASE-2) antes de chamar fetchSimilarGenerics(Batch) de novo dentro do loop principal | server.ts |
 | 17 | WhatsApp lab match falso-positivo | `a.includes(b) \|\| b.includes(a)` sem checar string vazia — item sem lab matchava regra. Blindar: `lab !== "" && (lab.includes(termo) \|\| termo.includes(lab))` | server.ts:3061, 4089, 4115 |
 | 18 | Escritas Turso N round-trips | `for...await` com `d.run()` sequencial em loops de escrita (savePrecosCacheBatch, saveItemConfirmado) → usar `d.batch(statements)` pra 1 round-trip. Ler lembra-se: `Promise.all` pra leitores, `batch` pra escritores | server/database.ts, server.ts |
+| 19 | "Não Encontrados" sumiu do relatório | Filtro em server.ts removia itens sem estoque/smartped do report final — mas frontend tem seção dedicada pra eles. NUNCA remover itens do report sem confirmar que o frontend não depende deles pra seção própria | server.ts:6234-6246 |
+| 20 | Lógica Profarma duplicada em 2 arquivos | Mesma regra de negócio (detecção duplicidade Profarma 48h) implementada em SwapsTable.tsx E useOptimizationResult.ts — corrigir um sem corrigir o outro deixava comportamento inconsistente entre tabela e modal de bloqueio. Extrair hook compartilhado quando a mesma regra precisa valer nos dois lugares | src/hooks/useProfarmaAlertCheck.ts |
+| 21 | Profarma "faturado agora" sempre | `getProfarmaFaturadosPendentes` usava `updated_at` como data do faturamento — mas `updated_at` é reescrito a cada resync via ON CONFLICT DO UPDATE SET updated_at = datetime('now'), fazendo todo item parecer "faturado agora". Usar `created_at` (setado só no INSERT, nunca reescrito) | server/database.ts |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
 
@@ -55,12 +58,17 @@ npm run lint     # Type checking (tsc --noEmit)
 - Similar/Referência → sem subs. Ruptura → qualquer coisa com estoque
 - Perfumaria/Correlatos → nunca buscar subs
 - SmartPed `TipoItem` é fallback
+- **Aguardando Chegar Profarma:** item faturado pela Profarma recentemente sem entrada confirmada → oferta de outro fornecedor ignorada, grupo separado na UI (fonte: `itens_confirmados` via `/api/profarma-faturados-pendentes`, NÃO dailyOrders)
 
 ### Motor de trocas
 - Prioridade para ofertas reais (CodDist > 0)
-- Ruptura: ignora `margemMinima`
+- Ruptura: ignora `margemMinima` (exceto quando `bypassMargemRuptura: false`)
 - `CodProdutoDist` obrigatório (vem de `Condicoes/Ean`)
 - Deduplicação: `${Ean}_${CodDist}_${Condicao}_${Prazo}` (sem preço)
+- **Toggles de regra** (defaults `true`, salvos em localStorage):
+  - `bypassMargemRuptura` — se false, sempre aplica margemMinima mesmo em ruptura
+  - `alertaConfirmarQtdCaixaMaster` — se false, desativa bloqueio de discrepância caixa master
+  - `alertaProfarma48h` — se false, desativa alerta de duplicidade Profarma 48h
 
 ### Faturamento
 - Blindagem 4 regras antes de enviar

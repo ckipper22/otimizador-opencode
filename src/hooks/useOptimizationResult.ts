@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { OptimizationResponse, SwapReportItem, OptimizerConfig, DistributorOption, ExternalSupplier } from "../types";
 import { cleanEan } from "../utils";
+import { useProfarmaAlertCheck } from "./useProfarmaAlertCheck";
 
 interface UseOptimizationResultParams {
   config: OptimizerConfig;
@@ -111,6 +112,19 @@ export function useOptimizationResult({
         setLogs((prev) => [...prev, `[SISTEMA ALERTA] Não foi possível atualizar pedidos recentes para duplicidade: ${err.message}`]);
       }
 
+      // Sincronizar itens confirmados (tabela itens_confirmados do Turso) pra checagem Profarma
+      try {
+        setLogs((prev) => [...prev, "[SISTEMA] Sincronizando itens confirmados para checagem Profarma..."]);
+        await fetch("/api/itens-confirmados-do-dia", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: config.token, cnpj: config.cnpj, useTestUrl: config.useTestUrl }),
+        });
+        setLogs((prev) => [...prev, "[SISTEMA] Itens confirmados sincronizados com sucesso."]);
+      } catch (err: any) {
+        setLogs((prev) => [...prev, `[SISTEMA ALERTA] Não foi possível sincronizar itens confirmados: ${err.message}`]);
+      }
+
       const storedCutsStr = localStorage.getItem("cortes_recentes");
       const cortesRecentes = storedCutsStr ? JSON.parse(storedCutsStr) : {};
 
@@ -133,7 +147,10 @@ export function useOptimizationResult({
           customEndpoint: config.customEndpoint,
           disabledDistributors: Array.from(disabledDistributors),
           externalSuppliers,
-          cortesRecentes
+          cortesRecentes,
+          alertaProfarma48h: config.alertaProfarma48h !== false,
+          alertaConfirmarQtdCaixaMaster: config.alertaConfirmarQtdCaixaMaster !== false,
+          bypassMargemRuptura: config.bypassMargemRuptura !== false,
         })
       });
 
@@ -531,69 +548,14 @@ export function useOptimizationResult({
     });
   }, [activeReport]);
 
-  const profarmaRecentOrdersEans = useMemo(() => {
-    if (!dailyOrders || !Array.isArray(dailyOrders)) return new Set<string>();
-
-    const eans = new Set<string>();
-
-    const getRecentBusinessDays = (count: number) => {
-      const dates = new Set<string>();
-      const d = new Date();
-
-      const formatDateStr = (date: Date) => {
-        const dd = String(date.getDate()).padStart(2, '0');
-        const mm = String(date.getMonth() + 1).padStart(2, '0');
-        const yyyy = date.getFullYear();
-        return `${dd}/${mm}/${yyyy}`;
-      };
-
-      dates.add(formatDateStr(d));
-
-      let businessDaysFound = (d.getDay() === 0 || d.getDay() === 6) ? 0 : 1;
-      const tempDate = new Date(d.getTime());
-
-      for (let i = 1; i <= 10; i++) {
-        tempDate.setDate(tempDate.getDate() - 1);
-        const dayOfWeek = tempDate.getDay();
-        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        dates.add(formatDateStr(tempDate));
-        if (!isWeekend) {
-          businessDaysFound++;
-          if (businessDaysFound >= count) {
-            break;
-          }
-        }
-      }
-      return dates;
-    };
-
-    const allowedDates = getRecentBusinessDays(2);
-
-    dailyOrders.forEach(order => {
-      const orderDate = String(order.dataPedido || order.DataPedido || "").trim();
-      const isWithinAllowedDates = allowedDates.has(orderDate);
-
-      if (isWithinAllowedDates && order.detalhes?.Itens) {
-        order.detalhes.Itens.forEach((item: any) => {
-          const codDist = item.CodDist !== undefined ? item.CodDist : (item.codDist !== undefined ? item.codDist : 0);
-          const ean = String(item.Ean || item.ean || "").replace(/\D/g, "");
-          if (ean && (codDist === 4 || String(item.NomeDist || "").toUpperCase().includes("PROFARMA"))) {
-            eans.add(ean);
-          }
-        });
-      }
-    });
-
-    return eans;
-  }, [dailyOrders]);
+  const { isEanProfarmaAlerted, getProfarmaOrderDate } = useProfarmaAlertCheck(config.cnpj, config.alertaProfarma48h !== false);
 
   const pendingAlertItems = useMemo(() => {
     if (!result || !result.report) return [];
     return activeReport.filter((item) => {
       if (item.disabled) return false;
 
-      const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) &&
-        (profarmaRecentOrdersEans.has(String(item.novoEan || "").replace(/\D/g, "")) || profarmaRecentOrdersEans.has(String(item.originalEan || "").replace(/\D/g, "")));
+      const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) && (isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan));
 
       if (isProfarmaAlert && !item.isProfarmaAlertAck) {
         return true;
@@ -601,19 +563,21 @@ export function useOptimizationResult({
 
       return item.alertaConfirmarQtd;
     }).map((item) => {
-      const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) &&
-        (profarmaRecentOrdersEans.has(String(item.novoEan || "").replace(/\D/g, "")) || profarmaRecentOrdersEans.has(String(item.originalEan || "").replace(/\D/g, "")));
+      const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) && (isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan));
 
       if (isProfarmaAlert) {
+        const orderDate = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
         return {
           ...item,
           isProfarmaAlert: true,
-          motivoAlertaProfarma: "⚠️ Alerta de Duplicidade Profarma: Este item foi enviado para a Profarma nas últimas 48h. Verifique a quantidade desejada ou digite 0 para remover do lote."
+          motivoAlertaProfarma: orderDate
+            ? `Este item foi enviado para a Profarma em ${orderDate} (dentro das últimas 48h). Verifique a quantidade desejada ou digite 0 para remover do lote.`
+            : `Este item foi enviado para a Profarma nas últimas 48h. Verifique a quantidade desejada ou digite 0 para remover do lote.`
         };
       }
       return item;
     });
-  }, [result, activeReport, profarmaRecentOrdersEans]);
+  }, [result, activeReport, isEanProfarmaAlerted, getProfarmaOrderDate]);
 
   useEffect(() => {
     if (pendingAlertItems.length > 0) {
