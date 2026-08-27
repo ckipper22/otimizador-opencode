@@ -39,8 +39,15 @@
 - `resolveCategoria`: acentos normalizados ✅
 
 ### O Que Está Pendente
-- **WhatsApp grupo separado:** ainda NÃO diagnosticado — precisa rastrear caso real
 - Documentação reorganizada em `memorias/` + `docs/_archive/`
+
+### Fix Adicional — WhatsApp Lab Match Bug (server.ts)
+- **Bug:** comparação `a.includes(b) || b.includes(a)` de laboratório sem checar string vazia — qualquer item/alternativa sem laboratório preenchido dava falso-positivo e era roteado para grupo WhatsApp indevidamente
+- **Correção em 3 pontos:**
+  1. server.ts:3061 — roteamento do item pro grupo WhatsApp: `labUpper !== "" && (labUpper.includes(termoUpper) || termoUpper.includes(labUpper))`
+  2. server.ts:4089 — filtro do item original SmartPed: `origLabWa !== "" && [...whatsappLabNames].some(...)`
+  3. server.ts:4115 — filtro dos substitutos SmartPed: `sLab !== "" && [...whatsappLabNames].some(...)`
+- `termoUpper` já garantido não-vazio pelo `if (!termoUpper) continue;` na linha 3059
 
 ### Arquivos Modificados Nesta Sessão
 - `server/parsers.ts` — `mesmaApresentacao()` (DCB emprestado, L.P./XR, dosagem)

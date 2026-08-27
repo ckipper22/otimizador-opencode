@@ -3058,7 +3058,8 @@ app.post("/api/optimize", async (req, res) => {
             const termoUpper = (rule.termo_filtro || rule.termoFiltro || "").toUpperCase().trim();
             if (!termoUpper) continue;
             // Match: laboratório contém o termo OU termo contém o laboratório
-            const matches = labUpper.includes(termoUpper) || termoUpper.includes(labUpper);
+            // Blindagem: labUpper não-vazio para evitar falso-positivo de .includes("")
+            const matches = labUpper !== "" && (labUpper.includes(termoUpper) || termoUpper.includes(labUpper));
             if (!matches) continue;
 
             // Verificar filtro por tipo — fonte primária: eanCategoriaMap (Ferramentinhas via marketSimilarMap)
@@ -4086,7 +4087,8 @@ app.post("/api/optimize", async (req, res) => {
           const origStockWa = parseInt(String(respWa.ItemPedido?.Estoque || respWa.ItemPedido?.estoque || 0), 10);
           if (origCostWa > 0 && origStockWa > 0) {
             const origLabWa = (respWa.ItemPedido?.Laboratorio || respWa.ItemPedido?.laboratorio || "").toUpperCase().trim();
-            const isFromRegisteredLab = [...whatsappLabNames].some(lab => origLabWa.includes(lab) || lab.includes(origLabWa));
+            // Blindagem: origLabWa não-vazio para evitar falso-positivo de .includes("")
+            const isFromRegisteredLab = origLabWa !== "" && [...whatsappLabNames].some(lab => origLabWa.includes(lab) || lab.includes(origLabWa));
             if (!isFromRegisteredLab) {
               waAlternatives.push({
                 ean: origEanWa,
@@ -4112,7 +4114,8 @@ app.post("/api/optimize", async (req, res) => {
             const sStock = parseInt(String(s.Estoque || s.estoque || 0), 10);
             if (sCost <= 0 || sStock <= 0) continue;
             const sLab = (s.Laboratorio || s.laboratorio || "").toUpperCase().trim();
-            const isFromRegisteredLab = [...whatsappLabNames].some(lab => sLab.includes(lab) || lab.includes(sLab));
+            // Blindagem: sLab não-vazio para evitar falso-positivo de .includes("")
+            const isFromRegisteredLab = sLab !== "" && [...whatsappLabNames].some(lab => sLab.includes(lab) || lab.includes(sLab));
             if (isFromRegisteredLab) {
               logs.push(`[WHATSAPP-FILTER] Substituto "${s.Descricao || s.descricao}" (lab: ${s.Laboratorio || s.laboratorio}) filtrado — lab com regra WhatsApp`);
               continue;
