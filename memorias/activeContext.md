@@ -194,7 +194,61 @@
 - `src/components/SwapsTable.tsx` — refatorado pra usar `useProfarmaAlertCheck(cnpj)`, fix UTC vs local, data no alerta, grupo "Aguardando Chegar Profarma"
 - `src/components/ConditionSelector.tsx` — skip para "Não Encontrados"/"Sem Estoque"
 - `src/App.tsx` — props config/onConfigChange no UploadBox
-- `AGENTS.md` — entradas #18, #19 e #20 (CEGUEIRA ANTIGA)
+- `src/hooks/useBilling.ts` — confirmação de encomenda por distribuidora (não espera lote inteiro), `confirmedEncomendaIds`
+- `src/main.tsx` — `<App />` envolto por `<ErrorBoundary>`
+- `src/components/ErrorBoundary.tsx` — NOVO: classe com `getDerivedStateFromError` + `componentDidCatch`
+- `package.json` / `package-lock.json` — `@types/react` e `@types/react-dom` adicionados como devDependencies
+- `AGENTS.md` — entradas #18-22 (CEGUEIRA ANTIGA), lista de erros pré-existentes
+
+### Fechamento de sessão — 2026-08-27 (último lote)
+
+15. **Confirmação de encomenda por distribuidora** (não espera lote inteiro)
+    - Antes: `confirmarEncomendasAposRetorno` só rodava dentro de `if (isAllFinalized)` — se uma distribuidora demorava, segurava confirmação de todas
+    - Agora: roda em **toda iteração** de `checkReturn`, verificando por encomenda quais `codDist` já estão `Status === 3`
+    - `confirmedEncomendaIds` (novo state em `useBilling.ts`) evita re-confirmação no mesmo ciclo
+    - Reset: novo Set toda vez que `billingContext` é criado
+
+16. **ErrorBoundary adicionado**
+    - `src/components/ErrorBoundary.tsx` — classe com `getDerivedStateFromError` + `componentDidCatch`
+    - `src/main.tsx` — `<App />` envolvido por `<ErrorBoundary>`
+    - Objetivo: tela branca → mensagem de erro com stack trace, auxiliando diagnóstico
+
+17. **Descoberta: `@types/react` nunca foi instalado**
+    - O projeto usava React 19 sem `@types/react`/`@types/react-dom` — hooks funcionavam via `jsx-runtime` do Vite, mas a classe `Component` não tinha definição de tipo
+    - Instalação como devDependency revelou **27 erros TypeScript pré-existentes** em arquivos não relacionados a nenhuma mudança desta sessão
+    - Confirmado via `git stash` + lint no HEAD limpo — mesmos erros. São erros silenciosos de tipos que existiam desde antes
+    - **Decisão: adiar fix desses 27 erros pra outra sessão** — não são bloqueadores, o sistema funciona normalmente
+    - Lista completa dos erros: ver CEGUEIRA ANTIGA #22 em AGENTS.md
+
+### Erros TypeScript pré-existentes (27, adiados)
+
+> Estes erros existem desde antes de qualquer mudança desta sessão. Confirmados via `git stash` + lint no commit anterior.
+> Instalando `@types/react` o TypeScript passa a checar os tipos React corretamente e revela esses gaps.
+
+| # | Arquivo | Erro resumido |
+|---|---------|---------------|
+| 1 | App.tsx:93 | `"whatsapp_orders"` não atribuível ao union type |
+| 2 | App.tsx:130 | `Set<number>` vs `Set<string>` |
+| 3 | App.tsx:355 | `precoLiquido` não existe no tipo |
+| 4 | App.tsx:1237 | `optimizedFileContent` ausente em literal |
+| 5 | App.tsx:1327 | Idem #4 |
+| 6 | App.tsx:1572 | Assinatura `MouseEventHandler` incompatível |
+| 7 | App.tsx:2128 | Callback com 2 args vs 1 esperado |
+| 8 | OfertasDoDiaModal.tsx:880 | `laboratorio` não existe em `CompraHistorico` |
+| 9 | SimilarProductsModal.tsx:367 | `title` não existe em LucideProps |
+| 10 | SwapsTable.tsx:1589 | `alertaConfirmarQtd` não existe em `SwapReportItem` |
+| 11 | WhatsAppOrdersView.tsx:173 | `string` vs union de status |
+| 12-14 | useBilling.ts:277,285,450 | `notaCupom` não existe em `FaturadoItem` |
+| 15-16 | useOptimizationResult.ts:476,780 | `originalDist` não existe em `SwapReportItem` |
+| 17 | useOptimizationResult.ts:477 | `originalCodDist` não existe |
+| 18-19 | useOptimizationResult.ts:478,486 | `originalEstoque` → queria `originalSemEstoque` |
+| 20-21 | useOptimizationResult.ts:479 | `originalPrecoCotado` → queria `originalPreco` |
+| 22 | useOptimizationResult.ts:480 | `originalCondicao` não existe |
+| 23 | useOptimizationResult.ts:481 | `originalCodProdutoDist` não existe |
+| 24 | useOptimizationResult.ts:482 | `originalPrazo` não existe |
+| 25 | useOptimizationResult.ts:483 | `originalCodProduto` não existe |
+| 26 | useOptimizationResult.ts:560 | `isProfarmaAlertAck` não existe no tipo |
+| 27 | useOptimizationResult.ts:564 | `alertaConfirmarQtd` não existe no tipo |
 
 ## Regras Importantes
 - **Tudo de vendas/estoque vem do Ferramentinhas** — SmartPed só para pricing

@@ -29,6 +29,7 @@
 | 19 | "Não Encontrados" sumiu do relatório | Filtro em server.ts removia itens sem estoque/smartped do report final — mas frontend tem seção dedicada pra eles. NUNCA remover itens do report sem confirmar que o frontend não depende deles pra seção própria | server.ts:6234-6246 |
 | 20 | Lógica Profarma duplicada em 2 arquivos | Mesma regra de negócio (detecção duplicidade Profarma 48h) implementada em SwapsTable.tsx E useOptimizationResult.ts — corrigir um sem corrigir o outro deixava comportamento inconsistente entre tabela e modal de bloqueio. Extrair hook compartilhado quando a mesma regra precisa valer nos dois lugares | src/hooks/useProfarmaAlertCheck.ts |
 | 21 | Profarma "faturado agora" sempre | `getProfarmaFaturadosPendentes` usava `updated_at` como data do faturamento — mas `updated_at` é reescrito a cada resync via ON CONFLICT DO UPDATE SET updated_at = datetime('now'), fazendo todo item parecer "faturado agora". Usar `created_at` (setado só no INSERT, nunca reescrito) | server/database.ts |
+| 22 | `@types/react` nunca instalado (27 erros ocultos) | Projeto usava React 19 sem `@types/react`/`@types/react-dom` — hooks funcionavam via jsx-runtime do Vite, mas classe Component não tinha definição de tipo. Instalação revelou 27 erros TypeScript pré-existentes (tipos incompletos de SwapReportItem, FaturadoItem, App.tsx). Confirmado via `git stash` + lint no HEAD limpo. **Adiar fix pra outra sessão** — não são bloqueadores | src/types.ts, src/App.tsx, src/hooks/*.ts |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
 

@@ -43,6 +43,7 @@ export function useBilling({
   const [manualCutsAlert, setManualCutsAlert] = useState<any[] | null>(null);
   const [autoPollReturn, setAutoPollReturn] = useState<boolean>(false);
   const [suspectItemAlert, setSuspectItemAlert] = useState<{ item: any; specificDistributorName?: string } | null>(null);
+  const [confirmedEncomendaIds, setConfirmedEncomendaIds] = useState<Set<string>>(new Set());
 
   const handleSendBilling = async (specificDistributorNameInput?: any, bypassSuspectCheck = false, bypassConfirm = false, forceDownloadJson = false) => {
     if (!result) return;
@@ -225,6 +226,7 @@ export function useBilling({
 
       if (data.numPedido) {
         setAutoPollReturn(true);
+        setConfirmedEncomendaIds(new Set());
         setBillingContext({ relatedGroups, baseDistName, numPedido: data.numPedido, itemsFaturados: data.itemsFaturados, encomendasPendentes: data.encomendasPendentes || [] });
       }
     } catch (err: any) {
@@ -370,6 +372,9 @@ export function useBilling({
 
           const codDistsNoLote = Array.from(new Set((itemsFaturados || []).map((it: any) => String(it.codDist || it.CodDist || "").trim())));
 
+          // Confirmar encomendas por distribuidora — assim que cada uma finaliza (não espera o lote inteiro)
+          confirmarEncomendasAposRetorno(itens, itemsFaturados, relatedGroups, dists);
+
           let isAllFinalized = false;
           if (dists && dists.length > 0) {
             if (codDistsNoLote.length > 0) {
@@ -387,9 +392,6 @@ export function useBilling({
           if (isAllFinalized) {
             const faltas = itens.filter((it: any) => parseFloat(it.QuantFaturada || it.quantFaturada || "0") === 0);
             const succeededEans = itens.filter((it: any) => parseFloat(it.QuantFaturada || it.quantFaturada || "0") > 0).map((it: any) => String(it.Ean || it.ean).trim());
-
-            // Confirmar encomendas no sistema externo APENAS para itens que foram faturados
-            confirmarEncomendasAposRetorno(itens, itemsFaturados, relatedGroups);
 
             setBilledGroups(prev => {
               const next = { ...prev };
@@ -477,13 +479,24 @@ export function useBilling({
     }, 2000);
   };
 
-  // Confirmar encomendas no sistema externo APENAS após retorno do SmartPed
-  // Só confirma itens que foram realmente faturados (QuantFaturada > 0)
-  const confirmarEncomendasAposRetorno = async (itensRetorno: any[], itemsFaturadosOriginais: any[], relatedGroups: string[]) => {
+  // Confirmar encomendas no sistema externo — por distribuidora, assim que ela finaliza.
+  // Verifica se todos os codDist dos itens da encomenda específica já estão com Status === 3.
+  const confirmarEncomendasAposRetorno = async (itensRetorno: any[], itemsFaturadosOriginais: any[], relatedGroups: string[], dists: any[]) => {
     if (!billingContext?.encomendasPendentes || billingContext.encomendasPendentes.length === 0) return;
+
+    const finalizedCodDists = new Set(
+      dists.filter((d: any) => d.Status === 3).map((d: any) => String(d.CodDist || d.codDist || "").trim())
+    );
 
     try {
       for (const encPendente of billingContext.encomendasPendentes) {
+        if (confirmedEncomendaIds.has(encPendente.idEncomenda)) continue;
+
+        // Todos os codDist dos itens dessa encomenda específica precisam estar finalizados
+        const encCodDists = Array.from(new Set(encPendente.itens.map((itemEnc: any) => String(itemEnc.codDist || "").trim()))) as string[];
+        const todosFinalizados = encCodDists.length > 0 && encCodDists.every((cd: string) => finalizedCodDists.has(cd));
+        if (!todosFinalizados) continue;
+
         // Verificar se pelo menos 1 item desta encomenda foi faturado
         const itensFaturadosDaEnc = encPendente.itens.filter((itemEnc: any) => {
           const eanLimpo = String(itemEnc.ean || "").trim();
@@ -496,8 +509,7 @@ export function useBilling({
         });
 
         if (itensFaturadosDaEnc.length > 0) {
-          // Pelo menos 1 item faturado → confirmar encomenda (com retry)
-          console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando encomenda ${encPendente.idEncomenda} (${itensFaturadosDaEnc.length} itens faturados)...`);
+          console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando encomenda ${encPendente.idEncomenda} (${itensFaturadosDaEnc.length} itens faturados, dists finalizados: ${encCodDists.join(", ")})...`);
           let confirmada = false;
           for (let tentativa = 1; tentativa <= 3; tentativa++) {
             try {
@@ -515,6 +527,7 @@ export function useBilling({
               if (respConfirmar.ok) {
                 console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${encPendente.idEncomenda} confirmada com sucesso.`);
                 confirmada = true;
+                setConfirmedEncomendaIds(prev => new Set(prev).add(encPendente.idEncomenda));
                 break;
               } else {
                 const errText = await respConfirmar.text().catch(() => "Sem detalhes");
@@ -601,6 +614,9 @@ export function useBilling({
         if (dists && dists.length > 0) {
           const codDistsNoLote = Array.from(new Set((itemsFaturados || []).map((it: any) => String(it.codDist || it.CodDist || "").trim())));
 
+          // Confirmar encomendas por distribuidora — assim que cada uma finaliza (não espera o lote inteiro)
+          confirmarEncomendasAposRetorno(itens, itemsFaturados, relatedGroups, dists);
+
           let isAllFinalized = false;
           if (codDistsNoLote.length > 0) {
             const distsDoLote = dists.filter((d: any) => codDistsNoLote.includes(String(d.CodDist || d.codDist || "").trim()));
@@ -615,9 +631,6 @@ export function useBilling({
 
           if (isAllFinalized) {
             const faltas = itens.filter((it: any) => parseFloat(it.QuantFaturada || it.quantFaturada || "0") === 0);
-
-            // Confirmar encomendas no sistema externo APENAS para itens que foram faturados
-            confirmarEncomendasAposRetorno(itens, itemsFaturados, relatedGroups);
 
             setBilledGroups(prev => {
               const next = { ...prev };
