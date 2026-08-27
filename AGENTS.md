@@ -25,6 +25,7 @@
 | 15 | fetchSimilarGenericsBatch sequencial | `for...await` dentro do loop de lotes → trocado por `Promise.all` nos lotes | server/smartped-api.ts:91 |
 | 16 | Refetch de similares já em memória | Sempre checar `marketSimilarMap[ean]` (carregado 1x no FASE-2) antes de chamar fetchSimilarGenerics(Batch) de novo dentro do loop principal | server.ts |
 | 17 | WhatsApp lab match falso-positivo | `a.includes(b) \|\| b.includes(a)` sem checar string vazia — item sem lab matchava regra. Blindar: `lab !== "" && (lab.includes(termo) \|\| termo.includes(lab))` | server.ts:3061, 4089, 4115 |
+| 18 | Escritas Turso N round-trips | `for...await` com `d.run()` sequencial em loops de escrita (savePrecosCacheBatch, saveItemConfirmado) → usar `d.batch(statements)` pra 1 round-trip. Ler lembra-se: `Promise.all` pra leitores, `batch` pra escritores | server/database.ts, server.ts |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
 
@@ -74,6 +75,16 @@ npm run lint     # Type checking (tsc --noEmit)
 - `marketSimilarMap` é carregado 1x no FASE-2 (`fetchSimilarGenericsBatch`) pra TODOS os EANs do pedido — sempre reusar essa Map, nunca chamar `fetchSimilarGenerics`/`fetchSimilarGenericsBatch` de novo dentro do loop principal do FASE-4/FASE-5 pro mesmo EAN
 - Instrumentação de timing já existe no código (`[FASE-N]`, `[TIMING-*]` em server.ts) — antes de investigar lentidão, rodar um teste real e ler os logs existentes antes de adicionar instrumentação nova
 - `fetchSimilarGenericsBatch` processa lotes de 40 EANs em paralelo (`Promise.all`) — não voltar pra sequencial sem motivo forte
+
+### Performance — Onde NÃO paralelizar (throttle proposital)
+
+> ⚠️ Esses pontos já tiveram concorrência REDUZIDA de propósito no passado porque APIs externas sobrecarregavam e itens se perdiam. Não "otimizar" aumentando `CONCURRENCY` sem confirmar com o usuário — é o oposto do padrão de bug das entradas #14-16/18 da tabela CEGUEIRA ANTIGA (que são sobre paralelizar coisas que estavam acidentalmente sequenciais).
+
+| Onde | Conc. | Motivo |
+|------|-------|--------|
+| FASE-3 `/api/optimize` (`Condicoes/Molecula`) — `server.ts:3473-3491` | `CONCURRENCY = 1`, `BATCH_DELAY_MS = 200` | Rate limit SmartPed |
+| `analisarFornecedorEmBackground` (promoções/fornecedores externos) — `server.ts:1191-1197` | `CONCURRENCY = 2` | Sobrecarga API Ferramentinhas (itens se perdiam) |
+| `/api/encomendas/buscar-ofertas-batch` | `CONCURRENCY = 1` + delay | Bug #39 histórico — mesma razão |
 
 ---
 

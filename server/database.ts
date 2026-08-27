@@ -446,6 +446,36 @@ export async function saveItemConfirmado(item: {
   } catch {}
 }
 
+export async function saveItensConfirmadosBatch(items: Array<{
+  numPedido: string; ean: string; descricao: string; laboratorio: string;
+  codDist: number; nomeDist: string; qtdSolicitada: number; qtdFaturada: number;
+  precoLiquido: number; status: string; motivo?: string; cnpj: string; dataConfirmacao: string;
+}>) {
+  const d = getDb();
+  if (!d || items.length === 0) return;
+  try {
+    const sql = `INSERT INTO itens_confirmados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd_solicitada, qtd_faturada, preco_liquido, status, motivo, cnpj, data_confirmacao, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))
+      ON CONFLICT(num_pedido, ean, cod_dist) DO UPDATE SET
+        qtd_faturada = excluded.qtd_faturada,
+        status = excluded.status,
+        motivo = excluded.motivo,
+        updated_at = datetime('now', '-3 hours')`;
+    if (USE_TURSO) {
+      const statements = items.map(item => ({
+        sql,
+        args: [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao]
+      }));
+      await d.batch(statements);
+    } else {
+      for (const item of items) {
+        const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao];
+        d.prepare(sql).run(...args);
+      }
+    }
+  } catch {}
+}
+
 export async function getItensConfirmados(cnpj: string, dataInicio?: string, dataFim?: string, limit = 500) {
   const d = getDb();
   if (!d) return [];
@@ -597,9 +627,17 @@ export async function savePrecosCacheBatch(items: Array<{
   try {
     const sql = `INSERT OR REPLACE INTO precos_cache (ean, cod_dist, condicao, prazo, preco_liquido, estoque, nome_dist, qtd_min, tipo_item, ultima_atualizacao)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))`;
-    for (const item of items) {
-      const args = [item.ean, item.codDist, item.condicao, item.prazo, item.precoLiquido, item.estoque, item.nomeDist, item.qtdMin || 0, item.tipoItem || null];
-      if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+    if (USE_TURSO) {
+      const statements = items.map(item => ({
+        sql,
+        args: [item.ean, item.codDist, item.condicao, item.prazo, item.precoLiquido, item.estoque, item.nomeDist, item.qtdMin || 0, item.tipoItem || null]
+      }));
+      await d.batch(statements);
+    } else {
+      for (const item of items) {
+        const args = [item.ean, item.codDist, item.condicao, item.prazo, item.precoLiquido, item.estoque, item.nomeDist, item.qtdMin || 0, item.tipoItem || null];
+        d.prepare(sql).run(...args);
+      }
     }
   } catch {}
 }

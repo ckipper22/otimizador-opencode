@@ -1,4 +1,4 @@
-# Contexto Ativo — Última Sessão: 2026-08-26 (performance)
+# Contexto Ativo — Última Sessão: 2026-08-27 (Turso batch)
 
 ## Status do Sistema
 - **Versão:** v2026-08-26 (deploy smartped-cli-00069-jzq)
@@ -83,6 +83,38 @@
 ### Arquivos Modificados Nesta Sessão
 - `server.ts` — fallback ALERTA + estoque FASE-5 reusam marketSimilarMap, try/catch defensivo no loop principal, instrumentação de timing
 - `server/smartped-api.ts` — fetchSimilarGenericsBatch paralelizado
+
+## Sessão 2026-08-27 — Escritas Turso batch + WhatsApp lab fix
+
+### Fixes
+
+1. **savePrecosCacheBatch → Turso batch (server/database.ts:590)**
+   - Branch USE_TURSO: `for...await d.run()` sequencial → `d.batch(statements)` 1 round-trip
+   - Branch better-sqlite3 (local) mantida sequencial (sem rede, aceitável)
+
+2. **saveItensConfirmadosBatch nova (server/database.ts:448-479)**
+   - Função nova seguindo padrão dos outros `saveXBatch` existentes
+   - Reaproveita a mesma SQL do `saveItemConfirmado` (INSERT ON CONFLICT DO UPDATE)
+   - Branch USE_TURSO: `d.batch(statements)` 1 round-trip
+   - Branch better-sqlite3: loop sequencial
+
+3. **Loop /api/itens-confirmados-do-dia → batch (server.ts:7189-7204)**
+   - `for...await saveItemConfirmado()` → `await saveItensConfirmadosBatch()`
+   - Desbloqueia a resposta HTTP antes do res.json()
+
+4. **WhatsApp lab match falso-positivo (server.ts:3061, 4089, 4115)**
+   - `.includes()` bidirecional sem checar string vazia → blindado com `lab !== ""`
+
+### O Que Funciona
+- `tsc --noEmit` limpo ✅
+- Escritas Turso: 1 round-trip em vez de N ✅
+- Leitores Turso: `Promise.all` (já existia) ✅
+- WhatsApp lab: falso-positivo com string vazia eliminado ✅
+
+### Arquivos Modificados Nesta Sessão
+- `server/database.ts` — `savePrecosCacheBatch` batch Turso, nova `saveItensConfirmadosBatch`
+- `server.ts` — import `saveItensConfirmadosBatch`, loop itens confirmados → batch
+- `AGENTS.md` — entrada #18 (CEGUEIRA ANTIGA)
 
 ## Regras Importantes
 - **Tudo de vendas/estoque vem do Ferramentinhas** — SmartPed só para pricing

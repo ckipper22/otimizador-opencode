@@ -132,7 +132,7 @@ import { LOCAL_EQUIVALENTS_DB, getLocalEquivalents } from "./server/equivalents-
 import { findBestSubstitute } from "./server/swap-engine";
 import { enrichReturnedItem } from "./server/smartped-transforms";
 import { MOCK_API_DATABASE } from "./server/mock-data";
-import { startDbCachePurge, saveOrder, saveOrderItem, getOrder, initTursoSchema, saveItemConfirmado, getItensConfirmados, saveItemManual, getItensManuais, purgeOldData, savePrecosCacheBatch, getPrecoCacheByEan, getPrecoCacheByEans, countPrecosCache, getLastPrecoSync, saveProdutoCache, countProdutosCache, listPrecosCache, purgePrecosCache, saveEansFixos, getEansFixos, countEansFixos } from "./server/database";
+import { startDbCachePurge, saveOrder, saveOrderItem, getOrder, initTursoSchema, saveItemConfirmado, saveItensConfirmadosBatch, getItensConfirmados, saveItemManual, getItensManuais, purgeOldData, savePrecosCacheBatch, getPrecoCacheByEan, getPrecoCacheByEans, countPrecosCache, getLastPrecoSync, saveProdutoCache, countProdutosCache, listPrecosCache, purgePrecosCache, saveEansFixos, getEansFixos, countEansFixos } from "./server/database";
 
 runEngineSelfTests();
 
@@ -7190,23 +7190,21 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
     const itensFaturados = resultadoFinal.filter(it => it.status === "faturado");
     if (itensFaturados.length > 0) {
       logs.push(`[TURSO] Salvando ${itensFaturados.length} itens confirmados no histÃ³rico...`);
-      for (const it of itensFaturados) {
-        await saveItemConfirmado({
-          numPedido: String(it.numPedido),
-          ean: it.ean,
-          descricao: it.descricaoSmartped || it.nome || "",
-          laboratorio: "",
-          codDist: it.codDist,
-          nomeDist: it.distribuidora || "",
-          qtdSolicitada: it.quantSolicitada || 0,
-          qtdFaturada: it.quantFaturada || 0,
-          precoLiquido: it.precoLiquido || 0,
-          status: it.status,
-          motivo: it.motivo || "",
-          cnpj: apiCnpj,
-          dataConfirmacao: finalDataFim
-        });
-      }
+      await saveItensConfirmadosBatch(itensFaturados.map(it => ({
+        numPedido: String(it.numPedido),
+        ean: it.ean,
+        descricao: it.descricaoSmartped || it.nome || "",
+        laboratorio: "",
+        codDist: it.codDist,
+        nomeDist: it.distribuidora || "",
+        qtdSolicitada: it.quantSolicitada || 0,
+        qtdFaturada: it.quantFaturada || 0,
+        precoLiquido: it.precoLiquido || 0,
+        status: it.status,
+        motivo: it.motivo || "",
+        cnpj: apiCnpj,
+        dataConfirmacao: finalDataFim
+      })));
       logs.push(`[TURSO] Itens confirmados salvos com sucesso.`);
     }
 
