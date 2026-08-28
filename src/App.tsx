@@ -710,6 +710,11 @@ export default function App() {
 
     try {
       for (const item of itensParaImportar) {
+        const originalIdx = encomendasWithOffers.indexOf(item);
+        const itemRowKey = `${item.idEncomenda}_${originalIdx}`;
+        const qtdFinal = encomendasQuantities[itemRowKey] !== undefined
+          ? encomendasQuantities[itemRowKey]
+          : item.qtdSelecionada;
         const oferta = item.ofertaSelecionada;
         const randomCod = "MANUAL-" + Date.now() + "-" + Math.floor(1000 + Math.random() * 9000);
         
@@ -749,9 +754,9 @@ export default function App() {
           novoLaboratorio: offerLab,
           novoPreco: offerPrecoLiq,
           novoPmc: oferta.PMC && oferta.PMC > 0 ? oferta.PMC : (offerPrecoLiq > 0 ? Number((offerPrecoLiq * 1.4).toFixed(2)) : 0),
-          qtd: item.qtdSelecionada,
+          qtd: qtdFinal,
           economiaUnit: Math.max(0, offerPrecoFab - offerPrecoLiq),
-          economiaTotal: Math.max(0, offerPrecoFab - offerPrecoLiq) * item.qtdSelecionada,
+          economiaTotal: Math.max(0, offerPrecoFab - offerPrecoLiq) * qtdFinal,
           distribuidora: offerDist,
           estoque: offerEstoque,
           codDist: offerCodDist,
@@ -835,7 +840,7 @@ export default function App() {
             laboratorio: offerLab,
             distribuidora: offerDist,
             codDist: offerCodDist,
-            qtd: item.qtdSelecionada,
+            qtd: qtdFinal,
             precoLiquido: offerPrecoLiq,
             precoFabrica: offerPrecoFab,
             condicao: offerCondicao,
@@ -862,7 +867,7 @@ export default function App() {
                 laboratorio: offerLab,
                 distribuidora: offerDist,
                 codDist: offerCodDist,
-                qtd: item.qtdSelecionada,
+                qtd: qtdFinal,
                 precoLiquido: offerPrecoLiq,
                 precoFabrica: offerPrecoFab,
                 condicao: offerCondicao,
