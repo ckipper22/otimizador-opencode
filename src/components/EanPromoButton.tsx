@@ -67,23 +67,10 @@ export const EanPromoButton = ({ ean, descricao }: { ean: string; descricao?: st
       const savedConfig = savedConfigStr ? JSON.parse(savedConfigStr) : {};
       const cnpj = savedConfig.cnpj || "";
 
-      // 1) Buscar pelo EAN para pegar a descricao exata da Trier
+      // Buscar pelo EAN — retornados todos os EANs do grupo DCB (via similares/:ean)
       const buscaEanRes = await fetch(`/api/ofertas-dia/buscar-produto?q=${encodeURIComponent(ean)}`);
       const buscaEanData = await buscaEanRes.json();
-      const produtoEan = buscaEanData?.produtos?.[0];
-      const descricaoTrier = produtoEan?.descricao || descricao || "";
-
-      // 2) Buscar por DESCRICAO para pegar TODOS os EANs do grupo DCB
-      const searchQuery = descricaoTrier || ean;
-      const buscaRes = await fetch(`/api/ofertas-dia/buscar-produto?q=${encodeURIComponent(searchQuery)}`);
-      const buscaData = await buscaRes.json();
-      const produtos = buscaData?.produtos || [];
-      // Encontrar o grupo que contem o EAN original (todos os grupos sao mesmo DCB)
-      let produto = produtos.find((p: any) => p.eans?.some((e: any) => e.ean === ean));
-      // Se nao encontrou o EAN exato, usar o primeiro grupo (mesmo DCB = mesmas vendas)
-      if (!produto && produtos.length > 0) produto = produtos[0];
-      // Ultimo fallback: usar resultado da busca por EAN (sem eans array)
-      if (!produto) produto = produtoEan;
+      const produto = buscaEanData?.produtos?.[0];
 
       if (!produto) {
         setError("Produto nao encontrado na Trier");

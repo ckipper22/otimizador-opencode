@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 function cleanEan(e: string): string {
   if (!e) return "";
@@ -23,15 +23,20 @@ interface ProfarmaFaturadoPendente {
  */
 export function useProfarmaAlertCheck(
   cnpj: string,
-  alertaProfarma48hEnabled: boolean
+  alertaProfarma48hEnabled: boolean,
+  relevantEans: string[] = []
 ) {
+  const relevantEansSet = useMemo(
+    () => new Set(relevantEans.map(cleanEan).filter(Boolean)),
+    [relevantEans]
+  );
   // Map ean → data do faturamento (YYYY-MM-DD HH:MM:SS do Turso)
   const [profarmaFaturadosMap, setProfarmaFaturadosMap] = useState<Map<string, string>>(new Map());
   const [isLoading, setIsLoading] = useState(false);
 
   // Buscar Profarma faturados pendentes quando o hook é montado ou cnpj muda
   useEffect(() => {
-    if (!alertaProfarma48hEnabled || !cnpj) {
+    if (!alertaProfarma48hEnabled || !cnpj || relevantEansSet.size === 0) {
       setProfarmaFaturadosMap(new Map());
       return;
     }
@@ -48,7 +53,7 @@ export function useProfarmaAlertCheck(
           const map = new Map<string, string>();
           for (const entry of eans) {
             const ean = cleanEan(entry.ean);
-            if (ean) {
+            if (ean && relevantEansSet.has(ean)) {
               map.set(ean, entry.dataFaturado);
             }
           }
@@ -61,7 +66,7 @@ export function useProfarmaAlertCheck(
       }
     })();
     return () => { cancelled = true; };
-  }, [cnpj, alertaProfarma48hEnabled]);
+  }, [cnpj, alertaProfarma48hEnabled, relevantEansSet]);
 
   // EANs com entrada confirmada via compras-historico (cheçagem secundária)
   const [profarmaConfirmedEntries, setProfarmaConfirmedEntries] = useState<Set<string>>(new Set());
@@ -84,38 +89,40 @@ export function useProfarmaAlertCheck(
     let cancelled = false;
     (async () => {
       const confirmed = new Set<string>();
-      await Promise.all(
-        toCheck.map(async ([ean, dataFaturado]) => {
-          try {
-            const res = await fetch(`/api/produtos/compras-historico/${ean}?meses=1`);
-            if (!res.ok) return;
-            const data = await res.json();
-            const compras = data.compras || data.Compras || [];
-            // Parse dataFaturado (YYYY-MM-DD HH:MM:SS) → local Date
-            const faturadoDate = new Date(dataFaturado.replace(' ', 'T'));
-            // Use only date portion for comparison (strip time)
-            const faturadoDateOnly = new Date(faturadoDate.getFullYear(), faturadoDate.getMonth(), faturadoDate.getDate());
-            for (const compra of compras) {
-              const fornecedor = String(compra.fornecedor || compra.Fornecedor || "").toUpperCase();
-              const dataEntrada = compra.data || compra.Data || compra.dataEntrada || "";
-              if (fornecedor.includes("PROFARMA") && dataEntrada) {
-                // Parse YYYY-MM-DD → local Date (sem UTC shift)
-                const entradaParts = dataEntrada.split("-");
-                const entradaDate =
-                  entradaParts.length === 3
-                    ? new Date(parseInt(entradaParts[0]), parseInt(entradaParts[1]) - 1, parseInt(entradaParts[2]))
-                    : new Date(dataEntrada);
-                if (!isNaN(entradaDate.getTime()) && entradaDate >= faturadoDateOnly) {
-                  confirmed.add(ean);
-                  break;
+      const BATCH_SIZE = 8;
+      for (let i = 0; i < toCheck.length; i += BATCH_SIZE) {
+        if (cancelled) break;
+        const batch = toCheck.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          batch.map(async ([ean, dataFaturado]) => {
+            try {
+              const res = await fetch(`/api/produtos/compras-historico/${ean}?meses=1`);
+              if (!res.ok) return;
+              const data = await res.json();
+              const compras = data.compras || data.Compras || [];
+              const faturadoDate = new Date(dataFaturado.replace(' ', 'T'));
+              const faturadoDateOnly = new Date(faturadoDate.getFullYear(), faturadoDate.getMonth(), faturadoDate.getDate());
+              for (const compra of compras) {
+                const fornecedor = String(compra.fornecedor || compra.Fornecedor || "").toUpperCase();
+                const dataEntrada = compra.data || compra.Data || compra.dataEntrada || "";
+                if (fornecedor.includes("PROFARMA") && dataEntrada) {
+                  const entradaParts = dataEntrada.split("-");
+                  const entradaDate =
+                    entradaParts.length === 3
+                      ? new Date(parseInt(entradaParts[0]), parseInt(entradaParts[1]) - 1, parseInt(entradaParts[2]))
+                      : new Date(dataEntrada);
+                  if (!isNaN(entradaDate.getTime()) && entradaDate >= faturadoDateOnly) {
+                    confirmed.add(ean);
+                    break;
+                  }
                 }
               }
+            } catch {
+              // Ignore errors — keep the alert visible
             }
-          } catch {
-            // Ignore errors — keep the alert visible
-          }
-        })
-      );
+          })
+        );
+      }
       if (!cancelled) {
         setProfarmaConfirmedEntries((prev) => {
           const next = new Set(prev);

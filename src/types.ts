@@ -33,6 +33,8 @@ export interface SwapReportItem {
   extra?: number;
   motivoAcao?: string;
   observacao?: string;
+  avisoOriginal?: string;
+  avisoNovo?: string;
   isShortage?: boolean;
   originalSemEstoque?: boolean;
   isRupturaSubstitution?: boolean;

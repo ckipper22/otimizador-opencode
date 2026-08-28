@@ -240,7 +240,11 @@ export default function SwapsTable({
     return cleaned;
   };
 
-  const { isEanProfarmaAlerted, getProfarmaOrderDate } = useProfarmaAlertCheck(config?.cnpj || "", config?.alertaProfarma48h !== false);
+  const reportEans = useMemo(
+    () => Array.from(new Set(report.flatMap((item: any) => [item.originalEan, item.novoEan]).filter(Boolean))),
+    [report]
+  );
+  const { isEanProfarmaAlerted, getProfarmaOrderDate } = useProfarmaAlertCheck(config?.cnpj || "", config?.alertaProfarma48h !== false, reportEans);
 
   const handleThresholdChange = (val: number) => {
     const safeVal = Math.max(0, isNaN(val) ? 0 : val);
@@ -573,7 +577,7 @@ export default function SwapsTable({
                               </div>
                             </div>
                           )}
-                          <ObservationBell ean={item.isRupturaSubstitution ? item.novoEan : item.originalEan} origem={item.origem} />
+                           <ObservationBell observacao={item.isRupturaSubstitution ? item.avisoNovo : item.avisoOriginal} />
                         </div>
                       </td>
 
@@ -645,7 +649,7 @@ export default function SwapsTable({
                               <span>{stripHtml(item.observacao)}</span>
                             </div>
                           )}
-                          <ObservationBell ean={item.novoEan} origem={item.origem} />
+                           <ObservationBell observacao={item.avisoNovo} />
                         </div>
                       </td>
 
@@ -1548,8 +1552,7 @@ export default function SwapsTable({
                                         <div className="text-[10px] text-red-700 bg-red-50/70 px-2 py-1 border border-red-200 uppercase font-black flex items-center gap-1.5 w-fit rounded-none font-mono">
                                           <span>EAN ORIGINAL EM FALTA: {item.originalEan}</span>
                                         <EanEyeButton ean={item.originalEan} descricao={item.originalDescricao} laboratorio={item.originalLaboratorio} />
-                                        <EanPromoButton ean={item.originalEan} descricao={item.originalDescricao} />
-                                          <EanPromoButton ean={item.originalEan} descricao={item.originalDescricao} />
+                                         <EanPromoButton ean={item.originalEan} descricao={item.originalDescricao} />
                                         </div>
                                       </div>
                                     )}
@@ -1576,7 +1579,7 @@ export default function SwapsTable({
                                     )}
                                   </div>
 
-                                  <ObservationBell ean={item.originalEan} origem={item.origem} />
+                                   <ObservationBell observacao={item.avisoOriginal} />
 
 
                                   {item.observacao && (
@@ -1619,7 +1622,7 @@ export default function SwapsTable({
                                       </div>
                                     </div>
                                   )}
-<ObservationBell ean={item.novoEan} origem={item.origem} />
+<ObservationBell observacao={item.avisoNovo} />
 
                                    {(() => {
                                      if ((item.cx && item.cx > 1) || (item.qtdMin && item.qtdMin > 0) || (item.qtdMax && item.qtdMax > 0)) {

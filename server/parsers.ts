@@ -505,7 +505,7 @@ const FORMAS_FARMaceuticas: string[][] = [
 const DOSAGEM_REGEX = /\b(\d+(?:[.,]\d+)?)\s*(MG\/ML|MCG\/ML|G\/ML|MG\/G|MG|MCG|G|ML|UI|%)\b/i;
 
 export function classificarProduto(item: any): ClassificacaoProduto {
-  const desc = (item.descricao || item.nom_produto || item.Descricao || "").toUpperCase();
+  const desc = (item.descricao || item.description || item.nom_produto || item.Descricao || "").toUpperCase();
   const nomDesc = (item.nom_descapresentacao || "").toUpperCase();
 
   // 1. unidade_apresentacao (campo novo da API Ferramentinhas)

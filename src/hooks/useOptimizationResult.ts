@@ -548,7 +548,11 @@ export function useOptimizationResult({
     });
   }, [activeReport]);
 
-  const { isEanProfarmaAlerted, getProfarmaOrderDate } = useProfarmaAlertCheck(config.cnpj, config.alertaProfarma48h !== false);
+  const reportEans = useMemo(
+    () => Array.from(new Set((result?.report || []).flatMap((item: any) => [item.originalEan, item.novoEan]).filter(Boolean))),
+    [result]
+  );
+  const { isEanProfarmaAlerted, getProfarmaOrderDate } = useProfarmaAlertCheck(config.cnpj, config.alertaProfarma48h !== false, reportEans);
 
   const pendingAlertItems = useMemo(() => {
     if (!result || !result.report) return [];

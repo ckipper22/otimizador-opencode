@@ -30,8 +30,89 @@
 | 20 | Lógica Profarma duplicada em 2 arquivos | Mesma regra de negócio (detecção duplicidade Profarma 48h) implementada em SwapsTable.tsx E useOptimizationResult.ts — corrigir um sem corrigir o outro deixava comportamento inconsistente entre tabela e modal de bloqueio. Extrair hook compartilhado quando a mesma regra precisa valer nos dois lugares | src/hooks/useProfarmaAlertCheck.ts |
 | 21 | Profarma "faturado agora" sempre | `getProfarmaFaturadosPendentes` usava `updated_at` como data do faturamento — mas `updated_at` é reescrito a cada resync via ON CONFLICT DO UPDATE SET updated_at = datetime('now'), fazendo todo item parecer "faturado agora". Usar `created_at` (setado só no INSERT, nunca reescrito) | server/database.ts |
 | 22 | `@types/react` nunca instalado (27 erros ocultos) | Projeto usava React 19 sem `@types/react`/`@types/react-dom` — hooks funcionavam via jsx-runtime do Vite, mas classe Component não tinha definição de tipo. Instalação revelou 27 erros TypeScript pré-existentes (tipos incompletos de SwapReportItem, FaturadoItem, App.tsx). Confirmado via `git stash` + lint no HEAD limpo. **Adiar fix pra outra sessão** — não são bloqueadores | src/types.ts, src/App.tsx, src/hooks/*.ts |
+| 23 | Botão "P" sem estoque por laboratório | `classificarProduto()` lê `item.descricao`, mas `analisar-referencia` monta o objeto `product` com chave `description` (inglês) — `mesmaApresentacao()` falha silenciosamente. Fix: adicionar `item.description` como fallback na cadeia de descrição de `classificarProduto()` (parsers.ts:508) | server/parsers.ts:508, server.ts |
+| 24 | Sino de observação duplicava fetch (152 chamadas) | Cada linha do relatório fazia fetch `/api/similares/:ean` via IntersectionObserver. SwapsTable renderiza DUAS visões simultâneas (flat + agrupada), cada linha disparava 2x. Fix: backend enriquece report com `avisoOriginal`/`avisoNovo` (server.ts) — ObservationBell vira 100% presentational. Exceção: OrderReturnView usa `ObservationBellFetcher` local (1 instância, sem duplicação) | server.ts, src/components/ObservationBell.tsx, src/components/OrderReturnView.tsx |
+| 25 | Alerta Profarma 48h estourava rate limiter | Hook instanciado em 2 lugares, buscava TODOS os 76 EANs pendentes Profarma do sistema, `Promise.all` irrestrito (~152 chamadas simultâneas), inclusive antes de qualquer SICF importado. Fix: batching de 8 EANs + novo parâmetro `relevantEans` (só EANs do relatório atual) — zero chamadas ao abrir sem importar, só EANs do pedido específico ao importar | src/hooks/useProfarmaAlertCheck.ts, src/components/SwapsTable.tsx, src/hooks/useOptimizationResult.ts |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
+
+---
+
+## Mecanismos de Equivalência (como o sistema decide "isso é equivalente àquilo")
+
+> Investigação profunda de 2026-08-27. Três mecanismos independentes decidem quais produtos são "do mesmo grupo" pra fins de estoque total e média de vendas. Cada um usa uma abordagem diferente — o que causava inconsistências reais.
+
+### Os 3 mecanismos
+
+| # | Onde | Quando aciona | Fonte de dados | Como decide equivalência |
+|---|------|--------------|----------------|--------------------------|
+| 1 | Botão "P" (`/api/ofertas-dia/buscar-produto`, server.ts ~1799) | Usuário clica "P" num item do relatório | `buscar-por-ean` → `buscar-lote` (por texto limpo) | Agrupa por `cod_dcb` + `cod_concentracao`. Sem filtro de unidade. |
+| 2 | Fornecedores Externos (`/api/ofertas-dia-analisar`, server.ts ~646) | Batch automático ao analisar lista de fornecedores | `similares/{ean}` (Ferramentinhas) | `mesmaApresentacao()` — DCB emprestado, dosagem, L.P./XR, unidade_apresentacao. **O mais robusto.** |
+| 3 | Promoção do Dia (`/api/ofertas-dia-analisar`, server.ts ~1205) | Itens do SICF que não têm no cadastro | `buscar-lote` (por texto limpo), fallback `similares/{ean}` | Filtra por `cod_dcb` + regex de dosagem. Sem unidade_apresentacao. |
+
+### Inconsistência encontrada (corrigida nesta sessão)
+
+**Problema:** mecanismos #1 e #3 usavam `buscar-lote` (busca por texto) como fonte primária, com `similares/{ean}` como fallback. Isso causava:
+
+1. **Mix de apresentações:** Busca por texto "DIMEZIN" retornava NEO QUIMICA 20un junto com DIMEZIN 30un — o DCB batia mas a quantidade era diferente, inflando estoque/vendas artificialmente.
+2. **Ordem errada:** `similares/{ean}` já vem filtrado por estoque/atividade do lado da Ferramentinhas e agrupa corretamente por DCB+concentracao — mas só era usado quando o buscar-lote falhava.
+
+**Correção:** inverter a prioridade nos mecanismos #1 e #3:
+- Tentar `similares/{ean}` PRIMEIRO (fonte confiável, já filtrada)
+- Só cair pro `buscar-lote` por texto se similares retornar erro (sem DCB) ou vazio
+- Adicionar filtro `mesmaApresentacao()` no mecanismo #1 pra garantir que unidade_apresentacao bata
+
+### Regra de consistência
+
+> **Ao adicionar novo mecanismo de agrupamento/estoque, SEMPRE usar `mesmaApresentacao()` de `server/parsers.ts`** — não reimplementar filtro de dosagem/unidade do zero. O mecanismo #2 (Fornecedores Externos) é o mais testado e confiável; os outros devem se aproximar dele, não se afastar.
+
+### Botão "P" — corrigido bug de estoque por laboratório (2026-08-28)
+
+**Sintoma:** `/api/ofertas-dia/analisar-referencia` retornava `estoquePorLaboratorio` vazio mesmo com DCB/concentracao batendo entre produtos (validado com dados reais da API Ferramentinhas).
+
+**Causa raiz:** `classificarProduto()` (`server/parsers.ts`) le a descricao do produto em `item.descricao` (portugues), mas o objeto `product` montado em `analisar-referencia` usa a chave `description` (ingles, convencao usada no resto de `analisarUmProduto`). `mesmaApresentacao()` cai no fail-safe de exclusao porque o lado "referencia" nunca tem `unidadeApresentacao`/`formaFarmaceutica` extraidos (description vazia do ponto de vista de `classificarProduto`).
+
+**Fix:** `item.description` adicionado como fallback em `classificarProduto` (parsers.ts:508), na cadeia que ja tinha `descricao`/`nom_produto`/`Descricao`.
+
+**Proposito de analisarUmProduto:** funcao central que calcula `estoqueTotal`/`estoquePorLaboratorio`/`vendasMensais`/`melhorPrecoSmartPed` pra um produto, usada tanto pelo botao P quanto por outros mecanismos — qualquer novo call-site deve garantir que o objeto `product` passado tenha os campos que `classificarProduto` espera (`descricao` OU `description`, `cod_dcb`, `cod_concentracao`).
+
+---
+
+## Sino de Observacao (ObservationBell) — arquitetura
+
+**Proposito:** mostrar um aviso visual (`nom_obsvenda`, vindo da Ferramentinhas) quando um produto tem alguma observacao de venda cadastrada (ex: restricao, nota do farmaceutico). Nao faz nenhum calculo, e so exibicao.
+
+### Problema original
+
+Cada linha do relatorio fazia seu proprio fetch (`/api/similares/:ean`) via IntersectionObserver ao entrar na viewport. SwapsTable renderiza DUAS visoes simultaneas na mesma pagina (tabela flat + tabela agrupada por distribuidora, ambas sempre montadas ao mesmo tempo, nao e toggle/aba), entao cada linha disparava a busca DUAS vezes — ~152 chamadas por relatorio.
+
+### Decisao arquitetural
+
+Eliminar o fetch client-side por completo, nao so deduplicar. `/api/optimize` ja roda uma fase batch (`FASE-2-SIMILARES-BATCH`) que busca via `fetchSimilarGenericsBatch()` os "similares" de TODOS os EANs do relatorio numa unica chamada — esse dado ja vem com `nom_obsvenda`, so nao era repassado pro relatorio final. Agora o backend enriquece cada item do relatorio com `avisoOriginal`/`avisoNovo` (`server.ts`, logo antes do `res.json` final de `/api/optimize`) e `ObservationBell.tsx` virou 100% presentational (recebe o texto pronto via prop `observacao`, sem fetch, sem useEffect, sem IntersectionObserver).
+
+### Excecao
+
+`OrderReturnView.tsx` (tela de conferencia de retorno de pedido faturado) usa o sino numa instancia unica, fora do contexto de `/api/optimize` — nao tem acesso a `avisoOriginal`/`avisoNovo`. Criado um componente local `ObservationBellFetcher` nesse arquivo que mantem a busca ao vivo original (uma instancia so, sem o problema de duplicacao).
+
+### Regra de consistencia
+
+Se um novo lugar precisar mostrar observacao de produto DENTRO do fluxo de `/api/optimize`, usar `avisoOriginal`/`avisoNovo` do item — nunca adicionar um novo fetch client-side por linha. Fora desse fluxo (telas que nao passam por `/api/optimize`), replicar o padrao do `ObservationBellFetcher`.
+
+---
+
+## Checagem de Alerta Profarma 48h — timing e escopo
+
+**Proposito:** `useProfarmaAlertCheck` (`src/hooks/useProfarmaAlertCheck.ts`) alerta o usuario quando um item do relatorio ja foi faturado pela Profarma nas ultimas 48h sem confirmacao de entrada na Trier — evita duplicar pedido pro mesmo item.
+
+### Dois bugs historicos (ambos causavam estouro do rate limiter — 120 req/min por IP)
+
+1. **Rajada de concorrencia:** o hook rodava `Promise.all` irrestrito sobre TODOS os EANs pendentes Profarma (76 no momento do diagnostico) pra checar `compras-historico` — e era instanciado em 2 lugares ao mesmo tempo (SwapsTable.tsx e useOptimizationResult.ts), totalizando ~152 chamadas simultaneas. Fix: processamento em lotes de 8 EANs por vez.
+
+2. **Timing errado:** o hook disparava a checagem assim que o app abria (`useOptimizationResult` roda desde o primeiro mount, antes de qualquer relatorio existir) — mesmo sem nenhum SICF importado. Fix: novo terceiro parametro `relevantEans` (lista de EANs do relatorio atual, calculada em ambos os call-sites via `originalEan`+`novoEan`). O hook so busca/processa EANs que estao tanto pendentes quanto no relatorio sendo otimizado agora — nao os 76 do sistema inteiro. Resultado: zero chamadas Profarma ao abrir o site sem importar nada; ao importar um SICF, so os EANs desse pedido especifico (que tambem estao pendentes) disparam a checagem de `compras-historico`.
+
+### Regra
+
+Qualquer novo consumidor de `useProfarmaAlertCheck` deve passar `relevantEans` com os EANs do contexto atual — nao omitir esse argumento (default e array vazio = hook fica inerte).
 
 ---
 

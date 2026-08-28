@@ -1,8 +1,31 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronRight, CheckCircle2, PackageX, CheckSquare, XSquare, Search, RefreshCw, Download, HelpCircle, Check, X, ArrowDown, Plus } from 'lucide-react';
 import { EanEyeButton } from "./EanEyeButton";
 import { ObservationBell } from "./ObservationBell";
 import { formatCurrency } from '../utils';
+
+function ObservationBellFetcher({ ean }: { ean: string }) {
+  const [observacao, setObservacao] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!ean || ean === "0") return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/similares/${ean}`);
+        const json = await res.json();
+        if (cancelled || !res.ok || !json.success || !json.produtos) return;
+        const exact = json.produtos.find((p: any) => p.cod_barra === ean || p.ean === ean);
+        if (exact?.nom_obsvenda && !cancelled) setObservacao(exact.nom_obsvenda);
+      } catch { /* silencioso */ }
+    })();
+
+    return () => { cancelled = true; };
+  }, [ean]);
+
+  return <ObservationBell observacao={observacao} />;
+}
 
 export function OrderReturnView({ 
   orderReturn, 
@@ -230,7 +253,7 @@ export function OrderReturnView({
                               <td className="py-3 px-3 font-sans font-semibold text-gray-900 text-xs">
                                 {desc}
                                 <div className="text-[9px] text-gray-500 font-mono mt-0.5 flex items-center">EAN: {it.Ean || it.ean} <EanEyeButton ean={it.Ean || it.ean} descricao={it.Descricao || it.descricao} laboratorio={it.Laboratorio || it.laboratorio} /></div>
-                                <ObservationBell ean={it.Ean || it.ean} />
+                                <ObservationBellFetcher ean={it.Ean || it.ean} />
                               </td>
 
                               <td className="py-3 px-2 text-gray-600 text-[10px] font-sans uppercase font-medium">{lab}</td>

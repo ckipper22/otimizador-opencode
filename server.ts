@@ -639,9 +639,10 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         });
 
         // Filtro de apresentação (mesmo padrão do SICF server.ts:3610-3640)
-        // Enriquecer product com DCB do catálogo para comparação correta
-        const dcbRef1 = produtosRaw[0]?.cod_dcb;
-        const concRef1 = produtosRaw[0]?.cod_concentracao;
+        // Enriquecer product com DCB: usar campos do product (já vem do frontend) como prioridade,
+        // só cair pro produtosRaw[0] se product não trouxer esses campos
+        const dcbRef1 = product.cod_dcb || produtosRaw[0]?.cod_dcb;
+        const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao;
         const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
         const produtos = produtosFiltered.filter((p: any) => mesmaApresentacao(productComDcb, p));
 
@@ -1204,124 +1205,116 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
           
           if (product.ean) {
             try {
-              // Usar descrição completa para busca (mesmo método do buscar-produto)
-              // que agrupa corretamente por DCB
-              const descCompleta = (product.description || product.produto || "")
-                .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
-                .replace(/[\uDCA5\uDCA4\uDCA6\uFFFD]/g, "")
-                .replace(/\\udca5|\\udca4|\\udca6|\\ufffd/gi, "")
-                .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
-                .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia)\b/gi, "")
-                .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
-                .trim()
-                .substring(0, 40);
-              
-              if (descCompleta.length >= 3) {
-                const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ itens: [descCompleta] }),
-                });
-                if (buscaRes.ok) {
-                  const buscaData = await buscaRes.json();
-                  const resultados = buscaData?.resultados || {};
-                  const resultKeys = Object.keys(resultados);
-                  console.log(`[OFERTAS-DIA] buscar-lote raw: total_itens=${buscaData?.total_itens}, keys=[${resultKeys.join(", ")}]`);
-                  if (resultKeys.length > 0) {
-                    const firstKey = resultKeys[0];
-                    const firstVal = resultados[firstKey];
-                    console.log(`[OFERTAS-DIA] buscar-lote key "${firstKey}": type=${typeof firstVal}, isArray=${Array.isArray(firstVal)}, length=${Array.isArray(firstVal) ? firstVal.length : "N/A"}`);
-                    if (Array.isArray(firstVal) && firstVal.length > 0) {
-                      console.log(`[OFERTAS-DIA] buscar-lote sample: ${JSON.stringify(firstVal[0]).substring(0, 200)}`);
-                    }
-                  }
-                  // Pegar TODOS os produtos de TODAS as chaves (sem depender de匹配 exata da chave)
-                  allProdutos = [];
-                  for (const key of Object.keys(resultados)) {
-                    if (Array.isArray(resultados[key])) allProdutos.push(...resultados[key]);
-                  }
-                  console.log(`[OFERTAS-DIA] buscar-lote: ${allProdutos.length} produtos de ${resultKeys.length} chave(s)`);
-                  
-                  // Fallback 1: se buscar-lote retornou vazio, tentar com wildcards (Trier usa %)
-                  if (allProdutos.length === 0 && descCompleta.length >= 3) {
-                    const palavras = descCompleta.split(/\s+/).filter((w: string) => w.length >= 3 && !/^\d+$/.test(w));
-                    const termoSimples = palavras[0] || descCompleta; // ex: "CETOCONAZOL"
-                    // Tentar: principio ativo + % (wildcard Trier)
-                    const termosFallback = [`${termoSimples}%`, termoSimples];
-                    for (const termo of termosFallback) {
-                      if (allProdutos.length > 0) break;
-                      try {
-                        const buscaSimplesRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ itens: [termo] }),
-                        });
-                        if (buscaSimplesRes.ok) {
-                          const buscaSimplesData = await buscaSimplesRes.json();
-                          const resSimples = buscaSimplesData?.resultados || {};
-                          for (const key of Object.keys(resSimples)) {
-                            if (Array.isArray(resSimples[key])) allProdutos.push(...resSimples[key]);
-                          }
-                          if (allProdutos.length > 0) {
-                            console.log(`[OFERTAS-DIA] buscar-lote WILDCARD: ${allProdutos.length} produtos via "${termo}"`);
-                          }
-                        }
-                      } catch {}
-                    }
-                  }
+              allProdutos = [];
 
-                  // Fallback 2: se ainda vazio, tentar similares/{ean}
-                  if (allProdutos.length === 0 && product.ean) {
-                    try {
-                      const simRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${product.ean}`);
-                      if (simRes.ok) {
-                        const simData = await simRes.json();
-                        const sims = simData?.produtos || [];
-                        if (sims.length > 0) {
-                          allProdutos = sims;
-                          console.log(`[OFERTAS-DIA] SIMILARES-FALLBACK: ${sims.length} produtos via similares/${product.ean}`);
-                        }
-                      }
-                    } catch (simErr: any) {
-                      console.log(`[OFERTAS-DIA] SIMILARES-FALLBACK erro: ${simErr.message}`);
-                    }
-                  }
-
-                  // Extrair dosagem do produto original para filtro de concentracao
-                  const origDosageMatch = (product.description || "").match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                  const origDosage = origDosageMatch ? origDosageMatch[1].toLowerCase() : null;
-
-                  // Filtrar por DCB do EAN original
-                  const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
-                  if (dcb) {
-                    eansGrupo = allProdutos
-                      .filter((p: any) => {
-                        if (p.cod_dcb !== dcb || !(p.ean || p.cod_barra)) return false;
-                        if (!origDosage) return true;
-                        const prodDesc = (p.nom_produto || "").toLowerCase();
-                        const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                        return !prodDosageMatch || prodDosageMatch[1] === origDosage;
-                      })
-                      .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
-                    eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                    console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb}, dosage: ${origDosage || "any"})`);
-                  } else if (allProdutos.length > 0) {
-                    // DCB não encontrado — usar TODOS os produtos do grupo (mesma descrição) com filtro dosagem
-                    eansGrupo = allProdutos
-                      .filter((p: any) => {
-                        if (!(p.ean || p.cod_barra)) return false;
-                        if (!origDosage) return true;
-                        const prodDesc = (p.nom_produto || "").toLowerCase();
-                        const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                        return !prodDosageMatch || prodDosageMatch[1] === origDosage;
-                      })
-                      .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
-                    eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                    console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado, dosage: ${origDosage || "any"})`);
-                  } else {
-                    console.log(`[OFERTAS-DIA] DCB: EAN original ${product.ean} não encontrado em allProdutos (${allProdutos.length} produtos)`);
+              // === FONTE PRIMÁRIA: similares/{ean} (já filtrado por estoque/atividade no lado da Ferramentinhas) ===
+              try {
+                const simRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${product.ean}`);
+                if (simRes.ok) {
+                  const simData = await simRes.json();
+                  const sims = simData?.produtos || [];
+                  if (sims.length > 0) {
+                    allProdutos = sims;
+                    console.log(`[OFERTAS-DIA] SIMILARES-PRIMARIO: ${sims.length} produtos via similares/${product.ean}`);
                   }
                 }
+              } catch (simErr: any) {
+                console.log(`[OFERTAS-DIA] SIMILARES-PRIMARIO erro: ${simErr.message}`);
+              }
+
+              // === FALLBACK: buscar-lote por texto (só se similares retornou vazio ou sem DCB) ===
+              if (allProdutos.length === 0) {
+                const descCompleta = (product.description || product.produto || "")
+                  .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
+                  .replace(/[\uDCA5\uDCA4\uDCA6\uFFFD]/g, "")
+                  .replace(/\\udca5|\\udca4|\\udca6|\\ufffd/gi, "")
+                  .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
+                  .replace(/\b(sandoz|medley|biolab|ache|delta|hypera|torrent|germed|prati|discus|tommasi|sanofi|bayer|merck|abbot|abbott|vitamedic|farmoquimica|cimed|união quimica|alten|bussie|pharlab|diméd|dimed|anfarm|emdeplast|geolab|mylan|legrand|teuto|pague|rosário|andromeda|biochemiker|phoenix|medquimica|cristália|cristalia)\b/gi, "")
+                  .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
+                  .trim()
+                  .substring(0, 40);
+
+                if (descCompleta.length >= 3) {
+                  try {
+                    const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ itens: [descCompleta] }),
+                    });
+                    if (buscaRes.ok) {
+                      const buscaData = await buscaRes.json();
+                      const resultados = buscaData?.resultados || {};
+                      const resultKeys = Object.keys(resultados);
+                      console.log(`[OFERTAS-DIA] buscar-lote (fallback): total_itens=${buscaData?.total_itens}, keys=[${resultKeys.join(", ")}]`);
+                      for (const key of Object.keys(resultados)) {
+                        if (Array.isArray(resultados[key])) allProdutos.push(...resultados[key]);
+                      }
+                      console.log(`[OFERTAS-DIA] buscar-lote (fallback): ${allProdutos.length} produtos de ${resultKeys.length} chave(s)`);
+
+                      // Fallback de wildcards (Trier usa %)
+                      if (allProdutos.length === 0 && descCompleta.length >= 3) {
+                        const palavras = descCompleta.split(/\s+/).filter((w: string) => w.length >= 3 && !/^\d+$/.test(w));
+                        const termoSimples = palavras[0] || descCompleta;
+                        const termosFallback = [`${termoSimples}%`, termoSimples];
+                        for (const termo of termosFallback) {
+                          if (allProdutos.length > 0) break;
+                          try {
+                            const buscaSimplesRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ itens: [termo] }),
+                            });
+                            if (buscaSimplesRes.ok) {
+                              const buscaSimplesData = await buscaSimplesRes.json();
+                              const resSimples = buscaSimplesData?.resultados || {};
+                              for (const key of Object.keys(resSimples)) {
+                                if (Array.isArray(resSimples[key])) allProdutos.push(...resSimples[key]);
+                              }
+                              if (allProdutos.length > 0) {
+                                console.log(`[OFERTAS-DIA] buscar-lote WILDCARD: ${allProdutos.length} produtos via "${termo}"`);
+                              }
+                            }
+                          } catch {}
+                        }
+                      }
+                    }
+                  } catch {}
+                }
+              }
+
+              // Extrair dosagem do produto original para filtro de concentracao
+              const origDosageMatch = (product.description || "").match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+              const origDosage = origDosageMatch ? origDosageMatch[1].toLowerCase() : null;
+
+              // Filtrar por DCB do EAN original
+              const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
+              if (dcb) {
+                eansGrupo = allProdutos
+                  .filter((p: any) => {
+                    if (p.cod_dcb !== dcb || !(p.ean || p.cod_barra)) return false;
+                    if (!origDosage) return true;
+                    const prodDesc = (p.nom_produto || "").toLowerCase();
+                    const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                    return !prodDosageMatch || prodDosageMatch[1] === origDosage;
+                  })
+                  .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
+                eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
+                console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb}, dosage: ${origDosage || "any"})`);
+              } else if (allProdutos.length > 0) {
+                // DCB não encontrado — usar TODOS os produtos do grupo (mesma descrição) com filtro dosagem
+                eansGrupo = allProdutos
+                  .filter((p: any) => {
+                    if (!(p.ean || p.cod_barra)) return false;
+                    if (!origDosage) return true;
+                    const prodDesc = (p.nom_produto || "").toLowerCase();
+                    const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                    return !prodDosageMatch || prodDosageMatch[1] === origDosage;
+                  })
+                  .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
+                eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
+                console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado, dosage: ${origDosage || "any"})`);
+              } else {
+                console.log(`[OFERTAS-DIA] DCB: EAN original ${product.ean} não encontrado em allProdutos (${allProdutos.length} produtos)`);
               }
             } catch {}
           }
@@ -1815,72 +1808,112 @@ app.get("/api/ofertas-dia/buscar-produto", async (req, res) => {
       }
       const p = eanData.produto;
       const desc = p.nom_produto || "";
-      
-      // Expandir: buscar por descrição para pegar TODOS os EANs do grupo DCB
-      const cleanDesc = desc
-        .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
-        .replace(/\b(sandoz|medley|biolab|ache|neo\s*quimica|cernosul|cervosul|EMS|Pfizer|Novartis|Eurofarma|Medley)\b/gi, "")
-        .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
-        .trim().substring(0, 40);
-      
-      if (cleanDesc.length >= 3) {
-        const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ itens: [cleanDesc] }),
-        });
-        if (buscaRes.ok) {
-          const buscaData = await buscaRes.json();
-          const resultados = buscaData?.resultados || {};
-          const cleanLower = cleanDesc.toLowerCase();
-          const foundKey = Object.keys(resultados).find(k => k.toLowerCase() === cleanLower);
-          const rawProdutos = (foundKey ? resultados[foundKey] : []) as any[];
-          
-          if (rawProdutos.length > 0) {
-            // Agrupar por DCB + concentração
-            const groups = new Map<string, any[]>();
-            for (const rp of rawProdutos) {
-              const dcb = rp.cod_dcb || "";
-              const conc = rp.cod_concentracao || "";
-              const key = `${dcb}_${conc}`;
-              if (!groups.has(key)) groups.set(key, []);
-              groups.get(key)!.push(rp);
-            }
-            const produtos: any[] = [];
-            for (const [key, items] of groups) {
-              const withPrice = items.filter((rp: any) => rp.vlr_custopersonalizado && parseFloat(String(rp.vlr_custopersonalizado)) > 0);
-              withPrice.sort((a: any, b: any) => parseFloat(String(a.vlr_custopersonalizado)) - parseFloat(String(b.vlr_custopersonalizado)));
-              const best = withPrice[0] || items[0];
-              const totalEstoque = items.reduce((sum: number, rp: any) => sum + (rp.qtd_estoque || 0), 0);
-              const labs = [...new Set(items.map((rp: any) => (rp.nom_laborat || rp.laboratorio || "").trim()).filter(Boolean))];
-              const eans = items
-                .filter((rp: any) => rp.ean || rp.cod_barra)
-                .map((rp: any) => ({
-                  ean: rp.ean || rp.cod_barra || "",
-                  lab: (rp.nom_laborat || rp.laboratorio || "").trim(),
-                  estoque: rp.qtd_estoque || 0,
-                  preco: rp.vlr_custopersonalizado ? parseFloat(String(rp.vlr_custopersonalizado)) : 0,
-                }));
-              produtos.push({
-                ean: best.ean || best.cod_barra || q,
-                descricao: best.nom_produto || best.descricao || desc,
-                laboratorio: labs.join(", "),
-                grupo: best.grupo || best.classificacao || "",
-                estoque: totalEstoque,
-                labs,
-                eans,
-                qtdLabs: labs.length,
-                dcb: best.cod_dcb || "",
-                codConcentracao: best.cod_concentracao || "",
-                melhorPreco: withPrice.length > 0 ? parseFloat(String(withPrice[0].vlr_custopersonalizado)) : 0,
-              });
-            }
-            console.log(`[OFERTAS-DIA] Busca EAN: ${produtos.length} grupo(s) para "${q}" (${rawProdutos.length} produtos)`);
-            return res.json({ produtos });
+
+      let rawProdutos: any[] = [];
+
+      // === FONTE PRIMÁRIA: similares/{ean} (já filtrado por estoque/atividade no lado da Ferramentinhas) ===
+      try {
+        const simRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${q}`);
+        if (simRes.ok) {
+          const simData = await simRes.json();
+          const sims = simData?.produtos || [];
+          if (sims.length > 0) {
+            rawProdutos = sims;
+            console.log(`[OFERTAS-DIA] Busca EAN SIMILARES-PRIMARIO: ${sims.length} produtos via similares/${q}`);
           }
         }
+      } catch (simErr: any) {
+        console.log(`[OFERTAS-DIA] Busca EAN SIMILARES-PRIMARIO erro: ${simErr.message}`);
       }
-      
+
+      // === FALLBACK: buscar-lote por texto (só se similares retornou vazio ou sem DCB) ===
+      if (rawProdutos.length === 0) {
+        const cleanDesc = desc
+          .replace(/\bgenérico\b/gi, "").replace(/\bgen\b/gi, "")
+          .replace(/\b(sandoz|medley|biolab|ache|neo\s*quimica|cernosul|cervosul|EMS|Pfizer|Novartis|Eurofarma|Medley)\b/gi, "")
+          .replace(/(\d+)\s*(cp|cpr|comprimido|caixa|cx|un|unid|rev|caps|capsulas|tabs|tabletes|gel|creme|pomada|solucao|gotas|spray|aerosol|inh)\b.*$/gi, "$1")
+          .trim().substring(0, 40);
+
+        if (cleanDesc.length >= 3) {
+          try {
+            const buscaRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/buscar-lote`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ itens: [cleanDesc] }),
+            });
+            if (buscaRes.ok) {
+              const buscaData = await buscaRes.json();
+              const resultados = buscaData?.resultados || {};
+              const cleanLower = cleanDesc.toLowerCase();
+              const foundKey = Object.keys(resultados).find(k => k.toLowerCase() === cleanLower);
+              rawProdutos = (foundKey ? resultados[foundKey] : []) as any[];
+              console.log(`[OFERTAS-DIA] Busca EAN buscar-lote (fallback): ${rawProdutos.length} produtos via "${cleanDesc}"`);
+            }
+          } catch {}
+        }
+      }
+
+      if (rawProdutos.length > 0) {
+        // Agrupar por DCB + concentração
+        const groups = new Map<string, any[]>();
+        for (const rp of rawProdutos) {
+          const dcb = rp.cod_dcb || "";
+          const conc = rp.cod_concentracao || "";
+          const key = `${dcb}_${conc}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key)!.push(rp);
+        }
+
+        // Filtrar grupos: manter apenas produtos com mesma unidade_apresentacao do EAN original
+        const originalClass = classificarProduto(p);
+        const gruposFiltrados: any[][] = [];
+        for (const [, items] of groups) {
+          if (originalClass.unidadeApresentacao !== null) {
+            // EAN original tem unidade_apresentacao — filtrar pra manter só os equivalentes
+            const filtrados = items.filter((rp: any) => {
+              const cls = classificarProduto(rp);
+              return cls.unidadeApresentacao === null || cls.unidadeApresentacao === originalClass.unidadeApresentacao;
+            });
+            if (filtrados.length > 0) gruposFiltrados.push(filtrados);
+          } else {
+            // EAN original sem unidade_apresentacao — manter grupo inteiro (fail-safe)
+            gruposFiltrados.push(items);
+          }
+        }
+
+        const produtos: any[] = [];
+        for (const items of gruposFiltrados) {
+          const withPrice = items.filter((rp: any) => rp.vlr_custopersonalizado && parseFloat(String(rp.vlr_custopersonalizado)) > 0);
+          withPrice.sort((a: any, b: any) => parseFloat(String(a.vlr_custopersonalizado)) - parseFloat(String(b.vlr_custopersonalizado)));
+          const best = withPrice[0] || items[0];
+          const totalEstoque = items.reduce((sum: number, rp: any) => sum + (rp.qtd_estoque || 0), 0);
+          const labs = [...new Set(items.map((rp: any) => (rp.nom_laborat || rp.laboratorio || "").trim()).filter(Boolean))];
+          const eans = items
+            .filter((rp: any) => rp.ean || rp.cod_barra)
+            .map((rp: any) => ({
+              ean: rp.ean || rp.cod_barra || "",
+              lab: (rp.nom_laborat || rp.laboratorio || "").trim(),
+              estoque: rp.qtd_estoque || 0,
+              preco: rp.vlr_custopersonalizado ? parseFloat(String(rp.vlr_custopersonalizado)) : 0,
+            }));
+          produtos.push({
+            ean: best.ean || best.cod_barra || q,
+            descricao: best.nom_produto || best.descricao || desc,
+            laboratorio: labs.join(", "),
+            grupo: best.grupo || best.classificacao || "",
+            estoque: totalEstoque,
+            labs,
+            eans,
+            qtdLabs: labs.length,
+            dcb: best.cod_dcb || "",
+            codConcentracao: best.cod_concentracao || "",
+            melhorPreco: withPrice.length > 0 ? parseFloat(String(withPrice[0].vlr_custopersonalizado)) : 0,
+          });
+        }
+        console.log(`[OFERTAS-DIA] Busca EAN: ${produtos.length} grupo(s) para "${q}" (${rawProdutos.length} produtos)`);
+        return res.json({ produtos });
+      }
+
       // Fallback: retornar só o EAN sem expansão
       const produtos = [{
         ean: p.ean || q,
@@ -1987,6 +2020,8 @@ app.post("/api/ofertas-dia/analisar-referencia", async (req, res) => {
       description: descricao || "",
       preco: 0,
       discountPercent: 0,
+      cod_dcb: dcb || undefined,
+      cod_concentracao: codConcentracao || undefined,
     };
 
     // Montar lista de EANs para buscar dados consolidados
@@ -6247,6 +6282,28 @@ condicoesEnriched = condicoes.map((c: any) => {
     logs.push(`[FASE-TOTAL-SOMA] ${_totalPhases}ms (fases 1-6 somadas) | real: ${_totalReal}ms`);
     console.log(`[FASE-6-RESTO] ${_p6}ms`);
     console.log(`[FASE-TOTAL-SOMA] ${_totalPhases}ms (fases 1-6 somadas) | real: ${_totalReal}ms`);
+
+    // Enriquecer report com avisos de observação (nom_obsvenda) do marketSimilarMap
+    // pra que o ObservationBell não precise buscar individualmente por EAN
+    for (const item of report) {
+      if (item.origem === "encomenda" || item.origem === "manual") {
+        item.avisoOriginal = "";
+        item.avisoNovo = "";
+        continue;
+      }
+      const eanOrigClean = cleanEan(item.originalEan);
+      const eanNovoClean = cleanEan(item.novoEan);
+      const similaresOrig = marketSimilarMap[eanOrigClean] || [];
+      const exactOrig = similaresOrig.find((p: any) => cleanEan(p.ean || p.cod_barra || "") === eanOrigClean);
+      item.avisoOriginal = exactOrig?.nom_obsvenda || "";
+      if (item.novoEan && item.novoEan !== item.originalEan) {
+        const similaresNovo = marketSimilarMap[eanNovoClean] || [];
+        const exactNovo = similaresNovo.find((p: any) => cleanEan(p.ean || p.cod_barra || "") === eanNovoClean);
+        item.avisoNovo = exactNovo?.nom_obsvenda || "";
+      } else {
+        item.avisoNovo = "";
+      }
+    }
 
     res.json({
       optimizedFileContent,
