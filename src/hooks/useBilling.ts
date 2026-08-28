@@ -488,6 +488,9 @@ export function useBilling({
       dists.filter((d: any) => d.Status === 3).map((d: any) => String(d.CodDist || d.codDist || "").trim())
     );
 
+    // Monta a lista de encomendas elegíveis nesse ciclo (mesma lógica de elegibilidade de antes).
+    const paraConfirmar: { encomenda: any; payload: { id: string; fornecedor: string; dataPrevisao: string } }[] = [];
+
     try {
       for (const encPendente of billingContext.encomendasPendentes) {
         if (confirmedEncomendaIds.has(encPendente.idEncomenda)) continue;
@@ -509,51 +512,71 @@ export function useBilling({
         });
 
         if (itensFaturadosDaEnc.length > 0) {
-          console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando encomenda ${encPendente.idEncomenda} (${itensFaturadosDaEnc.length} itens faturados, dists finalizados: ${encCodDists.join(", ")})...`);
-          let confirmada = false;
-          for (let tentativa = 1; tentativa <= 3; tentativa++) {
-            try {
-              const respConfirmar = await fetch(`/api/integracao/encomendas/confirmar-pedido`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  itens: [{
-                    id: encPendente.idEncomenda,
-                    fornecedor: encPendente.fornecedor,
-                    dataPrevisao: new Date().toISOString().split("T")[0]
-                  }]
-                })
-              });
-              if (respConfirmar.ok) {
-                console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${encPendente.idEncomenda} confirmada com sucesso.`);
-                confirmada = true;
-                setConfirmedEncomendaIds(prev => new Set(prev).add(encPendente.idEncomenda));
-                break;
-              } else {
-                const errText = await respConfirmar.text().catch(() => "Sem detalhes");
-                console.error(`[ENCOMENDAS-CONFIRMACAO] Tentativa ${tentativa}/3 - Falha ao confirmar encomenda ${encPendente.idEncomenda}: ${respConfirmar.status} - ${errText}`);
-              }
-            } catch (fetchErr: any) {
-              console.error(`[ENCOMENDAS-CONFIRMACAO] Tentativa ${tentativa}/3 - Erro de rede ao confirmar encomenda ${encPendente.idEncomenda}: ${fetchErr.message}`);
+          paraConfirmar.push({
+            encomenda: encPendente,
+            payload: {
+              id: encPendente.idEncomenda,
+              fornecedor: encPendente.fornecedor,
+              dataPrevisao: new Date().toISOString().split("T")[0]
             }
-            if (tentativa < 3) await new Promise(r => setTimeout(r, 1000));
-          }
-          if (!confirmada) {
-            const msgFalha = `⚠️ Encomenda ${encPendente.idEncomenda} (fornecedor: ${encPendente.fornecedor}) faturada no SmartPed mas NÃO foi possível confirmar no sistema de Encomendas após 3 tentativas — verifique manualmente.`;
-            console.error(`[ENCOMENDAS-CONFIRMACAO] ${msgFalha}`);
-            setBilledGroups(prev => {
-              const next = { ...prev };
-              for (const g of relatedGroups) {
-                const currentLogs = prev[g]?.logs || [];
-                if (!currentLogs.includes(msgFalha)) currentLogs.push(msgFalha);
-                next[g] = { ...prev[g], logs: currentLogs };
-              }
-              return next;
-            });
-          }
+          });
         } else {
           console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${encPendente.idEncomenda} NÃO confirmada — nenhum item foi faturado.`);
         }
+      }
+
+      if (paraConfirmar.length === 0) return;
+
+      console.log(`[ENCOMENDAS-CONFIRMACAO] Confirmando ${paraConfirmar.length} encomenda(s) em lote: ${paraConfirmar.map(p => p.encomenda.idEncomenda).join(", ")}...`);
+
+      let confirmadas = false;
+      for (let tentativa = 1; tentativa <= 3; tentativa++) {
+        try {
+          const respConfirmar = await fetch(`/api/integracao/encomendas/confirmar-pedido`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              itens: paraConfirmar.map(p => p.payload)
+            })
+          });
+          if (respConfirmar.ok) {
+            confirmadas = true;
+            setConfirmedEncomendaIds(prev => {
+              const next = new Set(prev);
+              for (const p of paraConfirmar) next.add(p.encomenda.idEncomenda);
+              return next;
+            });
+            break;
+          } else {
+            const errText = await respConfirmar.text().catch(() => "Sem detalhes");
+            console.error(`[ENCOMENDAS-CONFIRMACAO] Tentativa ${tentativa}/3 - Falha ao confirmar encomendas em lote: ${respConfirmar.status} - ${errText}`);
+          }
+        } catch (fetchErr: any) {
+          console.error(`[ENCOMENDAS-CONFIRMACAO] Tentativa ${tentativa}/3 - Erro de rede ao confirmar encomendas em lote: ${fetchErr.message}`);
+        }
+        if (tentativa < 3) await new Promise(r => setTimeout(r, 1000));
+      }
+
+      if (confirmadas) {
+        for (const p of paraConfirmar) {
+          console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${p.encomenda.idEncomenda} confirmada com sucesso.`);
+        }
+      } else {
+        const msgsFalha = paraConfirmar.map(p => `⚠️ Encomenda ${p.encomenda.idEncomenda} (fornecedor: ${p.encomenda.fornecedor}) faturada no SmartPed mas NÃO foi possível confirmar no sistema de Encomendas após 3 tentativas — verifique manualmente.`);
+        for (const msgFalha of msgsFalha) {
+          console.error(`[ENCOMENDAS-CONFIRMACAO] ${msgFalha}`);
+        }
+        setBilledGroups(prev => {
+          const next = { ...prev };
+          for (const g of relatedGroups) {
+            const currentLogs = prev[g]?.logs || [];
+            for (const msgFalha of msgsFalha) {
+              if (!currentLogs.includes(msgFalha)) currentLogs.push(msgFalha);
+            }
+            next[g] = { ...prev[g], logs: currentLogs };
+          }
+          return next;
+        });
       }
     } catch (encErr: any) {
       console.error(`[ENCOMENDAS-CONFIRMACAO] Erro ao confirmar encomendas: ${encErr.message}`);
