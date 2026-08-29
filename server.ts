@@ -471,6 +471,7 @@ app.post("/api/external-suppliers", async (req, res) => {
         d: (p.description || p.produto || p.ean || "").trim().toLowerCase(),
         e: (p.ean || p.codigo_barras || "").trim(),
         pr: parseFloat(String(p.price || p.preco || 0)).toFixed(2),
+        v: (p.validade || "").trim(),
       });
       const oldMap = new Map<string, any>();
       for (const p of oldProducts) {
@@ -1600,10 +1601,18 @@ app.get("/api/ofertas-dia/analisar", async (req, res) => {
     const today = todayUtc3.toLocaleDateString('sv-SE'); // YYYY-MM-DD
     console.log(`[OFERTAS-DIA] GET suppliers: ${(rows as any[]).length} total for CNPJ ${cnpj}`);
 
-    // Filtrar apenas listas ativas (validade >= hoje)
-    const activeSuppliers = (rows as any[]).filter((r) => {
-      if (!r.validade) return true;
-      return r.validade >= today;
+    // Filtrar itens expirados: se item tem validade individual, usa ela; senão usa validade do fornecedor
+    const activeSuppliers = (rows as any[]).map((r) => {
+      if (!Array.isArray(r.products)) return r;
+      const parsed = (() => { try { return JSON.parse(r.products); } catch { return []; } })();
+      const filtered = parsed.filter((p: any) => {
+        const v = p.validade || r.validade;
+        return !v || v >= today;
+      });
+      return { ...r, products: JSON.stringify(filtered) };
+    }).filter((r) => {
+      const parsed = (() => { try { return JSON.parse(r.products); } catch { return []; } })();
+      return parsed.length > 0;
     });
     console.log(`[OFERTAS-DIA] Active suppliers: ${activeSuppliers.length}, forceRefresh: ${forceRefresh}, searchQuery: "${searchQuery}"`);
     for (const s of activeSuppliers) {
@@ -5568,12 +5577,14 @@ condicoesEnriched = condicoes.map((c: any) => {
 
           const todayStr = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10); // UTC-3
           for (const supplier of externalSuppliers) {
-            // Filtrar: só fornecedores analisados (não descartados) e com validade não expirada
+            // Filtrar: só fornecedores analisados (não descartados)
             if (supplier.status_analise === "descartada") continue;
-            if (supplier.validade && supplier.validade < todayStr) continue;
             if (!supplier.products || !Array.isArray(supplier.products)) continue;
             
             for (const extProd of supplier.products) {
+              // Filtrar item individual: validade do item > validade do fornecedor
+              const itemValidade = extProd.validade || supplier.validade;
+              if (itemValidade && itemValidade < todayStr) continue;
               if (!validateSwapEquivalence(sicfDesc, extProd.description)) {
                 continue; // RejeiÃ§Ã£o estrita se houver divergÃªncia de sabor, dosagem ou apresentaÃ§Ã£o!
               }

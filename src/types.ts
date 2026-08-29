@@ -186,6 +186,7 @@ export interface ExternalProduct {
   price: number | null;
   discountPercent?: number;
   tiers?: PriceTier[];
+  validade?: string | null;
 }
 
 export interface ExternalSupplier {
