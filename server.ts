@@ -7657,7 +7657,39 @@ app.post("/api/search-products", async (req, res) => {
     const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
     const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
 
-    log(`[BUSCA] Buscando por "${searchQuery}" (EAN Exato: ${onlyExactEan})...`);
+    // Normalizar query de busca: remover stopwords, normalizar abreviacoes, limpar espacos
+    const normalizeSearchQuery = (q: string): string => {
+      let s = q.trim().toUpperCase();
+      // Remover stopwords que nao ajudam na busca
+      const stopwords = ["COM", "DE", "DO", "DA", "DOS", "DAS", "PARA", "POR", "SEM", "ATE", "OU", "E", "EM", "O", "A", "OS", "AS", "UM", "UMA"];
+      const words = s.split(/\s+/).filter(w => w.length > 0 && !stopwords.includes(w));
+      // Normalizar abreviacoes de apresentacao
+      const normalized = words.map(w => {
+        // Dosagem: manter como esta (2MG, 500MCG, 10ML, etc.)
+        if (/^\d+\s*(MG|MCG|ML|G|UI|%)$/i.test(w)) return w.replace(/\s+/g, "");
+        // Apresentacao: normalizar
+        if (/^(CP|CPR|COMPRIMIDO|COMPR)$/i.test(w)) return "CPR";
+        if (/^(CAPS|CAPSULA|CAPSULAS)$/i.test(w)) return "CAPS";
+        if (/^(UND|UN|UNID|UNIDADE)$/i.test(w)) return "UND";
+        if (/^(REV|REVESTIDO)$/i.test(w)) return "REV";
+        if (/^(TABS|TABLETE|TABLETES)$/i.test(w)) return "TABS";
+        return w;
+      });
+      return normalized.join(" ").replace(/\s+/g, " ").trim();
+    };
+
+    // Versao "relaxed": remover dosagem e quantidade, manter so nome do principio ativo
+    const getRelaxedQuery = (q: string): string => {
+      const words = q.toUpperCase().split(/\s+/);
+      return words
+        .filter(w => !/^\d+/.test(w))      // remover palavras que comecam com numero (2MG, 60CPR, etc.)
+        .filter(w => w.length >= 3)         // remover palavras muito curtas
+        .join(" ")
+        .trim();
+    };
+
+    const normalizedQuery = normalizeSearchQuery(searchQuery);
+    log(`[BUSCA] Buscando por "${normalizedQuery}" (original: "${searchQuery}", EAN Exato: ${onlyExactEan})...`);
     log(`[DEBUG-PARAMS] queryRaw="${query}" searchQuery="${searchQuery}" isSandboxToken=${isSandboxToken} useTestUrl=${useTestUrl} apiCnpj="${apiCnpj}" baseUrl="${useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL}"`);
 
     let foundItems: any[] = [];
@@ -7967,48 +7999,58 @@ app.post("/api/search-products", async (req, res) => {
       } else {
         // 1. Busca Cadastral: Chamar /api/Produtos/Buscar apenas para listar as opÃ§Ãµes e obter os EANs corretos
         const endpointBusca = `${baseUrl.replace(/\/$/, "")}/api/Produtos/Buscar`;
-        log(`[API CONEXÃƒO] 1. Busca Cadastral em Produtos/Buscar para: "${searchQuery}" ${skipMolecula ? "(sem Molecula - busca exata)" : ""}`);
+        log(`[API CONEXÃƒO] 1. Busca Cadastral em Produtos/Buscar para: "${normalizedQuery}" (original: "${searchQuery}") ${skipMolecula ? "(sem Molecula - busca exata)" : ""}`);
 
-        try {
-          const resBusca = await fetch(endpointBusca, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Accept": "application/json"
-            },
-            body: JSON.stringify({
-              Token: actualToken,
-              parametros: {
-                CnpjCLi: apiCnpj,
-                Texto: searchQuery
+        // Tentar com query normalizada, depois fallback relaxed se nada encontrar
+        const queriesToTry = [normalizedQuery];
+        const relaxed = getRelaxedQuery(normalizedQuery);
+        if (relaxed && relaxed !== normalizedQuery) {
+          queriesToTry.push(relaxed);
+        }
+
+        for (const tryQuery of queriesToTry) {
+          if (foundItems.length > 0) break; // ja encontrou, nao precisa tentar proxima
+
+          try {
+            const resBusca = await fetch(endpointBusca, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+              },
+              body: JSON.stringify({
+                Token: actualToken,
+                parametros: {
+                  CnpjCLi: apiCnpj,
+                  Texto: tryQuery
+                }
+              })
+            });
+
+            if (resBusca.ok) {
+              const resData = await resBusca.json();
+              log(`[DEBUG-BUSCAR] Resposta raw keys: ${Object.keys(resData).join(", ")}`);
+              const produtosCadastrais = resData.Retorno || resData.retorno || [];
+              if (!Array.isArray(produtosCadastrais)) {
+                log(`[DEBUG-BUSCAR] Retorno NAO e array: ${typeof produtosCadastrais}. Conteudo: ${JSON.stringify(produtosCadastrais).substring(0, 200)}`);
               }
-            })
-          });
+              if (Array.isArray(produtosCadastrais) && produtosCadastrais.length > 0) {
+                log(`[API CONEXÃƒO SUCESSO] Busca Cadastral retornou ${produtosCadastrais.length} produtos para "${tryQuery}".`);
 
-          if (resBusca.ok) {
-            const resData = await resBusca.json();
-            log(`[DEBUG-BUSCAR] Resposta raw keys: ${Object.keys(resData).join(", ")}`);
-            const produtosCadastrais = resData.Retorno || resData.retorno || [];
-            if (!Array.isArray(produtosCadastrais)) {
-              log(`[DEBUG-BUSCAR] Retorno NAO e array: ${typeof produtosCadastrais}. Conteudo: ${JSON.stringify(produtosCadastrais).substring(0, 200)}`);
-            }
-            if (Array.isArray(produtosCadastrais) && produtosCadastrais.length > 0) {
-              log(`[API CONEXÃƒO SUCESSO] Busca Cadastral retornou ${produtosCadastrais.length} produtos.`);
+                // Extrair EANs Ãºnicos obtidos da busca cadastral
+                const eansUnicos = Array.from(new Set(
+                  produtosCadastrais.map((p: any) => cleanEan(p.Ean || p.ean || p.CodBarra || p.codBarra)).filter(Boolean)
+                ));
+                log(`[API CONEXÃƒO] EANs extraÃ­dos para cotaÃ§Ã£o comercial (Bypass${skipMolecula ? ", sem Molecula" : ""}): ${eansUnicos.join(", ")}`);
 
-              // Extrair EANs Ãºnicos obtidos da busca cadastral
-              const eansUnicos = Array.from(new Set(
-                produtosCadastrais.map((p: any) => cleanEan(p.Ean || p.ean || p.CodBarra || p.codBarra)).filter(Boolean)
-              ));
-              log(`[API CONEXÃƒO] EANs extraÃ­dos para cotaÃ§Ã£o comercial (Bypass${skipMolecula ? ", sem Molecula" : ""}): ${eansUnicos.join(", ")}`);
-
-              if (eansUnicos.length > 0) {
-                // 2. CotaÃ§Ã£o Comercial (Bypass): Fazer chamada automÃ¡tica aos endpoints /api/Condicoes/Ean E /api/Condicoes/Molecula usando esses EANs em paralelo
-                const endpointEan = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`;
-                const endpointMolecula = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Molecula`;
-                const cotacaoPromises = eansUnicos.map(async (eanTarget) => {
-                  try {
-                    const ckEan = cacheKey("Condicoes/Ean", eanTarget, actualToken, apiCnpj);
-                    const ckMol = skipMolecula ? null : cacheKey("Condicoes/Molecula", eanTarget, actualToken, apiCnpj);
+                if (eansUnicos.length > 0) {
+                  // 2. CotaÃ§Ã£o Comercial (Bypass): Fazer chamada automÃ¡tica aos endpoints /api/Condicoes/Ean E /api/Condicoes/Molecula usando esses EANs em paralelo
+                  const endpointEan = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Ean`;
+                  const endpointMolecula = `${baseUrl.replace(/\/$/, "")}/api/Condicoes/Molecula`;
+                  const cotacaoPromises = eansUnicos.map(async (eanTarget) => {
+                    try {
+                      const ckEan = cacheKey("Condicoes/Ean", eanTarget, actualToken, apiCnpj);
+                      const ckMol = skipMolecula ? null : cacheKey("Condicoes/Molecula", eanTarget, actualToken, apiCnpj);
 
                     let eanJson = await getFromCache(ckEan);
                     let molJson = ckMol ? await getFromCache(ckMol) : null;
@@ -8304,6 +8346,7 @@ app.post("/api/search-products", async (req, res) => {
         } catch (e: any) {
           log(`[API CONEXÃƒO ERRO] Erro na busca por descriÃ§Ã£o: ${e.message}.`);
         }
+        } // end for (tryQuery)
       }
     }
 
