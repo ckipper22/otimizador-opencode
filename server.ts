@@ -8045,7 +8045,7 @@ app.post("/api/search-products", async (req, res) => {
                 Token: actualToken,
                 parametros: {
                   CnpjCLi: apiCnpj,
-                  Texto: tryQuery
+                  Texto: tryQuery.split(/\s+/).filter(Boolean).join("%")
                 }
               })
             });
