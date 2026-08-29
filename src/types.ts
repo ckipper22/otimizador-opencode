@@ -53,6 +53,7 @@ export interface SwapReportItem {
   vendasMensais?: number;
   estoqueTotal?: number;
   tiers?: Array<{ minQty: number; price: number }>;
+  discountTiers?: Array<{ minQty: number; discountPercent: number }>;
   alternatives?: Array<{
     ean: string;
     descricao: string;

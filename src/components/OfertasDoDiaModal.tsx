@@ -55,6 +55,7 @@ interface OfertaDia {
   discountPercent?: number;
   isReferencia?: boolean;
   tiers?: { minQty: number; price: number }[];
+  discountTiers?: { minQty: number; discountPercent: number }[];
   bestTierPrice?: number;
 }
 
@@ -478,6 +479,37 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                                     (-{savingsVsBase.toFixed(0)}%)
                                   </span>
                                 )}
+                                {isBest && <span className="text-emerald-600 ml-1">★</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tiers de Desconto (Desconto Condicional) */}
+                  {!oferta.tiers && oferta.discountTiers && oferta.discountTiers.length > 0 && (
+                    <div className="mb-3 border-2 border-violet-400 bg-violet-50 rounded-sm overflow-hidden">
+                      <div className="bg-violet-400 text-white text-[9px] font-black uppercase px-2 py-1 flex items-center gap-1">
+                        <Package className="w-3 h-3" />
+                        DESCONTO CONDICIONAL — Quantidade Minima
+                      </div>
+                      <div className="px-2 py-1.5">
+                        <div className="space-y-0.5">
+                          {oferta.discountTiers.map((tier, idx) => {
+                            const isBest = idx === oferta.discountTiers!.length - 1;
+                            return (
+                              <div key={idx} className={`flex items-center justify-between text-[9px] px-1.5 py-0.5 ${isBest ? 'bg-emerald-100 border border-emerald-300 font-bold' : 'bg-white'}`}>
+                                <span className="font-sans">
+                                  <span className={`inline-block w-12 text-center font-mono font-bold ${isBest ? 'text-emerald-700' : 'text-gray-700'}`}>
+                                    {tier.minQty}+
+                                  </span>
+                                  <span className="text-gray-400 mx-1">und</span>
+                                </span>
+                                <span className={`font-mono font-bold ${isBest ? 'text-emerald-700' : 'text-violet-700'}`}>
+                                  {tier.discountPercent}% desc
+                                </span>
                                 {isBest && <span className="text-emerald-600 ml-1">★</span>}
                               </div>
                             );

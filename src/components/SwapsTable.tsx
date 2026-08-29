@@ -1839,6 +1839,25 @@ export default function SwapsTable({
                                     }
                                     return null;
                                   })()}
+                                  {!item.tiers && item.discountTiers && item.discountTiers.length > 0 && (() => {
+                                    const bestTier = item.discountTiers.filter((t: any) => item.qtd >= t.minQty).sort((a: any, b: any) => b.minQty - a.minQty)[0];
+                                    const nextTier = item.discountTiers.filter((t: any) => item.qtd < t.minQty).sort((a: any, b: any) => a.minQty - b.minQty)[0];
+                                    if (bestTier) {
+                                      return (
+                                        <span className="text-[8px] text-emerald-700 bg-emerald-50 border border-emerald-300 px-1 py-0.5 mt-0.5 font-bold rounded-sm" title={`Faixa atingida: ${bestTier.minQty}+ und = ${bestTier.discountPercent}% desc`}>
+                                          {bestTier.discountPercent}% desc ★
+                                        </span>
+                                      );
+                                    } else if (nextTier) {
+                                      const gap = nextTier.minQty - item.qtd;
+                                      return (
+                                        <span className="text-[8px] text-amber-700 bg-amber-50 border border-amber-300 px-1 py-0.5 mt-0.5 font-bold rounded-sm" title={`Faltam ${gap} un para faixa de ${nextTier.discountPercent}% desc`}>
+                                          +{gap} un p/ {nextTier.discountPercent}% desc
+                                        </span>
+                                      );
+                                    }
+                                    return null;
+                                  })()}
                                 </div>
                               </td>
 

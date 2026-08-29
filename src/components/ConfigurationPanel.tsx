@@ -776,6 +776,15 @@ export default function ConfigurationPanel({
                                                           ))}
                                                         </div>
                                                       )}
+                                                      {!prod.tiers && (prod as any).discountTiers && (prod as any).discountTiers.length > 0 && (
+                                                        <div className="flex flex-wrap gap-0.5 mt-0.5">
+                                                          {(prod as any).discountTiers.map((tier: any, tIdx: number) => (
+                                                            <span key={tIdx} className="text-[8px] font-mono font-bold text-violet-700 bg-violet-50 border border-violet-200 px-1 py-0.5 rounded-sm">
+                                                              {tier.minQty}+ = {tier.discountPercent}% desc
+                                                            </span>
+                                                          ))}
+                                                        </div>
+                                                      )}
                                                     </div>
                                                     <div className="flex items-center space-x-1.5 shrink-0">
                                                       {prod.discountPercent && prod.discountPercent > 0 ? (
