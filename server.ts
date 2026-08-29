@@ -132,7 +132,7 @@ import { LOCAL_EQUIVALENTS_DB, getLocalEquivalents } from "./server/equivalents-
 import { findBestSubstitute } from "./server/swap-engine";
 import { enrichReturnedItem } from "./server/smartped-transforms";
 import { MOCK_API_DATABASE } from "./server/mock-data";
-import { startDbCachePurge, saveOrder, saveOrderItem, getOrder, initTursoSchema, saveItemConfirmado, saveItensConfirmadosBatch, getItensConfirmados, getProfarmaFaturadosPendentes, saveItemManual, getItensManuais, purgeOldData, savePrecosCacheBatch, getPrecoCacheByEan, getPrecoCacheByEans, countPrecosCache, getLastPrecoSync, saveProdutoCache, countProdutosCache, listPrecosCache, purgePrecosCache, saveEansFixos, getEansFixos, countEansFixos } from "./server/database";
+import { startDbCachePurge, saveOrder, saveOrderItem, getOrder, initTursoSchema, saveItemConfirmado, saveItensConfirmadosBatch, getItensConfirmados, getProfarmaFaturadosPendentes, saveItemManual, deleteItemManual, getItensManuais, purgeOldData, savePrecosCacheBatch, getPrecoCacheByEan, getPrecoCacheByEans, countPrecosCache, getLastPrecoSync, saveProdutoCache, countProdutosCache, listPrecosCache, purgePrecosCache, saveEansFixos, getEansFixos, countEansFixos } from "./server/database";
 
 runEngineSelfTests();
 
@@ -231,6 +231,20 @@ app.post("/api/salvar-item-manual", async (req, res) => {
     res.json({ sucesso: true });
   } catch (err: any) {
     console.error("Erro ao salvar item manual:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/deletar-item-manual", async (req, res) => {
+  try {
+    const { codInterno, cnpj } = req.body;
+    if (!codInterno || !cnpj) {
+      return res.status(400).json({ error: "codInterno e cnpj são obrigatórios." });
+    }
+    await deleteItemManual(codInterno, cnpj);
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    console.error("Erro ao excluir item manual:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -6983,6 +6997,7 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
 app.post("/api/itens-confirmados-do-dia", async (req, res) => {
   const logs: string[] = [];
   try {
+    const agoraProcessamento = new Date().toISOString();
     const { token, cnpj, useTestUrl = true, dataInicio, dataFim, simulationMode = false } = req.body;
     const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
     const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN || simulationMode;
@@ -7012,6 +7027,12 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
     if (itensTurso.length > 0) {
       logs.push(`[TURSO] ${itensTurso.length} itens encontrados no banco local.`);
       console.log(`[TURSO] ${itensTurso.length} itens encontrados no banco local.`);
+    }
+
+    const createdAtMap = new Map<string, string>();
+    for (const it of itensTurso) {
+      const key = `${it.num_pedido}_${it.ean}_${it.cod_dist}`;
+      if (it.created_at) createdAtMap.set(key, it.created_at);
     }
 
     let itensConfirmados: any[] = [];
@@ -7232,7 +7253,8 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
         ...it,
         ean: tempItem.Ean,
         descricaoSmartped: tempItem.Descricao,
-        nome: tempItem.Descricao
+        nome: tempItem.Descricao,
+        dataProcessamento: createdAtMap.get(`${it.numPedido}_${it.ean}_${it.codDist}`) || agoraProcessamento
       };
     });
 
@@ -7282,6 +7304,7 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
         numPedido: it.num_pedido,
         descricaoSmartped: it.descricao,
         nome: it.descricao,
+        dataProcessamento: it.created_at,
         fonte: "turso"
       }))
     ];
@@ -7500,6 +7523,40 @@ app.post("/api/pedido-retorno", async (req, res) => {
             logs.push(`[ENRIQUECIMENTO ERRO] Falha no enriquecimento de descriÃ§Ãµes: ${enrichErr.message}`);
           }
         }
+      }
+    }
+
+    // Salvar itens do retorno no Turso (faturados E não confirmados) — registrado no momento REAL do retorno
+    if (apiResponseData) {
+      try {
+        const apiRet = apiResponseData.Retorno || apiResponseData.retorno || apiResponseData;
+        const apiItens = apiRet.Itens || apiRet.itens || [];
+        if (Array.isArray(apiItens) && apiItens.length > 0) {
+          const hoje = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+          const dataConfirmacaoHoje = `${String(hoje.getDate()).padStart(2, '0')}/${String(hoje.getMonth() + 1).padStart(2, '0')}/${hoje.getFullYear()}`;
+          const itensParaSalvar = apiItens.map((it: any) => ({
+            numPedido: String(numPedido),
+            ean: String(it.Ean || it.ean || it.EAN || "").trim(),
+            descricao: it.Descricao || it.descricao || "",
+            laboratorio: it.Laboratorio || it.laboratorio || "",
+            codDist: typeof it.CodDist === "number" ? it.CodDist : parseInt(it.CodDist) || 0,
+            nomeDist: "",
+            qtdSolicitada: parseInt(it.Quant || it.quant || "0") || 0,
+            qtdFaturada: parseFloat(it.QuantFaturada || it.quantFaturada || "0") || 0,
+            precoLiquido: parseFloat(it.Preco || it.preco || "0") || 0,
+            status: (parseFloat(it.QuantFaturada || it.quantFaturada || "0") || 0) > 0 ? "faturado" : "nao_confirmado",
+            motivo: it.Motivo || it.motivo || "",
+            cnpj: apiCnpj,
+            dataConfirmacao: dataConfirmacaoHoje
+          })).filter((it: any) => it.ean);
+          if (itensParaSalvar.length > 0) {
+            await saveItensConfirmadosBatch(itensParaSalvar);
+            logs.push(`[TURSO] ${itensParaSalvar.length} itens do retorno salvos no histórico.`);
+          }
+        }
+      } catch (saveErr: any) {
+        logs.push(`[TURSO ERRO] Falha ao salvar itens do retorno: ${saveErr.message}`);
+        console.error("[TURSO ERRO] Falha ao salvar itens do retorno:", saveErr.message);
       }
     }
 

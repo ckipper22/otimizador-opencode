@@ -404,7 +404,12 @@ export function useManualSearch({
           },
           cnpj: config.cnpj || ""
         })
-      }).catch(e => console.error("Erro ao salvar item manual no Turso:", e));
+      }).then(async (res) => {
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          console.error(`Erro ao salvar item manual no Turso: HTTP ${res.status} - ${errBody}`);
+        }
+      }).catch(e => console.error("Erro de rede ao salvar item manual no Turso:", e));
     } catch (e) {
       console.error("Erro ao salvar item manual no Turso:", e);
     }

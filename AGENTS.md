@@ -34,6 +34,10 @@
 | 24 | Sino de observação duplicava fetch (152 chamadas) | Cada linha do relatório fazia fetch `/api/similares/:ean` via IntersectionObserver. SwapsTable renderiza DUAS visões simultâneas (flat + agrupada), cada linha disparava 2x. Fix: backend enriquece report com `avisoOriginal`/`avisoNovo` (server.ts) — ObservationBell vira 100% presentational. Exceção: OrderReturnView usa `ObservationBellFetcher` local (1 instância, sem duplicação) | server.ts, src/components/ObservationBell.tsx, src/components/OrderReturnView.tsx |
 | 25 | Alerta Profarma 48h estourava rate limiter | Hook instanciado em 2 lugares, buscava TODOS os 76 EANs pendentes Profarma do sistema, `Promise.all` irrestrito (~152 chamadas simultâneas), inclusive antes de qualquer SICF importado. Fix: batching de 8 EANs + novo parâmetro `relevantEans` (só EANs do relatório atual) — zero chamadas ao abrir sem importar, só EANs do pedido específico ao importar | src/hooks/useProfarmaAlertCheck.ts, src/components/SwapsTable.tsx, src/hooks/useOptimizationResult.ts |
 | 26 | Timestamps misturados causavam filtro de data vazio | `data_adicao` salvo em UTC puro, mas `created_at`/`updated_at` usavam `datetime('now', '-3 hours')` — comparação lexicográfica de string nunca casava com data pura. Fix: migrar tudo pra UTC puro (`NOW_UTC = "datetime('now')"`), parse com `+'Z'` no frontend, exibição com `toLocaleString('pt-BR', {timeZone: 'America/Sao_Paulo'})` | server/database.ts, src/hooks/useProfarmaAlertCheck.ts, src/hooks/useOptimizationResult.ts, src/components/SwapsTable.tsx |
+| 27 | Turso nunca recebeu migração de origem/id_encomenda | `initTursoSchema()` (usado por local E produção — ambos compartilham o mesmo Turso, confirmado via .env local) só migrava colunas de external_suppliers. As migrações de origem/id_encomenda pra itens_manuais/order_items/itens_confirmados só existiam em `runMigrations()`, usado exclusivamente no caminho SQLite puro sem Turso — nunca executava contra o banco real. Todo INSERT tentando gravar `origem` falhava silenciosamente desde sempre. Fix: replicar as 6 migrações ALTER TABLE em `initTursoSchema()` | server/database.ts:254-270 |
+| 28 | Falhas de escrita no Turso 100% silenciosas (2 camadas) | `saveItemManual` tinha `catch {}` interno que engolia qualquer erro do INSERT, e o endpoint nunca checava o retorno — sempre respondia sucesso mesmo com falha real. Os 3 call sites do frontend (useManualSearch.ts, App.tsx x2) também nunca checavam `response.ok` — `fetch()` só rejeita em falha de rede, não em HTTP 4xx/5xx. Fix: catch agora loga e relança (throw) no backend; frontend agora checa `response.ok` e loga o corpo do erro real | server/database.ts, src/hooks/useManualSearch.ts, src/App.tsx |
+| 29 | Excluir/editar item manual não atualizava a tela sem F5 | `useMemo` de `filteredItems` (DailyItemsView.tsx) usa `manuaisAdicionados` no cálculo mas não listava como dependência — exclusão/edição atualizava o estado por baixo mas a lista renderizada só recalculava com F5. Fix: adicionar `manuaisAdicionados` às dependências | src/components/DailyItemsView.tsx |
+| 30 | Data/hora de itens confirmados sempre mostrava "agora" | `/api/pedido-retorno` (chamado a cada 2s durante faturamento ativo) nunca salvava nada no Turso — só `/api/itens-confirmados-do-dia` salvava, e só depois, incidentalmente, quando alguém abria a tela "Itens do Dia". O `created_at` refletia "quando a tela foi aberta depois", não o momento real do faturamento. Fix: `/api/pedido-retorno` agora salva TODOS os itens do retorno (faturados e não confirmados) no momento real, via `saveItensConfirmadosBatch` — ON CONFLICT preserva `created_at` em chamadas repetidas | server.ts (~linha 7529, dentro de /api/pedido-retorno) |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
 
@@ -77,6 +81,8 @@
 
 **Proposito de analisarUmProduto:** funcao central que calcula `estoqueTotal`/`estoquePorLaboratorio`/`vendasMensais`/`melhorPrecoSmartPed` pra um produto, usada tanto pelo botao P quanto por outros mecanismos — qualquer novo call-site deve garantir que o objeto `product` passado tenha os campos que `classificarProduto` espera (`descricao` OU `description`, `cod_dcb`, `cod_concentracao`).
 
+**Propósito do botão "P":** o botão "P" fora do contexto de "Ofertas do Dia" é PURAMENTE informativo (comparação de preço/estoque pra decisão do usuário) — não deve ter ação de "adicionar ao pedido" nesse contexto, diferente do mesmo botão dentro do fluxo de Ofertas do Dia, onde comprar a promoção faz sentido.
+
 ---
 
 ## Sino de Observacao (ObservationBell) — arquitetura
@@ -114,6 +120,28 @@ Se um novo lugar precisar mostrar observacao de produto DENTRO do fluxo de `/api
 ### Regra
 
 Qualquer novo consumidor de `useProfarmaAlertCheck` deve passar `relevantEans` com os EANs do contexto atual — nao omitir esse argumento (default e array vazio = hook fica inerte).
+
+---
+
+## Itens do Dia (DailyItemsView) — propósito e funcionalidade
+
+Tela de consulta e gestão dos itens do dia, com 4 abas: Todos, Faturados,
+Não Confirmados (essas 3 vêm direto da SmartPed via `/api/itens-confirmados-do-dia`,
+com histórico persistido no Turso) e Manuais Adicionados (itens
+digitados manualmente pelo "+" ou importados de encomendas — fonte:
+`itens_manuais` no Turso, mesclado com localStorage como fallback).
+
+**Coluna Data/Hora:** mostra quando o item foi confirmado/adicionado pela
+primeira vez (`created_at`, UTC convertido pra Panambi na exibição). Para
+os itens vindos da SmartPed, é a hora real do retorno de faturamento
+(gravada em `/api/pedido-retorno`, não o momento em que alguém abriu essa
+tela). Para itens manuais, é `dataAdicao` (já era UTC puro desde sempre).
+
+**Editar/Excluir:** só disponíveis na aba "Manuais Adicionados" — os itens
+das outras abas vêm de fatura já confirmada na SmartPed, não editáveis
+por natureza (dado de sistema externo, não nosso). Editar persiste no
+Turso via `/api/salvar-item-manual` (ON CONFLICT atualiza a linha
+existente); excluir usa o endpoint `/api/deletar-item-manual`.
 
 ---
 

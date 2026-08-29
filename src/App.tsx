@@ -690,7 +690,12 @@ export default function App() {
           },
           cnpj: config.cnpj || ""
         })
-      }).catch(e => console.error("Erro ao salvar item manual no Turso:", e));
+      }).then(async (res) => {
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          console.error(`Erro ao salvar item manual no Turso: HTTP ${res.status} - ${errBody}`);
+        }
+      }).catch(e => console.error("Erro de rede ao salvar item manual no Turso:", e));
     } catch (e) {
       console.error("Erro ao salvar item manual no Turso:", e);
     }
@@ -856,7 +861,7 @@ export default function App() {
 
         // Salvar no Turso via endpoint
         try {
-          await fetch("/api/salvar-item-manual", {
+          const res = await fetch("/api/salvar-item-manual", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -879,8 +884,12 @@ export default function App() {
               cnpj: config.cnpj || ""
             })
           });
+          if (!res.ok) {
+            const errBody = await res.text().catch(() => "");
+            console.error(`Erro ao salvar item manual no Turso: HTTP ${res.status} - ${errBody}`);
+          }
         } catch (e) {
-          console.error("Erro ao salvar item manual no Turso:", e);
+          console.error("Erro de rede ao salvar item manual no Turso:", e);
         }
       }
 

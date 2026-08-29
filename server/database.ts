@@ -263,6 +263,12 @@ export async function initTursoSchema() {
     `ALTER TABLE external_suppliers ADD COLUMN status_analise TEXT DEFAULT 'pendente'`,
     `ALTER TABLE external_suppliers ADD COLUMN analyzed_at TEXT`,
     `CREATE INDEX IF NOT EXISTS idx_external_suppliers_status ON external_suppliers(status_analise)`,
+    `ALTER TABLE itens_manuais ADD COLUMN origem TEXT DEFAULT 'manual'`,
+    `ALTER TABLE itens_manuais ADD COLUMN id_encomenda TEXT`,
+    `ALTER TABLE order_items ADD COLUMN origem TEXT DEFAULT 'manual'`,
+    `ALTER TABLE order_items ADD COLUMN id_encomenda TEXT`,
+    `ALTER TABLE itens_confirmados ADD COLUMN origem TEXT DEFAULT 'manual'`,
+    `ALTER TABLE itens_confirmados ADD COLUMN id_encomenda TEXT`,
   ];
   for (const sql of MIGRATE_SQL) {
     try { await d.exec(sql); } catch {} // ignora "duplicate column name" ou "duplicate index"
@@ -544,11 +550,27 @@ export async function saveItemManual(item: {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${NOW_UTC}, ?, ?)
       ON CONFLICT(cod_interno) DO UPDATE SET
         qtd = excluded.qtd,
+        descricao = excluded.descricao,
         status = excluded.status,
         updated_at = ${NOW_UTC}`;
     const args = [item.codInterno, item.ean, item.descricao, item.laboratorio, item.distribuidora, item.codDist, item.qtd, item.precoLiquido, item.precoFabrica || 0, item.condicao || "", item.prazo || 0, item.cnpj, item.status || "adicionado", item.dataAdicao, item.origem || "manual", item.idEncomenda || null];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
-  } catch {}
+  } catch (err: any) {
+    console.error(`[saveItemManual] Falha ao salvar item ${item.codInterno} (EAN ${item.ean}) no Turso:`, err.message || err);
+    throw err;
+  }
+}
+
+export async function deleteItemManual(codInterno: string, cnpj: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `DELETE FROM itens_manuais WHERE cod_interno = ? AND cnpj = ?`;
+    if (USE_TURSO) { await d.run(sql, codInterno, cnpj); } else { d.prepare(sql).run(codInterno, cnpj); }
+  } catch (err: any) {
+    console.error(`[deleteItemManual] Falha ao excluir item ${codInterno}:`, err.message || err);
+    throw err;
+  }
 }
 
 export async function getItensManuais(cnpj: string, dataInicio?: string, dataFim?: string, limit = 500) {

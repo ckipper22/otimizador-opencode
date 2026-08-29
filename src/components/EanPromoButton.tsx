@@ -483,24 +483,8 @@ export const EanPromoButton = ({ ean, descricao }: { ean: string; descricao?: st
                 )}
               </div>
 
-              {/* Footer - replica exata do OfertasDoDiaModal */}
-              <div className="p-4 border-t border-gray-200 bg-gray-50 flex gap-2">
-                <div className="flex-1 flex items-center gap-2">
-                  <span className="text-[10px] font-bold text-gray-600 uppercase">Qtd:</span>
-                  <input
-                    type="number"
-                    min="1"
-                    defaultValue="1"
-                    id="ean-promo-qtd"
-                    className="w-16 px-2 py-2 border border-amber-400 text-[11px] font-bold text-center focus:outline-none focus:ring-1 focus:ring-amber-500"
-                  />
-                  <button
-                    className="flex-1 py-2 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-colors"
-                  >
-                    <ShoppingCart className="w-3 h-3" />
-                    Adicionar ao Pedido
-                  </button>
-                </div>
+              {/* Footer */}
+              <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end">
                 <button
                   onClick={() => setShowFullDetail(false)}
                   className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 text-[10px] font-bold uppercase tracking-wider transition-colors"

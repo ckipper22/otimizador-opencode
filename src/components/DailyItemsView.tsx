@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Loader2, RefreshCw, Search, Calendar, CheckCircle2, XCircle, FileText, ShoppingBag, Shuffle, AlertCircle, Check, Info, ArrowRight, TrendingUp, PlusCircle, Package } from 'lucide-react';
+import { Loader2, RefreshCw, Search, Calendar, CheckCircle2, XCircle, FileText, ShoppingBag, Shuffle, AlertCircle, Check, Info, ArrowRight, TrendingUp, PlusCircle, Package, Pencil, Trash2 } from 'lucide-react';
 
 const getTodayString = () => {
   const d = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
@@ -104,6 +104,17 @@ export const DailyItemsView = ({
 
   const handleDeleteManualItem = (codInterno: string) => {
     if (!window.confirm("Deseja realmente excluir este item manual?")) return;
+    // Remover do Turso via endpoint
+    fetch("/api/deletar-item-manual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ codInterno, cnpj: config.cnpj })
+    }).then(async (res) => {
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        console.error(`Erro ao excluir item manual no Turso: HTTP ${res.status} - ${errBody}`);
+      }
+    }).catch(e => console.error("Erro de rede ao excluir item manual no Turso:", e));
     // Remover do localStorage
     try {
       const stored = localStorage.getItem("itens_manuais_adicionados");
@@ -124,6 +135,36 @@ export const DailyItemsView = ({
   const handleSaveEditManualItem = () => {
     if (!editingManualItem) return;
     const codInterno = editingManualItem.cod_interno || editingManualItem.codInterno;
+    // Persistir no Turso via endpoint (ON CONFLICT atualiza a linha existente)
+    fetch("/api/salvar-item-manual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        item: {
+          codInterno: codInterno,
+          ean: editingManualItem.ean || "",
+          descricao: editingManualItem.descricao,
+          laboratorio: editingManualItem.laboratorio || "",
+          distribuidora: editingManualItem.distribuidora || "",
+          codDist: editingManualItem.cod_dist || editingManualItem.codDist || 0,
+          qtd: editingManualItem.qtd,
+          precoLiquido: editingManualItem.preco_liquido || editingManualItem.precoLiquido || 0,
+          precoFabrica: editingManualItem.preco_fabrica || editingManualItem.precoFabrica || 0,
+          condicao: editingManualItem.condicao || "",
+          prazo: editingManualItem.prazo || 0,
+          dataAdicao: editingManualItem.data_adicao || editingManualItem.dataAdicao || new Date().toISOString(),
+          status: editingManualItem.status || "adicionado",
+          origem: editingManualItem.origem || "manual",
+          idEncomenda: editingManualItem.id_encomenda || editingManualItem.idEncomenda || null
+        },
+        cnpj: config.cnpj
+      })
+    }).then(async (res) => {
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        console.error(`Erro ao salvar edição de item manual no Turso: HTTP ${res.status} - ${errBody}`);
+      }
+    }).catch(e => console.error("Erro de rede ao salvar edição de item manual no Turso:", e));
     // Atualizar localStorage
     try {
       const stored = localStorage.getItem("itens_manuais_adicionados");
@@ -239,7 +280,7 @@ export const DailyItemsView = ({
 
       return true;
     });
-  }, [sortedItems, activeTab, searchQuery, showOnlyEncomendas]);
+  }, [sortedItems, activeTab, searchQuery, showOnlyEncomendas, manuaisAdicionados]);
 
   // Contadores dinâmicos para as abas
   const tabCounts = useMemo(() => {
@@ -663,7 +704,7 @@ export const DailyItemsView = ({
       <div className="border border-[#141414]/20 overflow-hidden">
         {/* Cabeçalho da Tabela */}
         <div className="hidden md:grid grid-cols-12 gap-4 p-3 bg-gray-50 border-b border-[#141414]/20 font-bold text-[10px] text-gray-600 uppercase items-center">
-          <div className="col-span-5 flex items-center gap-3">
+          <div className="col-span-4 flex items-center gap-3">
             {/* Checkbox geral (visível apenas na aba de faltas ou todos para facilitar) */}
             {(activeTab === "nao_confirmado" || activeTab === "todos") && (
               <input
@@ -679,7 +720,8 @@ export const DailyItemsView = ({
           <div className="col-span-2">Distribuidora</div>
           <div className="col-span-1 text-center">Pedido</div>
           <div className="col-span-1 text-center">Status</div>
-          <div className="col-span-3 text-right">Qtd Solicitada / Faturada</div>
+          <div className="col-span-2 text-center">Data/Hora</div>
+          <div className="col-span-2 text-right">Qtd Sol./Fat.</div>
         </div>
 
         <div className="divide-y divide-[#141414]/10 bg-white">
@@ -702,7 +744,7 @@ export const DailyItemsView = ({
               return (
                 <div key={i} className={`grid grid-cols-1 md:grid-cols-12 gap-2 md:gap-4 p-4 md:p-3 items-center text-xs transition-colors ${isSelected ? 'bg-amber-50/55 hover:bg-amber-50' : 'hover:bg-gray-50'}`}>
                   {/* Nome do Produto */}
-                  <div className="col-span-1 md:col-span-5 flex items-center gap-3">
+                  <div className="col-span-1 md:col-span-4 flex items-center gap-3">
                     {!isFaturado && (
                       <input
                         type="checkbox"
@@ -771,8 +813,42 @@ export const DailyItemsView = ({
                     )}
                   </div>
 
+                  {/* Data/Hora */}
+                  <div className="col-span-1 md:col-span-2 text-center">
+                    <span className="md:hidden font-semibold text-[10px] uppercase text-gray-400 block mb-1">Data/Hora</span>
+                    {activeTab === "manuais_adicionados" && item.dataAdicao ? (
+                      <div className="flex flex-col items-center gap-1">
+                        <span className="text-[10px] text-gray-600 font-medium">
+                          {new Date(item.dataAdicao).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' })}
+                        </span>
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => handleEditManualItem(item)}
+                            className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 transition-colors"
+                            title="Editar item"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteManualItem(item.cod_interno || item.codInterno)}
+                            className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-red-600 transition-colors"
+                            title="Excluir item"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : item.dataProcessamento ? (
+                      <span className="text-[10px] text-gray-600 font-medium">
+                        {new Date(item.dataProcessamento).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' })}
+                      </span>
+                    ) : (
+                      <span className="text-gray-300">—</span>
+                    )}
+                  </div>
+
                   {/* Quantidade Solicitada vs Faturada */}
-                  <div className="col-span-1 md:col-span-3 text-left md:text-right">
+                  <div className="col-span-1 md:col-span-2 text-left md:text-right">
                     <span className="md:hidden font-semibold text-[10px] uppercase text-gray-400 block mb-1">Quantidades</span>
                     <div className="flex flex-col md:items-end justify-center">
                       <div className="font-bold text-gray-800">
@@ -1029,6 +1105,58 @@ export const DailyItemsView = ({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL DE EDIÇÃO DE ITEM MANUAL ================= */}
+      {editingManualItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white border border-[#141414] shadow-2xl w-full max-w-md mx-4">
+            <div className="bg-[#141414] text-white px-4 py-3 flex items-center justify-between">
+              <h3 className="text-xs font-bold uppercase tracking-wider">Editar Item Manual</h3>
+              <button
+                onClick={() => setEditingManualItem(null)}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">Descrição</label>
+                <input
+                  type="text"
+                  value={editingManualItem.descricao || ""}
+                  onChange={(e) => setEditingManualItem({ ...editingManualItem, descricao: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 text-xs focus:ring-1 focus:ring-[#141414] focus:border-[#141414] outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">Quantidade</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={editingManualItem.qtd || 1}
+                  onChange={(e) => setEditingManualItem({ ...editingManualItem, qtd: parseInt(e.target.value) || 1 })}
+                  className="w-full px-3 py-2 border border-gray-300 text-xs focus:ring-1 focus:ring-[#141414] focus:border-[#141414] outline-none"
+                />
+              </div>
+            </div>
+            <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={() => setEditingManualItem(null)}
+                className="px-4 py-2 bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 text-xs font-bold uppercase transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveEditManualItem}
+                className="px-5 py-2 bg-[#141414] hover:bg-black text-white text-xs font-bold uppercase transition-colors border border-[#141414] shadow-sm"
+              >
+                Salvar
+              </button>
+            </div>
           </div>
         </div>
       )}
