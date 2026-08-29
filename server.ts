@@ -452,6 +452,7 @@ app.post("/api/external-suppliers", async (req, res) => {
         d: (p.description || p.produto || "").trim().toLowerCase(),
         p: parseFloat(String(p.price || p.preco || 0)).toFixed(2),
         t: p.tiers ? JSON.stringify(p.tiers.sort((a: any, b: any) => a.minQty - b.minQty)) : "",
+        dt: p.discountTiers ? JSON.stringify(p.discountTiers.sort((a: any, b: any) => a.minQty - b.minQty)) : "",
       })).sort((a, b) => a.d.localeCompare(b.d) || a.p.localeCompare(b.p));
     };
     const oldRows = await getExternalSuppliers(cnpj);

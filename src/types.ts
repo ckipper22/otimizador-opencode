@@ -186,6 +186,7 @@ export interface ExternalProduct {
   price: number | null;
   discountPercent?: number;
   tiers?: PriceTier[];
+  discountTiers?: Array<{ minQty: number; discountPercent: number }>;
   validade?: string | null;
 }
 
