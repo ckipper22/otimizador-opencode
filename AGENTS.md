@@ -263,6 +263,66 @@ Formato: `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). Gerado no build por `vite.conf
 | `validateSwapEquivalence()` | swap-validation.ts | filtered substitutos, allAlternatives |
 | `isExternalManual` | SwapsTable.tsx | Grupo verde/WhatsApp, "Faturar" |
 | Cálculo vendas (4 meses) | server.ts | analisar-referencia, background, batch SICF |
+| `normalizeSearchQuery()` | server.ts:7661 | Busca manual (botão "+"), Produtos/Buscar |
+| `matchesQuantity()` | server.ts:7715 | Filtro pós-busca por quantidade na descrição |
+
+---
+
+## Fornecedores Externos — Schema e Integração
+
+> Implementado em 2026-08-29 para integração com chatbot WhatsApp de farmácia.
+
+### Campos do ExternalProduct (src/types.ts)
+
+| Campo | Tipo | Obrigatório | Descrição |
+|-------|------|-------------|-----------|
+| `description` | `string` | Sim | Nome do produto |
+| `price` | `number \| null` | Sim | Preço absoluto (null = sem preço) |
+| `discountPercent` | `number` | Não | Desconto percentual único (calcula preço via referência SmartPed) |
+| `tiers` | `PriceTier[]` | Não | Faixas de preço absoluto (`{minQty, price}`) |
+| `discountTiers` | `Array<{minQty, discountPercent}>` | Não | Faixas de desconto percentual (adicionado 2026-08-29) |
+| `validade` | `string \| null` | Não | Validade POR ITEM (YYYY-MM-DD ou null) |
+
+### Regra de validade por item
+
+- Se item tem `validade` individual, usa ela
+- Senão, usa `validade` do fornecedor (`ExternalSupplier.validade`)
+- Item expirado é descartado individualmente (não derruba os outros do mesmo fornecedor)
+- Listas ficam acumuladas pra sempre no banco — só o item vencido deixa de ser lido
+
+### Semântica do POST /api/external-suppliers
+
+- Enviar `id` já existente **SUBSTITUI** a lista `products` inteira (não merge)
+- Para merge incremental: buscar via `/list`, mesclar localmente, reenviar lista completa
+- Diff interno detecta adicionados/modificados/removidos e dispara `analisarFornecedorEmBackground`
+- Campo `ean` não é oficial no tipo mas é aceito e usado no diff
+
+### Exibição na UI
+
+- `tiers`: badges laranja em ConfigurationPanel, seção "PRECO CONDICIONAL" em OfertasDoDiaModal, badges em SwapsTable
+- `discountTiers`: badges violeta nos mesmos 3 componentes (mutuamente exclusivos com `tiers`)
+- `discountTiers` no SwapsTable é display-only (não é populado pelo backend no `/api/optimize` ainda)
+
+---
+
+## Busca Manual (Botão "+") — Normalização e Wildcards
+
+> Implementado em 2026-08-29.
+
+### Fluxo da busca de texto
+
+1. **Normalização** (`normalizeSearchQuery`): remove stopwords ("com", "de", "para"), normaliza abreviações ("cp"→"CPR", "caps"→"CAPS"), extrai quantidade standalone (ex: "60" do final)
+2. **Wildcard**: converte espaços em `%` antes de mandar pro `Produtos/Buscar` da SmartPed (ex: "PITAVASTATINA 2 60" → busca "PITAVASTATINA%2%" com filtro pós-busca pra quantidade "60")
+3. **Fallback relaxado**: se busca normalizada retorna 0 resultados, tenta só com palavras significativas (remove dosagem/quantidade)
+4. **Filtro pós-busca** (`matchesQuantity`): se quantidade foi extraída, filtra resultados que têm essa quantidade na descrição do produto
+
+### Exemplo
+
+- Input: "pitavastatina 2 60"
+- Normaliza: "PITAVASTATINA 2" (quantidade extraída: "60")
+- Busca SmartPed: "PITAVASTATINA%2%"
+- SmartPed retorna: PITAVASTATINA CALCICA 2MG 30CPR + 60CPR
+- Filtro pós-busca: mantém só 60CPR
 
 ---
 
