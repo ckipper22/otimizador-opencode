@@ -554,14 +554,19 @@ export async function getItensManuais(cnpj: string, dataInicio?: string, dataFim
   const d = getDb();
   if (!d) return [];
   try {
+    // NOTA: data_adicao é salvo em UTC (new Date().toISOString() no frontend),
+    // enquanto updated_at/created_at usam horário local Panambi (UTC-3, via datetime('now', '-3 hours')).
+    // Isso pode causar desvio de até 3h perto da meia-noite (item adicionado às 21h local vira 00h UTC
+    // do dia seguinte e apareceria no dia errado no filtro). Se virar problema real, considerar
+    // normalizar data_adicao para horário local no frontend.
     let sql = `SELECT * FROM itens_manuais WHERE cnpj = ?`;
     const args: any[] = [cnpj];
     if (dataInicio) {
-      sql += ` AND data_adicao >= ?`;
+      sql += ` AND date(data_adicao) >= date(?)`;
       args.push(dataInicio);
     }
     if (dataFim) {
-      sql += ` AND data_adicao <= ?`;
+      sql += ` AND date(data_adicao) <= date(?)`;
       args.push(dataFim);
     }
     sql += ` ORDER BY created_at DESC LIMIT ?`;
