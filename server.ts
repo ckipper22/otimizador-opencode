@@ -7658,11 +7658,20 @@ app.post("/api/search-products", async (req, res) => {
     const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
 
     // Normalizar query de busca: remover stopwords, normalizar abreviacoes, limpar espacos
-    const normalizeSearchQuery = (q: string): string => {
+    const normalizeSearchQuery = (q: string): { query: string; quantity: string | null } => {
       let s = q.trim().toUpperCase();
       // Remover stopwords que nao ajudam na busca
       const stopwords = ["COM", "DE", "DO", "DA", "DOS", "DAS", "PARA", "POR", "SEM", "ATE", "OU", "E", "EM", "O", "A", "OS", "AS", "UM", "UMA"];
       const words = s.split(/\s+/).filter(w => w.length > 0 && !stopwords.includes(w));
+
+      // Extrair quantidade standalone (numero sozinho no final, ex: "60", "120")
+      let quantity: string | null = null;
+      const lastWord = words[words.length - 1] || "";
+      if (/^\d+$/.test(lastWord) && parseInt(lastWord) > 1) {
+        quantity = lastWord;
+        words.pop(); // remover do query de busca
+      }
+
       // Normalizar abreviacoes de apresentacao
       const normalized = words.map(w => {
         // Dosagem: manter como esta (2MG, 500MCG, 10ML, etc.)
@@ -7675,7 +7684,7 @@ app.post("/api/search-products", async (req, res) => {
         if (/^(TABS|TABLETE|TABLETES)$/i.test(w)) return "TABS";
         return w;
       });
-      return normalized.join(" ").replace(/\s+/g, " ").trim();
+      return { query: normalized.join(" ").replace(/\s+/g, " ").trim(), quantity };
     };
 
     // Versao "relaxed": remover dosagem e quantidade, manter so nome do principio ativo
@@ -7688,8 +7697,22 @@ app.post("/api/search-products", async (req, res) => {
         .trim();
     };
 
-    const normalizedQuery = normalizeSearchQuery(searchQuery);
-    log(`[BUSCA] Buscando por "${normalizedQuery}" (original: "${searchQuery}", EAN Exato: ${onlyExactEan})...`);
+    // Verificar se uma descricao contem a quantidade desejada
+    const matchesQuantity = (desc: string, qty: string | null): boolean => {
+      if (!qty) return true; // sem filtro de quantidade
+      const num = parseInt(qty);
+      if (isNaN(num) || num <= 0) return true;
+      const descUpper = (desc || "").toUpperCase();
+      // Buscar padroes como "60CPR", "60 CPR", "60UND", "60 UND", "60 COMP", etc.
+      const qtyPatterns = [
+        new RegExp(`\\b${num}\\s*(CPR|COMP|COMPRIMIDO|CAPS|CAPSULA|UND|UN|UNID|REV|TABS|TABLETE|CP)\\b`, "i"),
+        new RegExp(`\\b${num}\\b`), // fallback: numero sozinho
+      ];
+      return qtyPatterns.some(p => p.test(descUpper));
+    };
+
+    const { query: normalizedQuery, quantity } = normalizeSearchQuery(searchQuery);
+    log(`[BUSCA] Buscando por "${normalizedQuery}" (original: "${searchQuery}", quantidade: ${quantity || "auto"}, EAN Exato: ${onlyExactEan})...`);
     log(`[DEBUG-PARAMS] queryRaw="${query}" searchQuery="${searchQuery}" isSandboxToken=${isSandboxToken} useTestUrl=${useTestUrl} apiCnpj="${apiCnpj}" baseUrl="${useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL}"`);
 
     let foundItems: any[] = [];
@@ -8347,6 +8370,19 @@ app.post("/api/search-products", async (req, res) => {
           log(`[API CONEXÃƒO ERRO] Erro na busca por descriÃ§Ã£o: ${e.message}.`);
         }
         } // end for (tryQuery)
+      }
+    }
+
+    // FILTRO POR QUANTIDADE: se usuario buscou com quantidade (ex: "60"), filtrar so itens que tem essa qtd na descricao
+    if (quantity && foundItems.length > 0) {
+      const beforeQtyFilter = foundItems.length;
+      foundItems = foundItems.filter(item => matchesQuantity(item.Descricao || item.descricao || item.Description || "", quantity));
+      log(`[FILTRO-QTD] ${beforeQtyFilter} itens -> ${foundItems.length} apos filtrar por qtd=${quantity}`);
+      // Se filtrou tudo, manter todos (fallback: usuario errou quantidade mas quer ver os produtos)
+      if (foundItems.length === 0) {
+        log(`[FILTRO-QTD] Fallback: mantendo todos ${beforeQtyFilter} itens (nenhum tinha qtd=${quantity} na descricao)`);
+        foundItems = [];
+        // Refetch sem filtro de quantidade - reusar a busca ja feita
       }
     }
 
