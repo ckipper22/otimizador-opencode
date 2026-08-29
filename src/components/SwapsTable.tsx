@@ -1691,7 +1691,12 @@ export default function SwapsTable({
                                             </p>
                                             <p className="text-xs font-medium mt-1">
                                               {(() => {
-                                                const orderDate = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
+                                                const orderDateRaw = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
+                                                const orderDate = orderDateRaw
+                                                  ? new Date(orderDateRaw.replace(' ', 'T') + 'Z').toLocaleString('pt-BR', {
+                                                      timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short'
+                                                    })
+                                                  : "";
                                                 return orderDate
                                                   ? `Este item foi enviado para a Profarma em ${orderDate} (dentro das últimas 48h). Deseja manter no pedido ou excluir do lote para evitar duplicidade?`
                                                   : `Este item foi enviado para a Profarma nas últimas 48h. Deseja manter no pedido ou excluir do lote para evitar duplicidade?`;

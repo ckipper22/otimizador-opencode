@@ -33,6 +33,7 @@
 | 23 | Botão "P" sem estoque por laboratório | `classificarProduto()` lê `item.descricao`, mas `analisar-referencia` monta o objeto `product` com chave `description` (inglês) — `mesmaApresentacao()` falha silenciosamente. Fix: adicionar `item.description` como fallback na cadeia de descrição de `classificarProduto()` (parsers.ts:508) | server/parsers.ts:508, server.ts |
 | 24 | Sino de observação duplicava fetch (152 chamadas) | Cada linha do relatório fazia fetch `/api/similares/:ean` via IntersectionObserver. SwapsTable renderiza DUAS visões simultâneas (flat + agrupada), cada linha disparava 2x. Fix: backend enriquece report com `avisoOriginal`/`avisoNovo` (server.ts) — ObservationBell vira 100% presentational. Exceção: OrderReturnView usa `ObservationBellFetcher` local (1 instância, sem duplicação) | server.ts, src/components/ObservationBell.tsx, src/components/OrderReturnView.tsx |
 | 25 | Alerta Profarma 48h estourava rate limiter | Hook instanciado em 2 lugares, buscava TODOS os 76 EANs pendentes Profarma do sistema, `Promise.all` irrestrito (~152 chamadas simultâneas), inclusive antes de qualquer SICF importado. Fix: batching de 8 EANs + novo parâmetro `relevantEans` (só EANs do relatório atual) — zero chamadas ao abrir sem importar, só EANs do pedido específico ao importar | src/hooks/useProfarmaAlertCheck.ts, src/components/SwapsTable.tsx, src/hooks/useOptimizationResult.ts |
+| 26 | Timestamps misturados causavam filtro de data vazio | `data_adicao` salvo em UTC puro, mas `created_at`/`updated_at` usavam `datetime('now', '-3 hours')` — comparação lexicográfica de string nunca casava com data pura. Fix: migrar tudo pra UTC puro (`NOW_UTC = "datetime('now')"`), parse com `+'Z'` no frontend, exibição com `toLocaleString('pt-BR', {timeZone: 'America/Sao_Paulo'})` | server/database.ts, src/hooks/useProfarmaAlertCheck.ts, src/hooks/useOptimizationResult.ts, src/components/SwapsTable.tsx |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
 
@@ -175,6 +176,14 @@ npm run lint     # Type checking (tsc --noEmit)
 | FASE-3 `/api/optimize` (`Condicoes/Molecula`) — `server.ts:3473-3491` | `CONCURRENCY = 1`, `BATCH_DELAY_MS = 200` | Rate limit SmartPed |
 | `analisarFornecedorEmBackground` (promoções/fornecedores externos) — `server.ts:1191-1197` | `CONCURRENCY = 2` | Sobrecarga API Ferramentinhas (itens se perdiam) |
 | `/api/encomendas/buscar-ofertas-batch` | `CONCURRENCY = 1` + delay | Bug #39 histórico — mesma razão |
+
+---
+
+## PENDÊNCIAS / Dívida Técnica
+
+> Itens identificados mas adiados de propósito — não são bugs ativos,
+> são melhorias arquiteturais pra revisitar com calma. Sempre checar
+> esta seção quando o usuário perguntar "o que temos pendente?".
 
 ---
 

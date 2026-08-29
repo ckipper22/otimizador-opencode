@@ -100,7 +100,7 @@ export function useProfarmaAlertCheck(
               if (!res.ok) return;
               const data = await res.json();
               const compras = data.compras || data.Compras || [];
-              const faturadoDate = new Date(dataFaturado.replace(' ', 'T'));
+              const faturadoDate = new Date(dataFaturado.replace(' ', 'T') + 'Z');
               const faturadoDateOnly = new Date(faturadoDate.getFullYear(), faturadoDate.getMonth(), faturadoDate.getDate());
               for (const compra of compras) {
                 const fornecedor = String(compra.fornecedor || compra.Fornecedor || "").toUpperCase();

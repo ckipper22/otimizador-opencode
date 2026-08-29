@@ -570,7 +570,12 @@ export function useOptimizationResult({
       const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) && (isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan));
 
       if (isProfarmaAlert) {
-        const orderDate = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
+        const orderDateRaw = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
+        const orderDate = orderDateRaw
+          ? new Date(orderDateRaw.replace(' ', 'T') + 'Z').toLocaleString('pt-BR', {
+              timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short'
+            })
+          : "";
         return {
           ...item,
           isProfarmaAlert: true,
