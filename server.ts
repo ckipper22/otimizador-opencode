@@ -473,6 +473,8 @@ app.post("/api/external-suppliers", async (req, res) => {
         e: (p.ean || p.codigo_barras || "").trim(),
         pr: parseFloat(String(p.price || p.preco || 0)).toFixed(2),
         v: (p.validade || "").trim(),
+        t: p.tiers ? JSON.stringify(p.tiers.sort((a: any, b: any) => a.minQty - b.minQty)) : "",
+        dt: p.discountTiers ? JSON.stringify(p.discountTiers.sort((a: any, b: any) => a.minQty - b.minQty)) : "",
       });
       const oldMap = new Map<string, any>();
       for (const p of oldProducts) {
