@@ -1653,6 +1653,9 @@ app.get("/api/ofertas-dia/analisar", async (req, res) => {
           if (dados && dados.ofertas) {
             console.log(`[OFERTAS-DIA] ${supplier.name}: ${dados.ofertas.length} ofertas cacheadas. Sample:`, JSON.stringify(dados.ofertas[0] ? { produto: dados.ofertas[0].produto, description: dados.ofertas[0].description, ean: dados.ofertas[0].ean, fornecedor: dados.ofertas[0].fornecedor } : null));
             for (const oferta of dados.ofertas) {
+              // Filtrar ofertas vencidas: usar validade do item ou do fornecedor
+              const ofertaValidade = oferta.validade || supplier.validade;
+              if (ofertaValidade && ofertaValidade < today) continue;
               allOfertas.push({
                 ...oferta,
                 fornecedorLista: supplier.name,
@@ -7681,11 +7684,15 @@ app.post("/api/search-products", async (req, res) => {
       const words = s.split(/\s+/).filter(w => w.length > 0 && !stopwords.includes(w));
 
       // Extrair quantidade standalone (numero sozinho no final, ex: "60", "120")
+      // NAO extrair quando a query e 100% numerica com 8+ digitos (EAN)
       let quantity: string | null = null;
-      const lastWord = words[words.length - 1] || "";
-      if (/^\d+$/.test(lastWord) && parseInt(lastWord) > 1) {
-        quantity = lastWord;
-        words.pop(); // remover do query de busca
+      const isEan = words.length === 1 && /^\d{8,}$/.test(words[0]);
+      if (!isEan) {
+        const lastWord = words[words.length - 1] || "";
+        if (/^\d+$/.test(lastWord) && parseInt(lastWord) > 1) {
+          quantity = lastWord;
+          words.pop(); // remover do query de busca
+        }
       }
 
       // Normalizar abreviacoes de apresentacao
@@ -8391,14 +8398,13 @@ app.post("/api/search-products", async (req, res) => {
 
     // FILTRO POR QUANTIDADE: se usuario buscou com quantidade (ex: "60"), filtrar so itens que tem essa qtd na descricao
     if (quantity && foundItems.length > 0) {
-      const beforeQtyFilter = foundItems.length;
+      const beforeQtyFilter = [...foundItems];
       foundItems = foundItems.filter(item => matchesQuantity(item.Descricao || item.descricao || item.Description || "", quantity));
-      log(`[FILTRO-QTD] ${beforeQtyFilter} itens -> ${foundItems.length} apos filtrar por qtd=${quantity}`);
+      log(`[FILTRO-QTD] ${beforeQtyFilter.length} itens -> ${foundItems.length} apos filtrar por qtd=${quantity}`);
       // Se filtrou tudo, manter todos (fallback: usuario errou quantidade mas quer ver os produtos)
       if (foundItems.length === 0) {
-        log(`[FILTRO-QTD] Fallback: mantendo todos ${beforeQtyFilter} itens (nenhum tinha qtd=${quantity} na descricao)`);
-        foundItems = [];
-        // Refetch sem filtro de quantidade - reusar a busca ja feita
+        log(`[FILTRO-QTD] Fallback: mantendo todos ${beforeQtyFilter.length} itens (nenhum tinha qtd=${quantity} na descricao)`);
+        foundItems = beforeQtyFilter;
       }
     }
 
