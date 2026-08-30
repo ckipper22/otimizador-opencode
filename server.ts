@@ -659,8 +659,8 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         // Filtro de apresentação (mesmo padrão do SICF server.ts:3610-3640)
         // Enriquecer product com DCB: usar campos do product (já vem do frontend) como prioridade,
         // só cair pro produtosRaw[0] se product não trouxer esses campos
-        const dcbRef1 = product.cod_dcb || produtosRaw[0]?.cod_dcb;
-        const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao;
+        const dcbRef1 = product.cod_dcb || produtosRaw[0]?.cod_dcb || null;
+        const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao || null;
         const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
         const produtos = produtosFiltered.filter((p: any) => mesmaApresentacao(productComDcb, p));
 
@@ -1482,6 +1482,14 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
               const eanToLab = new Map<string, string>();
               for (const e of eansGrupo) {
                 if (e.ean && e.lab) eanToLab.set(e.ean, e.lab);
+              }
+              // Fallback: quando eansGrupo está vazio (DCB não casou), popular eanToLab de allProdutos
+              if (eanToLab.size === 0 && allProdutos.length > 0) {
+                for (const p of allProdutos) {
+                  const e = p.ean || p.cod_barra || "";
+                  const lab = p.nom_laborat || p.laboratorio || "";
+                  if (e && lab && !eanToLab.has(e)) eanToLab.set(e, lab);
+                }
               }
               const comprasPromises = eanListFiltrado.map(async (ean: string) => {
                 try {
