@@ -729,6 +729,20 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           notaFiscal: c.nota_fiscal || null,
           laboratorio: eanToLabMap.get(product.ean) || "",
         }));
+
+        // DEBUG: log temporário pra investigar comprasHistorico
+        const _dbgEan = (product.ean || "").replace(/\D/g, "");
+        if (_dbgEan === "7891058022136" || _dbgEan === "7891058020316") {
+          console.log(`[DEBUG-COMPRAS] ean=${_dbgEan} desc=${(product.description||"").substring(0,40)}`);
+          console.log(`[DEBUG-COMPRAS] historicoData.compras.length=${historicoData?.compras?.length || 0}`);
+          console.log(`[DEBUG-COMPRAS] comprasHistorico.length=${comprasHistorico.length}`);
+          if (comprasHistorico.length > 0) {
+            console.log(`[DEBUG-COMPRAS] primeira: data=${comprasHistorico[0].data} fornecedor=${comprasHistorico[0].fornecedor} qtd=${comprasHistorico[0].quantidade}`);
+            console.log(`[DEBUG-COMPRAS] ultima: data=${comprasHistorico[comprasHistorico.length-1].data} fornecedor=${comprasHistorico[comprasHistorico.length-1].fornecedor}`);
+          }
+        }
+        // FIM DEBUG
+
         if (comprasHistorico.length > 0) {
           ultimaCompra = comprasHistorico[0];
         }
@@ -1539,11 +1553,35 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
               if (product.ean) eanToProduto.set(product.ean, product);
 
               const eanListFiltrado: string[] = [];
+              // Sempre incluir próprio EAN se está em erpEans (pra histórico de compras)
+              if (product.ean && erpEans.includes(product.ean)) {
+                eanListFiltrado.push(product.ean);
+              }
+              // Para genérico/similar: incluir outros EANs que passam mesmaApresentacao
               for (const ean of erpEans) {
+                if (ean === product.ean) continue; // próprio já adicionado acima
                 const pProd = eanToProduto.get(ean);
                 if (!pProd) continue;
                 if (mesmaApresentacao(product, pProd)) eanListFiltrado.push(ean);
               }
+
+              // DEBUG: log temporário pra investigar eanListFiltrado
+              const _dbgEan2 = (product.ean || "").replace(/\D/g, "");
+              if (_dbgEan2 === "7891058022136" || _dbgEan2 === "7891058020316") {
+                console.log(`[DEBUG-COMPRAS] erpEans=${erpEans.length} eanListFiltrado=${eanListFiltrado.length}`);
+                console.log(`[DEBUG-COMPRAS] erpEans: [${erpEans.slice(0,5).join(", ")}${erpEans.length > 5 ? "..." : ""}]`);
+                console.log(`[DEBUG-COMPRAS] eanListFiltrado: [${eanListFiltrado.slice(0,5).join(", ")}${eanListFiltrado.length > 5 ? "..." : ""}]`);
+                for (const ean of erpEans.slice(0, 3)) {
+                  const pProd = eanToProduto.get(ean);
+                  if (pProd) {
+                    const clsProd = classificarProduto(product);
+                    const clsCand = classificarProduto(pProd);
+                    const res = mesmaApresentacao(product, pProd);
+                    console.log(`[DEBUG-COMPRAS]   ean=${ean} mesmaApresentacao=${res} | product.unidade=${clsProd.unidadeApresentacao} cand.unidade=${clsCand.unidadeApresentacao} product.dcb=${clsProd.dcbConcentracao} cand.dcb=${clsCand.dcbConcentracao}`);
+                  }
+                }
+              }
+              // FIM DEBUG
 
               // Somar vendas dos EANs filtrados e dividir por meses reais
               const vendasBatch = await fetchVendasResumoBatch(eanListFiltrado);
