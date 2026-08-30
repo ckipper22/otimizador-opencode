@@ -189,6 +189,61 @@ existente); excluir usa o endpoint `/api/deletar-item-manual`.
 
 ---
 
+## Ofertas do Dia (OfertasDoDiaModal) — propósito e funcionalidade
+
+Tela que mostra promoções ativas de fornecedores externos (cadastrados via
+WhatsApp/aba Parâmetros, tabela `external_suppliers` no Turso) e ajuda o
+comprador a decidir se vale a pena — comparando o preço da promoção contra
+(a) o melhor preço disponível na SmartPed entre distribuidores e (b) o
+histórico de compras próprio (o que a farmácia já pagou antes por esse produto).
+
+### Fluxo de dados
+
+**Estoque:** fonte é `similares/{ean}` da Ferramentinhas. Regra de
+referência-vs-genérico detalhada na seção "Dois fluxos de matching
+independentes" (~linha 89) — não duplicar aqui.
+
+**Preço SmartPed:** calculado por `analisarUmProduto` (server.ts) em 2 passos:
+
+1. **PASSO 1** — busca o EAN próprio direto via `Condicoes/Ean`. Se encontrar
+   condição válida (preço>0 E estoque>0), usa ela.
+2. **PASSO 1.5** — se PASSO 1 não achou condição válida (pode acontecer mesmo
+   com EAN cadastrado corretamente — produto real mas sem estoque em nenhum
+   distribuidor no momento), expande via `Produtos/Buscar` com wildcards de
+   texto (`getWildcardQueries` em `server/parsers.ts`) e complementa com
+   `Condicoes/Molecula`.
+
+**Importante:** toda expansão por texto (PASSO 1.5) filtra por dosagem
+extraída da descrição (`origDosage`, regex `/(\d+)\s*(mg|mcg|g|ml|ui|%)/i`)
+antes de aceitar um EAN candidato — ver bug #31 na tabela CEGUEIRA ANTIGA
+(cross-contamination entre MUCOSOLVAN AD 30MG e PED 15MG, mesmo DCB,
+dosagem diferente, corrigido em 2026-08-30).
+
+### smartPedCondicoesTodas
+
+Array com TODAS as condições SmartPed válidas (não só a melhor), com
+breakdown completo: distribuidora, EAN, laboratório, precoBruto, desconto,
+descExtra, valorST, precoLiquido. Ordenado por preço líquido ascendente.
+Alimenta a tabela "Todas as condições SmartPed" no modal de detalhe.
+
+Os campos `melhorPreco*` continuam existindo em paralelo (usados no dropdown
+"Adicionar" e nos chips compactos) — não são redundantes, servem propósitos
+diferentes (resumo rápido vs. auditoria completa).
+
+### Design: card vs modal
+
+- **Card da lista** — escaneamento rápido de dezenas de ofertas. Mostra
+  apenas uma fileira de chips compactos (SmartPed+EAN, economia%, vendas/mês,
+  estoque, pago antes) logo abaixo do preço. Sem caixas grandes.
+- **Modal "Detalhes"** — avaliação a fundo de uma oferta específica. Mostra
+  a tabela completa de todas as condições SmartPed com EAN em cada linha.
+
+**Regra de EAN visível:** o EAN sempre aparece em qualquer lugar que mostre
+preço/oferta — é o principal jeito do usuário auditar se o dado bate com o
+produto certo. Foi assim que o bug de cross-contamination (#31) foi encontrado.
+
+---
+
 ## Comandos
 
 ```bash
