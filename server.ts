@@ -1021,14 +1021,23 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
 
   // Se produto so tem desconto percentual (sem preco absoluto), calcular preco efetivo
   const discountPercent = product.discountPercent || product.desconto || 0;
-  console.log(`[ANALISE] ${product.description || product.produto}: preco=${product.preco}, discountPercent=${discountPercent}, melhorPrecoSmartPed=${melhorPrecoSmartPed}`);
+  // Normalizar discountTiers: aceitar JSON valido OU formato PowerShell "@{minQty=1; discountPercent=10}"
+  let discountTiers = product.discountTiers;
+  if (discountTiers && discountTiers.length > 0 && typeof discountTiers[0] === "string") {
+    discountTiers = discountTiers.map((s: string) => {
+      const match = s.match(/minQty=(\d+).*?discountPercent=([\d.]+)/);
+      if (match) return { minQty: parseInt(match[1]), discountPercent: parseFloat(match[2]) };
+      return null;
+    }).filter(Boolean);
+  }
+  console.log(`[ANALISE] ${product.description || product.produto}: preco=${product.preco}, discountPercent=${discountPercent}, discountTiers=${discountTiers?.length || 0} faixas, melhorPrecoSmartPed=${melhorPrecoSmartPed}`);
   if ((!product.preco || product.preco === 0) && discountPercent > 0 && melhorPrecoSmartPed && melhorPrecoSmartPed > 0) {
     product.preco = melhorPrecoSmartPed * (1 - discountPercent / 100);
     product.precoCalculadoViaDesconto = true;
     console.log(`[ANALISE] Preco calculado via desconto: R$ ${product.preco.toFixed(2)} (base: R$ ${melhorPrecoSmartPed.toFixed(2)}, desconto: ${discountPercent}%)`);
-  } else if ((!product.preco || product.preco === 0) && discountPercent === 0 && product.discountTiers && product.discountTiers.length > 0 && melhorPrecoSmartPed && melhorPrecoSmartPed > 0) {
+  } else if ((!product.preco || product.preco === 0) && discountPercent === 0 && discountTiers && discountTiers.length > 0 && melhorPrecoSmartPed && melhorPrecoSmartPed > 0) {
     // Fallback: usar desconto da faixa de MENOR minQty (desconto garantido sem volume)
-    const lowestTier = product.discountTiers.sort((a: any, b: any) => a.minQty - b.minQty)[0];
+    const lowestTier = discountTiers.sort((a: any, b: any) => a.minQty - b.minQty)[0];
     if (lowestTier && lowestTier.discountPercent > 0) {
       product.preco = melhorPrecoSmartPed * (1 - lowestTier.discountPercent / 100);
       product.precoCalculadoViaDesconto = true;
@@ -5634,12 +5643,21 @@ condicoesEnriched = condicoes.map((c: any) => {
 
         // Calcular preço do fornecedor externo (suporte a % desconto e discountTiers)
         if (matchedExternal) {
+          // Normalizar discountTiers: aceitar JSON valido OU formato PowerShell
+          let extDiscountTiers = matchedExternal.discountTiers;
+          if (extDiscountTiers && extDiscountTiers.length > 0 && typeof extDiscountTiers[0] === "string") {
+            extDiscountTiers = extDiscountTiers.map((s: string) => {
+              const match = s.match(/minQty=(\d+).*?discountPercent=([\d.]+)/);
+              if (match) return { minQty: parseInt(match[1]), discountPercent: parseFloat(match[2]) };
+              return null;
+            }).filter(Boolean);
+          }
           if ((!matchedExternal.price || matchedExternal.price === 0) && matchedExternal.discountPercent && matchedExternal.discountPercent > 0 && bestSmartPedPrice > 0) {
             matchedExternal.price = bestSmartPedPrice * (1 - matchedExternal.discountPercent / 100);
             logs.push(`[FORNECEDOR WHATSAPP] Preço calculado via ${matchedExternal.discountPercent}% desconto: R$ ${matchedExternal.price.toFixed(2)} (base SmartPed: R$ ${bestSmartPedPrice.toFixed(2)})`);
-          } else if ((!matchedExternal.price || matchedExternal.price === 0) && (!matchedExternal.discountPercent || matchedExternal.discountPercent === 0) && matchedExternal.discountTiers && matchedExternal.discountTiers.length > 0 && bestSmartPedPrice > 0) {
+          } else if ((!matchedExternal.price || matchedExternal.price === 0) && (!matchedExternal.discountPercent || matchedExternal.discountPercent === 0) && extDiscountTiers && extDiscountTiers.length > 0 && bestSmartPedPrice > 0) {
             // Fallback: usar desconto da faixa de MENOR minQty (desconto garantido sem volume)
-            const lowestTier = matchedExternal.discountTiers.sort((a: any, b: any) => a.minQty - b.minQty)[0];
+            const lowestTier = extDiscountTiers.sort((a: any, b: any) => a.minQty - b.minQty)[0];
             if (lowestTier && lowestTier.discountPercent > 0) {
               matchedExternal.price = bestSmartPedPrice * (1 - lowestTier.discountPercent / 100);
               matchedExternal.discountPercent = lowestTier.discountPercent;
