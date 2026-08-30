@@ -474,6 +474,11 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                     <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-50 text-gray-600 border border-gray-200">
                       {oferta.estoqueTotal} cx estoque
                     </span>
+                    {oferta.melhorPrecoHistorico && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-violet-50 text-violet-700 border border-violet-200">
+                        pago antes {formatCurrency(oferta.melhorPrecoHistorico)} ({oferta.melhorFornecedorHistorico})
+                      </span>
+                    )}
                   </div>
 
                   {/* Tiers de Preco (Preco Condicional) */}
@@ -716,6 +721,11 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                 <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-50 text-gray-600 border border-gray-200">
                   {detalheAberto.estoqueTotal} cx estoque
                 </span>
+                {detalheAberto.melhorPrecoHistorico && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-violet-50 text-violet-700 border border-violet-200">
+                    pago antes {formatCurrency(detalheAberto.melhorPrecoHistorico)} ({detalheAberto.melhorFornecedorHistorico})
+                  </span>
+                )}
               </div>
 
               {/* Tiers de Preco (detail modal) */}
