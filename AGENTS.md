@@ -369,5 +369,86 @@ Formato: `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). Gerado no build por `vite.conf
 
 ---
 
+## Padrão raiz: objeto bruto vs catálogo (causa de quase todos os bugs de 30/08)
+
+> Documentado em 2026-08-30. Praticamente TODO bug corrigido nesta sessão foi a mesma causa em lugares diferentes.
+
+### O problema
+
+Objeto bruto de promoção (vindo do WhatsApp/fornecedor externo) só tem `{description, ean, price, discountTiers}` — **sem metadado de catálogo** (`grupo`, `cod_dcb`, `unidadeApresentacao`, etc.). Funções de classificação/matching que precisam desses campos falham silenciosamente quando recebem o objeto bruto.
+
+### Consequências (cada uma causou bug real hoje)
+
+| Falta | Onde falha | Bug resultante |
+|-------|-----------|----------------|
+| `grupo`/`classificacao` | `resolveCategoria(product)` | Sempre cai em "outros", nunca "marca" → referência agrupa com genérico |
+| `cod_dcb`/`cod_concentracao` | `mesmaApresentacao()` | `dcbConcentracao` null → comparação por regex de dosagem (menos confiável) |
+| `unidade_apresentacao` | `mesmaApresentacao()` | `unidadeApresentacao` null → não compara quantidade → aceita 24cp junto com 60cp |
+
+### Regra permanente
+
+> **Ao usar `resolveCategoria()`, `classificarProduto()` ou `mesmaApresentacao()` com produto de fornecedor externo, SEMPRE enriquecer o objeto com dados do catálogo Ferramentinhas PRIMEIRO** (via `produtosRaw.find(ean === product.ean)`) — nunca passar o objeto bruto direto.
+
+---
+
+## 4 listas de EAN independentes — não confundir
+
+> Documentado em 2026-08-30. Cada lista tem sua PRÓPRIA lógica de filtro. Corrigir um NÃO corrige os outros.
+
+| Lista | Usada pra | Onde filtra | Exceção EAN próprio? |
+|---|---|---|---|
+| `erpEans` | vendas/estoque agregado | REF-FILTER original (~1484) | **Sim** (4222495) |
+| `eanList` | precificação SmartPed | REF-FILTER-EAN (~1505) + unidade | **Sim** (398b471, 475531b) |
+| `eanListFiltrado` | comprasHistorico/"Seus Preços" | `mesmaApresentacao` (~1553) | **Sim** (dd609ea) |
+| `produtos` (em `analisarUmProduto`) | estoquePorLaboratorio | `mesmaApresentacao` ou pulado se marca | **Sim** (35e3bea, cdb7ced) |
+
+### Regra permanente
+
+> **Ao criar/modificar QUALQUER filtro que rode sobre lista de EANs candidatos, sempre perguntar: "isso pode remover o EAN do PRÓPRIO produto sendo analisado?" e adicionar exceção `if (ean === product.ean) return true` ANTES de qualquer outra condição.**
+
+---
+
+## Referência vs Genérico — regra de ouro
+
+> Documentado em 2026-08-30.
+
+**Produto REFERÊNCIA (marca própria):** NUNCA busca "similares" pra estoque — usa só o próprio EAN exato (`estoqueTotal = estoqueMesmoEan`, sem soma de grupo). Motivo: não existe "outro fabricante" fazendo o mesmo produto de marca pra somar.
+
+**Genérico/Similar:** aí sim busca similares via `mesmaApresentacao` — múltiplos fabricantes fazem o "mesmo" produto de fato.
+
+**Categoria do produto** SEMPRE deve ser resolvida a partir do produto MATCHADO no catálogo (`produtoExato`), nunca do objeto bruto da promoção — o objeto bruto não carrega `grupo`/`TipoItem`, sempre cai em "outros" (31da6e3).
+
+---
+
+## Metodologia de debug — script isolado
+
+> Documentado em 2026-08-30. Pra investigar EAN específico sem rodar análise completa (180 itens, lento).
+
+Criar script standalone (`debug-analisar.ts`, já existe) que:
+1. Importa só funções necessárias (`classificarProduto`, `mesmaApresentacao`, `resolveCategoria`)
+2. Chama APIs diretamente (Ferramentinhas + SmartPed) pra 1-3 EANs
+3. Imprime log específico, sem disparar fluxo completo de `/api/ofertas-dia/analisar`
+
+---
+
+## Pendências conhecidas (não bloqueiam)
+
+- Checagem de FORMA (líquido/ML vs sólido/CPR) no fallback de preço SmartPed (passo 2) — nunca implementada
+- Formato "NxM" (ex: "1X10") não reconhecido pelo regex de unidadeApresentacao
+- Análise em background processa fornecedor JÁ VENCIDO antes de descartar (desperdício)
+- Logs de debug temporários (DEBUG-PROD, DEBUG-COMPRAS) ainda no código — limpar antes de deploy
+- **NADA foi deployado pra produção** — tudo é commit local. Cloud Run ainda tem código antigo
+- Dados de teste no Turso reduzidos (Forster deletado, TEstando: 9 itens) — sem backup automático
+
+---
+
+## Tarefa prioritária da próxima sessão
+
+> Pedido explícito do Carlos.
+
+**Integrar listas de promoção externas (fornecedores WhatsApp/aba Parâmetros) no SICF (motor de otimização por arquivo/lote).** Hoje essas fontes ficam isoladas na tela "Ofertas do Dia" e não entram na busca do SICF. Investigar a fundo antes de propor fix — ler como o SICF busca hoje, entender se dá pra reaproveitar `external_suppliers` sem duplicar lógica.
+
+---
+
 *Sempre se comunique em português.*
 *Fuso horário: America/Sao_Paulo (UTC-3) — Panambi, RS.*
