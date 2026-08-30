@@ -1026,6 +1026,14 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
     product.preco = melhorPrecoSmartPed * (1 - discountPercent / 100);
     product.precoCalculadoViaDesconto = true;
     console.log(`[ANALISE] Preco calculado via desconto: R$ ${product.preco.toFixed(2)} (base: R$ ${melhorPrecoSmartPed.toFixed(2)}, desconto: ${discountPercent}%)`);
+  } else if ((!product.preco || product.preco === 0) && discountPercent === 0 && product.discountTiers && product.discountTiers.length > 0 && melhorPrecoSmartPed && melhorPrecoSmartPed > 0) {
+    // Fallback: usar desconto da faixa de MENOR minQty (desconto garantido sem volume)
+    const lowestTier = product.discountTiers.sort((a: any, b: any) => a.minQty - b.minQty)[0];
+    if (lowestTier && lowestTier.discountPercent > 0) {
+      product.preco = melhorPrecoSmartPed * (1 - lowestTier.discountPercent / 100);
+      product.precoCalculadoViaDesconto = true;
+      console.log(`[ANALISE] Preco calculado via discountTiers: R$ ${product.preco.toFixed(2)} (base: R$ ${melhorPrecoSmartPed.toFixed(2)}, desconto: ${lowestTier.discountPercent}% faixa ${lowestTier.minQty}un)`);
+    }
   }
 
   // Para auto-descarte, usar o MENOR preco entre tiers (melhor cenario)
@@ -5624,11 +5632,19 @@ condicoesEnriched = condicoes.map((c: any) => {
           bestSmartPedPrice = bestOriginalNovoPreco;
         }
 
-        // Calcular preço do fornecedor externo (suporte a % desconto)
+        // Calcular preço do fornecedor externo (suporte a % desconto e discountTiers)
         if (matchedExternal) {
           if ((!matchedExternal.price || matchedExternal.price === 0) && matchedExternal.discountPercent && matchedExternal.discountPercent > 0 && bestSmartPedPrice > 0) {
             matchedExternal.price = bestSmartPedPrice * (1 - matchedExternal.discountPercent / 100);
             logs.push(`[FORNECEDOR WHATSAPP] Preço calculado via ${matchedExternal.discountPercent}% desconto: R$ ${matchedExternal.price.toFixed(2)} (base SmartPed: R$ ${bestSmartPedPrice.toFixed(2)})`);
+          } else if ((!matchedExternal.price || matchedExternal.price === 0) && (!matchedExternal.discountPercent || matchedExternal.discountPercent === 0) && matchedExternal.discountTiers && matchedExternal.discountTiers.length > 0 && bestSmartPedPrice > 0) {
+            // Fallback: usar desconto da faixa de MENOR minQty (desconto garantido sem volume)
+            const lowestTier = matchedExternal.discountTiers.sort((a: any, b: any) => a.minQty - b.minQty)[0];
+            if (lowestTier && lowestTier.discountPercent > 0) {
+              matchedExternal.price = bestSmartPedPrice * (1 - lowestTier.discountPercent / 100);
+              matchedExternal.discountPercent = lowestTier.discountPercent;
+              logs.push(`[FORNECEDOR WHATSAPP] Preço calculado via discountTiers: R$ ${matchedExternal.price.toFixed(2)} (base SmartPed: R$ ${bestSmartPedPrice.toFixed(2)}, desconto: ${lowestTier.discountPercent}% faixa ${lowestTier.minQty}un)`);
+            }
           }
         }
 
