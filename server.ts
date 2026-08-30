@@ -650,8 +650,13 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const estoqueData = await estoqueRes.json();
         const produtosRaw = estoqueData?.produtos || [];
 
+        // Busca direta pelo EAN exato do próprio produto (antecipada — usada pra categoria e estoque)
+        const eanLimpo = (product.ean || "").replace(/\D/g, "");
+        const produtoExato = produtosRaw.find((p: any) => (p.ean || "").replace(/\D/g, "") === eanLimpo);
+
         // Filtro por categoria: referência/ético agrupa com referência/ético; genérico/similar agrupa com genérico/similar
-        const catProduct = resolveCategoria(product);
+        // Usar produtoExato do catálogo (tem campo grupo/classificacao) em vez do objeto bruto da promoção
+        const catProduct = resolveCategoria(produtoExato || product);
         const produtosFiltered = produtosRaw.filter((p: any) => {
           const cat = resolveCategoria(p);
           if (catProduct === "marca") return cat === "marca"; // referência: só outras referências
@@ -664,10 +669,6 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const dcbRef1 = product.cod_dcb || produtosRaw[0]?.cod_dcb || null;
         const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao || null;
         const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
-
-        // Busca direta pelo EAN exato do próprio produto (garantia — não depende de mesmaApresentacao)
-        const eanLimpo = (product.ean || "").replace(/\D/g, "");
-        const produtoExato = produtosRaw.find((p: any) => (p.ean || "").replace(/\D/g, "") === eanLimpo);
         if (produtoExato) {
           estoqueMesmoEan = produtoExato.qtd_estoque || 0;
           const labExato = produtoExato.nom_laborat || produtoExato.laboratorio || "Desconhecido";
