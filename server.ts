@@ -664,16 +664,31 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const dcbRef1 = product.cod_dcb || produtosRaw[0]?.cod_dcb || null;
         const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao || null;
         const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
-        const produtos = produtosFiltered.filter((p: any) => mesmaApresentacao(productComDcb, p));
 
-        estoqueTotal = produtos.reduce((sum: number, p: any) => sum + (p.qtd_estoque || 0), 0);
-        
+        // Busca direta pelo EAN exato do próprio produto (garantia — não depende de mesmaApresentacao)
         const eanLimpo = (product.ean || "").replace(/\D/g, "");
-        estoqueMesmoEan = produtos
-          .filter((p: any) => (p.ean || "").replace(/\D/g, "") === eanLimpo)
-          .reduce((sum: number, p: any) => sum + (p.qtd_estoque || 0), 0);
+        const produtoExato = produtosRaw.find((p: any) => (p.ean || "").replace(/\D/g, "") === eanLimpo);
+        if (produtoExato) {
+          estoqueMesmoEan = produtoExato.qtd_estoque || 0;
+          const labExato = produtoExato.nom_laborat || produtoExato.laboratorio || "Desconhecido";
+          estoquePorLaboratorio = [{ nome: labExato, quantidade: estoqueMesmoEan, eans: [produtoExato.ean] }];
+        }
+
+        // Filtro de apresentação: outros candidatos (EAN diferente) passam por mesmaApresentacao
+        const produtos = produtosFiltered.filter((p: any) => {
+          const pEan = (p.ean || "").replace(/\D/g, "");
+          if (pEan === eanLimpo) return false; // próprio produto já processado acima
+          return mesmaApresentacao(productComDcb, p);
+        });
+
+        // estoqueTotal = próprio EAN + grupo de apresentação
+        estoqueTotal = estoqueMesmoEan + produtos.reduce((sum: number, p: any) => sum + (p.qtd_estoque || 0), 0);
         
+        // Adicionar laboratórios dos outros candidatos ao labMap
         const labMap = new Map<string, { quantidade: number; eans: string[] }>();
+        for (const entry of estoquePorLaboratorio) {
+          labMap.set(entry.nome, { quantidade: entry.quantidade, eans: [...entry.eans] });
+        }
         for (const p of produtos) {
           const lab = p.nom_laborat || p.laboratorio || "Desconhecido";
           const existing = labMap.get(lab) || { quantidade: 0, eans: [] };
