@@ -627,6 +627,9 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
   let estoquePorLaboratorio: { nome: string; quantidade: number; eans: string[] }[] = [];
   let ultimaCompra: any = null;
 
+  // Accumulate ALL valid SmartPed conditions for breakdown table in the UI
+  const smartPedCondicoesTodas: any[] = [];
+
   if (product.ean) {
     const baseUrl = process.env.SMARTPED_PRODUCTION_URL || "https://api.smartped.com.br";
     const token = process.env.SMARTPED_PRODUCTION_TOKEN;
@@ -1020,6 +1023,22 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           console.log(`[ANALISE-SKIP] dist=${distName}(${c.CodDist}) preco=${precoLiquido} estRaw=${estoqueRaw} estParsed=${estoqueDist} cond=${c.Condicao} — filtrado`);
           continue;
         }
+
+        // Capture full breakdown for every valid condition (raw field extraction mirrors server.ts:9056-9061)
+        const rawPreco = c.Preco !== undefined ? c.Preco : (c.preco !== undefined ? c.preco : (c.Preco_idi !== undefined ? c.Preco_idi : precoLiquido));
+        const rawDesconto = c.Desconto !== undefined ? c.Desconto : (c.desconto !== undefined ? c.desconto : 0);
+        const rawDescExtra = c.DescExtra !== undefined ? c.DescExtra : (c.descExtra !== undefined ? c.descExtra : 0);
+        const rawValorST = c.ValorST !== undefined ? c.ValorST : (c.ValorSt !== undefined ? c.ValorSt : (c.valorST !== undefined ? c.valorST : (c.valorSt !== undefined ? c.valorSt : 0)));
+        smartPedCondicoesTodas.push({
+          distribuidora: distName,
+          ean: c._sourceEan || "",
+          laboratorio: c._sourceLab || "",
+          precoBruto: Number(rawPreco) || 0,
+          desconto: Number(rawDesconto) || 0,
+          descExtra: Number(rawDescExtra) || 0,
+          valorST: Number(rawValorST) || 0,
+          precoLiquido: Number(precoLiquido) || 0,
+        });
         
         // Melhor FIXA (padrão)
         if (isFixa) {
@@ -1043,6 +1062,9 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           }
         }
       }
+      
+      // Sort breakdown by precoLiquido ascending (cheapest first)
+      smartPedCondicoesTodas.sort((a: any, b: any) => a.precoLiquido - b.precoLiquido);
       
       // Usar preço FIXA se disponível; senão, usar qualquer condição com estoque
       if (melhorPrecoFixa !== null) {
@@ -1167,6 +1189,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
     precoCalculadoViaDesconto: product.precoCalculadoViaDesconto || false,
     discountPercent: discountPercent || 0,
     bestTierPrice: Math.round(bestTierPrice * 100) / 100,
+    smartPedCondicoesTodas,
   };
 }
 
@@ -1420,6 +1443,10 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
               const smartPedBaseUrl = (process.env.SMARTPED_PRODUCTION_URL || "https://api.smartped.com.br").replace(/\/$/, "");
               const wildcards = getWildcardQueries(product.description);
               if (wildcards.length > 0 && smartPedToken) {
+                // Extrair dosagem do produto original para filtro de concentração (mesmo padrão de analisarUmProduto:809-820 e DCB:1377-1402)
+                const origDosageMatch = (product.description || "").match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                const origDosage = origDosageMatch ? origDosageMatch[1].toLowerCase() : null;
+
                 const smartPedEans = new Set<string>();
                 for (const wildcard of wildcards.slice(0, 3)) {
                   try {
@@ -1433,7 +1460,17 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
                       const produtos = buscarData?.Retorno || [];
                       for (const prod of Array.isArray(produtos) ? produtos : []) {
                         const ean = cleanEan(prod.Ean || prod.ean || prod.CodBarra || "");
-                        if (ean && ean.length >= 8) smartPedEans.add(ean);
+                        if (!ean || ean.length < 8) continue;
+                        // Filtro de dosagem: comparar dosagem extraída de prod.Descricao com a do produto original
+                        // Mesma regra de tolerância dos outros filtros: se candidato não tem dosagem extraível, permite
+                        if (origDosage) {
+                          const prodDesc = (prod.Descricao || prod.descricao || "").toLowerCase();
+                          const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
+                          if (prodDosageMatch && prodDosageMatch[1] !== origDosage) {
+                            continue; // dosagem diferente — pular este EAN
+                          }
+                        }
+                        smartPedEans.add(ean);
                       }
                     }
                   } catch {}

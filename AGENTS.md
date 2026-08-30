@@ -38,6 +38,7 @@
 | 28 | Falhas de escrita no Turso 100% silenciosas (2 camadas) | `saveItemManual` tinha `catch {}` interno que engolia qualquer erro do INSERT, e o endpoint nunca checava o retorno — sempre respondia sucesso mesmo com falha real. Os 3 call sites do frontend (useManualSearch.ts, App.tsx x2) também nunca checavam `response.ok` — `fetch()` só rejeita em falha de rede, não em HTTP 4xx/5xx. Fix: catch agora loga e relança (throw) no backend; frontend agora checa `response.ok` e loga o corpo do erro real | server/database.ts, src/hooks/useManualSearch.ts, src/App.tsx |
 | 29 | Excluir/editar item manual não atualizava a tela sem F5 | `useMemo` de `filteredItems` (DailyItemsView.tsx) usa `manuaisAdicionados` no cálculo mas não listava como dependência — exclusão/edição atualizava o estado por baixo mas a lista renderizada só recalculava com F5. Fix: adicionar `manuaisAdicionados` às dependências | src/components/DailyItemsView.tsx |
 | 30 | Data/hora de itens confirmados sempre mostrava "agora" | `/api/pedido-retorno` (chamado a cada 2s durante faturamento ativo) nunca salvava nada no Turso — só `/api/itens-confirmados-do-dia` salvava, e só depois, incidentalmente, quando alguém abria a tela "Itens do Dia". O `created_at` refletia "quando a tela foi aberta depois", não o momento real do faturamento. Fix: `/api/pedido-retorno` agora salva TODOS os itens do retorno (faturados e não confirmados) no momento real, via `saveItensConfirmadosBatch` — ON CONFLICT preserva `created_at` em chamadas repetidas | server.ts (~linha 7529, dentro de /api/pedido-retorno) |
+| 31 | Cross-contamination SmartPed: PASSO 1.5 sem filtro de dosagem | Busca wildcard `Produtos/Buscar` (wildcards.slice(0,3) incluia genérico "MUCOSOLVAN%XAROPE") retornava EAN de formulação diferente (PED 15MG vs AD 30MG mesmo DCB). EAN contaminado entrava em `smartPedEans` → `eanList` → `analisarUmProduto` → `Condicoes/Ean`, misturando preço/estoque adulto com pediátrico. REF-FILTER-EAN não pegava (EANs SmartPed não estão no ERP). Fix: aplicar mesmo filtro `origDosage` (regex `/(\d+)\s*(mg|mcg|g|ml|ui|%)/i` em `prod.Descricao`) que já existia em `eansGrupo` (linhas 1377-1402) e PASSO EXTRA `analisarUmProduto` (linhas 809-820) ANTES de adicionar ao `smartPedEans` | server.ts:1413-1451 (PASSO 1.5) |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
 
@@ -401,6 +402,7 @@ Objeto bruto de promoção (vindo do WhatsApp/fornecedor externo) só tem `{desc
 | `eanList` | precificação SmartPed | REF-FILTER-EAN (~1505) + unidade | **Sim** (398b471, 475531b) |
 | `eanListFiltrado` | comprasHistorico/"Seus Preços" | `mesmaApresentacao` (~1553) | **Sim** (dd609ea) |
 | `produtos` (em `analisarUmProduto`) | estoquePorLaboratorio | `mesmaApresentacao` ou pulado se marca | **Sim** (35e3bea, cdb7ced) |
+| `smartPedEans` / `eanList` (PASSO 1.5) | precificação SmartPed (wildcards) | **Faltava filtro de dosagem** — corrigido em #31 | **Sim** (implícito: `if (ean === product.ean)` no filter) |
 
 ### Regra permanente
 
