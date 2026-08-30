@@ -85,6 +85,49 @@
 
 ---
 
+## Dois fluxos de matching independentes — NÃO confundir
+
+> Documentado em 2026-08-30. São dois fluxos completamente independentes, com necessidades diferentes de matching. Misturar eles causa bugs (ex: aplicar lógica de "preço SmartPed" no "estoque por laboratório" ou vice-versa).
+
+### Fluxo 1: Estoque por Laboratório (Ferramentinhas, `similares/{ean}`)
+
+**O que é:** estoque da PRÓPRIA farmácia. O EAN da promoção bate 1:1 com o produto real do estoque da farmácia.
+
+**Fonte:** API Ferramentinhas (`similares/{ean}`) — retorna o produto e seus similares no catálogo local da farmácia.
+
+**Regra de matching:**
+- **Referência (marca própria):** EAN exato já basta. NÃO buscar "similares" — cada referência é um produto único, sem equivalente de outro fabricante fazendo sentido somar. Quando `catProduct === "marca"`, pular `mesmaApresentacao()` e usar só `estoqueMesmoEan`.
+- **Genérico/Similar:** buscar similares via `mesmaApresentacao()` (DCB, dosagem, forma, unidade). Múltiplos fabricantes fazem o "mesmo" produto, faz sentido somar estoque de todos.
+
+**Cuidado:** a busca `similares/{ean}` é auto-inclusiva (retorna o próprio EAN entre os candidatos). O código já lida com isso via busca direta por EAN exato (`produtoExato`) ANTES de rodar `mesmaApresentacao()`.
+
+### Fluxo 2: Melhor Preço SmartPed (API de distribuidor terceiro)
+
+**O que é:** menor preço encontrado entre os distribuidores da SmartPed (CervoSul, ANB, Profarma, etc.).
+
+**Fonte:** API SmartPed (`Condicoes/Ean`, `Condicoes/Molecula`, `Produtos/Buscar`).
+
+**Regra de matching:**
+- O EAN pode ser DIFERENTE do EAN real do produto mesmo sendo fisicamente o mesmo item (cadastro do distribuidor pode divergir).
+- Por isso essa busca já usa wildcard/descrição quando o EAN exato não bate (`SMARTPED-BUSCAR` com wildcards) — isso é necessário e correto, inclusive pra item de referência.
+- **NÃO simplificar** essa busca pra exigir EAN exato — o cadastro da SmartPed é inconsistente entre distribuidores.
+
+### Por que são independentes
+
+| Aspecto | Estoque (Ferramentinhas) | Preço (SmartPed) |
+|---------|-------------------------|------------------|
+| Fonte | Catálogo local da farmácia | API de distribuidores terceiros |
+| EAN | Confiável (1:1 com produto real) | Pode divergir (cadastro inconsistente) |
+| Matching | EAN exato (referência) ou `mesmaApresentacao` (genérico) | Wildcard/descrição (não exige EAN exato) |
+| Referência | NÃO busca similares | USA wildcards (necessário) |
+| Genérico | Busca similares via `mesmaApresentacao` | USA wildcards (necessário) |
+
+### Regra pra futuras correções
+
+> **Ao alterar lógica de matching, confirmar QUAL dos dois fluxos está sendo afetado.** Uma mudança no `mesmaApresentacao()` afeta estoque (Fluxo 1) mas NÃO afeta preço SmartPed (Fluxo 2). Uma mudança no wildcards da SmartPed afeta preço mas NÃO afeta estoque. Nunca "simplificar" um fluxo baseado no comportamento do outro.
+
+---
+
 ## Sino de Observacao (ObservationBell) — arquitetura
 
 **Proposito:** mostrar um aviso visual (`nom_obsvenda`, vindo da Ferramentinhas) quando um produto tem alguma observacao de venda cadastrada (ex: restricao, nota do farmaceutico). Nao faz nenhum calculo, e so exibicao.
