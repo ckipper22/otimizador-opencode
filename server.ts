@@ -737,16 +737,54 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
       console.log(`[ANALISE] historico erro: ${err.message} para EAN ${product.ean}`);
     }
 
-    // Buscar melhor preco SmartPed — Ean como fonte primaria + Molecula para QtdMin
+    // Buscar melhor preco SmartPed — 2 passos: EAN próprio primeiro, depois expansão
     try {
       const smartPedEanUrl = baseUrl.replace(/\/$/, "") + "/api/Condicoes/Ean";
       const smartPedMolUrl = baseUrl.replace(/\/$/, "") + "/api/Condicoes/Molecula";
       
-      // Usar todos os EANs do grupo DCB se disponível, senão só o EAN original
-      let eansParaBuscar = (allEans && allEans.length > 0) ? allEans : [product.ean];
+      // === PASSO 1: Tentar EAN próprio primeiro ===
+      let passo1Sucesso = false;
+      if (product.ean) {
+        try {
+          const ownRes = await fetch(smartPedEanUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify({ Token: token, parametros: { CnpjCLi: cnpj, Ean: product.ean, AceitaOntem: 1 } })
+          });
+          if (ownRes.ok) {
+            const ownData = await ownRes.json();
+            const itens = ownData?.Retorno?.itens || ownData?.Retorno?.Itens || ownData?.itens || ownData?.Itens || [];
+            const distsRaw = ownData?.Retorno?.dists || ownData?.Retorno?.Dists || [];
+            for (const d of distsRaw) {
+              if (d.CodDist && d.NomeDist) DISTRIBUIDORAS_DYNAMIC_CACHE[d.CodDist] = d.NomeDist;
+            }
+            // Verificar se tem condições válidas (preço + estoque)
+            for (const entry of itens) {
+              const conditions = entry.Condicoes || entry.condicoes || [];
+              for (const c of conditions) {
+                const preco = c.Pliquido || c.PliquidoUni || c.Preco || c.preco || 0;
+                const estoque = parseInt(String(c.Estoque ?? c.estoque ?? 0), 10) || 0;
+                if (preco > 0 && estoque > 0) {
+                  passo1Sucesso = true;
+                  break;
+                }
+              }
+              if (passo1Sucesso) break;
+            }
+          }
+        } catch {}
+      }
       
-      // PASSO EXTRA: Se poucos EANs, buscar mais via Ferramentinhas por descrição
-      if (eansParaBuscar.length <= 2 && product.description) {
+      if (passo1Sucesso) {
+        console.log(`[ANALISE] SmartPed PASSO 1: EAN próprio ${product.ean} tem condições válidas — usando só EAN próprio`);
+      }
+
+      // Usar todos os EANs do grupo DCB se disponível, senão só o EAN original
+      // Se PASSO 1 sucesso, usar só [product.ean] (não expandir)
+      let eansParaBuscar = passo1Sucesso ? [product.ean] : ((allEans && allEans.length > 0) ? allEans : [product.ean]);
+      
+      // PASSO EXTRA: Se poucos EANs, buscar mais via Ferramentinhas por descrição (só se PASSO 1 falhou)
+      if (!passo1Sucesso && eansParaBuscar.length <= 2 && product.description) {
         try {
           const descLimpa = (product.description || "")
             .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "")
