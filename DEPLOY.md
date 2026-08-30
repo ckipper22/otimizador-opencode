@@ -134,10 +134,12 @@ $version = "v" + $panambiTime.ToString("yyyy-MM-dd-HHmm")
 Write-Host "Versao: $version"
 
 # Deploy
-gcloud run deploy smartped-cli --source . --region us-east1 --allow-unauthenticated --port 8080 --memory 1Gi --env-vars-file cloud-env.yaml
+gcloud run deploy smartped-cli --source . --region us-east1 --allow-unauthenticated --port 8080 --memory 1Gi --env-vars-file cloud-env.yaml --no-cpu-throttling
 ```
 
 **⚠️ NUNCA usar `--set-env-vars`** — ele SUBSTITUI todas as variáveis, apagando as que não foram listadas. Sempre usar `--env-vars-file cloud-env.yaml` que contém TODAS as variáveis.
+
+**`--no-cpu-throttling`:** Obrigatório. Sem isso, a CPU é liberada assim que a resposta HTTP sai — promessas em background (como `analisarFornecedorEmBackground`) congelam e nunca completam.
 
 **Versionamento:** Formato `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). A versão aparece: (1) no header do app, (2) no `/api/health`, (3) no `cloud-env.yaml` (env var `APP_VERSION`).
 
