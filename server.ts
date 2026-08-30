@@ -663,29 +663,28 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           return cat !== "marca"; // genérico/similar: exclui referências
         });
 
-        // Filtro de apresentação (mesmo padrão do SICF server.ts:3610-3640)
-        // Enriquecer product com DCB: usar campos do product (já vem do frontend) como prioridade,
-        // só cair pro produtosRaw[0] se product não trouxer esses campos
-        const dcbRef1 = product.cod_dcb || produtosRaw[0]?.cod_dcb || null;
-        const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao || null;
-        const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
         if (produtoExato) {
           estoqueMesmoEan = produtoExato.qtd_estoque || 0;
           const labExato = produtoExato.nom_laborat || produtoExato.laboratorio || "Desconhecido";
           estoquePorLaboratorio = [{ nome: labExato, quantidade: estoqueMesmoEan, eans: [produtoExato.ean] }];
         }
 
-        // Filtro de apresentação: outros candidatos (EAN diferente) passam por mesmaApresentacao
-        const produtos = produtosFiltered.filter((p: any) => {
-          const pEan = (p.ean || "").replace(/\D/g, "");
-          if (pEan === eanLimpo) return false; // próprio produto já processado acima
-          return mesmaApresentacao(productComDcb, p);
-        });
+        // Referência (marca): NÃO buscar similares — não existe "outro fabricante" pra somar
+        // Genérico/similar: buscar outros candidatos via mesmaApresentacao
+        let produtos: any[] = [];
+        if (catProduct !== "marca") {
+          const dcbRef1 = product.cod_dcb || produtosRaw[0]?.cod_dcb || null;
+          const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao || null;
+          const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
+          produtos = produtosFiltered.filter((p: any) => {
+            const pEan = (p.ean || "").replace(/\D/g, "");
+            if (pEan === eanLimpo) return false;
+            return mesmaApresentacao(productComDcb, p);
+          });
+        }
 
-        // estoqueTotal = próprio EAN + grupo de apresentação
         estoqueTotal = estoqueMesmoEan + produtos.reduce((sum: number, p: any) => sum + (p.qtd_estoque || 0), 0);
         
-        // Adicionar laboratórios dos outros candidatos ao labMap
         const labMap = new Map<string, { quantidade: number; eans: string[] }>();
         for (const entry of estoquePorLaboratorio) {
           labMap.set(entry.nome, { quantidade: entry.quantidade, eans: [...entry.eans] });
