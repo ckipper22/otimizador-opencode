@@ -91,7 +91,7 @@ export function useManualSearch({
           margemMinima: config.margemMinima,
           eanMap,
           cortesRecentes,
-          onlyExactEan: isNumeric,
+          onlyExactEan: false,
           skipMolecula: true
         })
       });
