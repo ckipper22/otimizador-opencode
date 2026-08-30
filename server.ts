@@ -1482,8 +1482,9 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
             }
             const beforeRefFilter = erpEans.length;
             erpEans = erpEans.filter(ean => {
+              if (ean === product.ean) return true; // próprio EAN sempre fica
               const cat = eanCategoriaMap.get(ean);
-              return !cat || cat !== "marca"; // se não tem info, incluir (fallback seguro)
+              return !cat || cat !== "marca"; // exclui referências de OUTROS produtos
             });
             if (beforeRefFilter !== erpEans.length) {
               console.log(`[REF-FILTER] ${beforeRefFilter} erpEans → ${erpEans.length} após excluir Referência/Ético (${beforeRefFilter - erpEans.length} removidos)`);
