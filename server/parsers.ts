@@ -498,7 +498,7 @@ const FORMAS_FARMaceuticas: string[][] = [
   ["ENV", "ENVELOPE"], ["CP", "COMPRIMIDO"], ["CAP", "CAPSULA"], ["SH", "SHAMPOO"],
   ["CR", "CREME"], ["DERM"], ["GEL"], ["LOCAO", "LOÇÃO"],
   ["POM", "POMADA"], ["SOL", "SOLUCAO"], ["AER", "AEROSOL"],
-  ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS"], ["INJ", "INJETAVEL"],
+  ["AMP", "AMPOLA"], ["SUSP", "SUSPENSAO"], ["GTS", "GOTAS"], ["INJ", "INJETAVEL"],
   ["SACHET"], ["FR", "FRASCO"]
 ];
 
@@ -564,7 +564,15 @@ export function mesmaApresentacao(a: any, b: any): boolean {
   if (temDcbA && temDcbB) {
     // Ambos têm DCB+concentração → comparar por estrutura (catálogo vs catálogo)
     if (ca.dcbConcentracao !== cb.dcbConcentracao) return false;
-    // DCB bate → mesma apresentação confirmada (DCB é o identificador mais forte)
+    // DCB bata → verificar complementares se disponíveis
+    // Unidade: se ambos têm, comparar (gotas=1 vs comprimidos=24 = diferente)
+    if (ca.unidadeApresentacao !== null && cb.unidadeApresentacao !== null) {
+      if (ca.unidadeApresentacao !== cb.unidadeApresentacao) return false;
+    }
+    // Forma farmacêutica: se product tem forma, candidato também deve ter (conservador)
+    if (ca.formaFarmaceutica && !cb.formaFarmaceutica) return false;
+    if (!ca.formaFarmaceutica && cb.formaFarmaceutica) return false;
+    if (ca.formaFarmaceutica && cb.formaFarmaceutica && ca.formaFarmaceutica !== cb.formaFarmaceutica) return false;
     // Trava de liberação prolongada ainda vale
     if (ca.liberacaoProlongada !== cb.liberacaoProlongada) return false;
     return true;
