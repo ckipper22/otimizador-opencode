@@ -730,19 +730,6 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           laboratorio: eanToLabMap.get(product.ean) || "",
         }));
 
-        // DEBUG: log temporário pra investigar comprasHistorico
-        const _dbgEan = (product.ean || "").replace(/\D/g, "");
-        if (_dbgEan === "7891058022136" || _dbgEan === "7891058020316") {
-          console.log(`[DEBUG-COMPRAS] ean=${_dbgEan} desc=${(product.description||"").substring(0,40)}`);
-          console.log(`[DEBUG-COMPRAS] historicoData.compras.length=${historicoData?.compras?.length || 0}`);
-          console.log(`[DEBUG-COMPRAS] comprasHistorico.length=${comprasHistorico.length}`);
-          if (comprasHistorico.length > 0) {
-            console.log(`[DEBUG-COMPRAS] primeira: data=${comprasHistorico[0].data} fornecedor=${comprasHistorico[0].fornecedor} qtd=${comprasHistorico[0].quantidade}`);
-            console.log(`[DEBUG-COMPRAS] ultima: data=${comprasHistorico[comprasHistorico.length-1].data} fornecedor=${comprasHistorico[comprasHistorico.length-1].fornecedor}`);
-          }
-        }
-        // FIM DEBUG
-
         if (comprasHistorico.length > 0) {
           ultimaCompra = comprasHistorico[0];
         }
@@ -1565,24 +1552,6 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
                 if (!pProd) continue;
                 if (mesmaApresentacao(product, pProd)) eanListFiltrado.push(ean);
               }
-
-              // DEBUG: log temporário pra investigar eanListFiltrado
-              const _dbgEan2 = (product.ean || "").replace(/\D/g, "");
-              if (_dbgEan2 === "7891058022136" || _dbgEan2 === "7891058020316") {
-                console.log(`[DEBUG-COMPRAS] erpEans=${erpEans.length} eanListFiltrado=${eanListFiltrado.length}`);
-                console.log(`[DEBUG-COMPRAS] erpEans: [${erpEans.slice(0,5).join(", ")}${erpEans.length > 5 ? "..." : ""}]`);
-                console.log(`[DEBUG-COMPRAS] eanListFiltrado: [${eanListFiltrado.slice(0,5).join(", ")}${eanListFiltrado.length > 5 ? "..." : ""}]`);
-                for (const ean of erpEans.slice(0, 3)) {
-                  const pProd = eanToProduto.get(ean);
-                  if (pProd) {
-                    const clsProd = classificarProduto(product);
-                    const clsCand = classificarProduto(pProd);
-                    const res = mesmaApresentacao(product, pProd);
-                    console.log(`[DEBUG-COMPRAS]   ean=${ean} mesmaApresentacao=${res} | product.unidade=${clsProd.unidadeApresentacao} cand.unidade=${clsCand.unidadeApresentacao} product.dcb=${clsProd.dcbConcentracao} cand.dcb=${clsCand.dcbConcentracao}`);
-                  }
-                }
-              }
-              // FIM DEBUG
 
               // Somar vendas dos EANs filtrados e dividir por meses reais
               const vendasBatch = await fetchVendasResumoBatch(eanListFiltrado);
@@ -4264,12 +4233,8 @@ app.post("/api/optimize", async (req, res) => {
     let _tFallbackSimilares = 0, _cFallbackSimilares = 0;
     const _f4Start = Date.now();
     for (const item of parsedItems) {
-      // ===== DEBUG: Rastrear caminho WhatsApp =====
-      const waMatch = whatsappItemsMap.get(item.lineIndex);
-      if (item.laboratorio && (item.laboratorio || "").toUpperCase().includes("EUROFARMA")) {
-        logs.push(`[DEBUG-WA] lineIndex=${item.lineIndex}, lab="${item.laboratorio}", desc="${item.descricao}", waMatch=${!!waMatch}, mapSize=${whatsappItemsMap.size}`);
-      }
       // ===== WHATSAPP: Item com regra de laboratório → vai pro WhatsApp com dados SmartPed =====
+      const waMatch = whatsappItemsMap.get(item.lineIndex);
       if (waMatch) {
         const { rule } = waMatch;
         const qtdNum = parseFloat(item.qtd.replace(",", "."));
@@ -4561,28 +4526,7 @@ app.post("/api/optimize", async (req, res) => {
       });
       const deduplicatedAlternativesForRupture = Array.from(uniqueRuptureMap.values());
 
-      logs.push(`[DEBUG-ALTS] EAN ${item.ean} | allAlternativesForRupture: ${allAlternativesForRupture.length} brutos → ${deduplicatedAlternativesForRupture.length} deduplicados`);
-
-      // DEBUG: Logar mainItemPedido e primeiros substitutos para debug de EQUIV-FILTER
-      if (combinedSubstitutos.length > 3) {
-        const mip = mainItemPedido || {};
-        const mipTipo = String(mip.TipoItem || mip.tipoItem || "").trim().toUpperCase();
-        const isRef = ["REFERENCIA","REFERÊNCIA","ETICO","ÉTICO","R","E"].includes(mipTipo);
-        logs.push(`[EQUIV-DEBUG] EAN ${item.ean} | mainItemPedido: Ean=${mip.Ean||mip.ean||"?"} Desc="${(mip.Descricao||mip.descricao||"?").substring(0,60)}" Tipo=${mipTipo||"??"} isRef=${isRef} Lab="${(mip.Laboratorio||mip.laboratorio||"?").substring(0,30)}"`);
-        let passCount = 0;
-        for (let i = 0; i < Math.min(5, combinedSubstitutos.length); i++) {
-          const s = combinedSubstitutos[i];
-          const sEan = cleanEan(s.Ean || s.ean || "");
-          const sDesc = (s.Descricao || s.descricao || "?").substring(0, 60);
-          const sTipo = s.TipoItem || s.tipoItem || "?";
-          const passa = validateSwapEquivalence(mainItemPedido, s);
-          if (passa) passCount++;
-          logs.push(`[EQUIV-DEBUG]   sub[${i}] EAN=${sEan} Desc="${sDesc}" Tipo=${sTipo} → ${passa ? "PASSA" : "BLOQUEADO"}`);
-        }
-        logs.push(`[EQUIV-DEBUG] Resultado: ${passCount}/${Math.min(5, combinedSubstitutos.length)} dos primeiros passaram`);
-      }
-
-      // Filtrar estritamente combinedSubstitutos com o Hard Block de equivalÃªncia
+      // Filtrar estritamente combinedSubstitutos com o Hard Block de equivalência
       const preFilterCount = combinedSubstitutos.length;
       combinedSubstitutos = combinedSubstitutos.filter((s: any) => validateSwapEquivalence(mainItemPedido, s));
 
@@ -4793,8 +4737,6 @@ app.post("/api/optimize", async (req, res) => {
           return a.preco - b.preco;
         });
 
-        logs.push(`[DEBUG-ALTS] EAN ${item.ean} | finalAlternatives (pós-filtro): ${finalAlternatives.length} itens | substitutos brutos: ${substitutosRaw.length} | condicoes: ${condicoesRaw.length}`);
-        
         // LOG CIRÚRGICO: Detalhar cada alternativa final para rastrear estoque fictício
         if (finalAlternatives.length > 0) {
           const altDetails = finalAlternatives.map((a: any) => {
@@ -4842,8 +4784,6 @@ app.post("/api/optimize", async (req, res) => {
 
         // Quando o item original NÃO tem estoque (ruptura), salvar substitutos brutos como alternativas
         const rawSubstitutosForAlternatives = deduplicatedAlternativesForRupture;
-
-        logs.push(`[DEBUG-ALTS] EAN ${item.ean} | rawSubstitutosForAlternatives: ${rawSubstitutosForAlternatives.length} itens | substitutos (pós-filtro): ${substitutos.length} | finalAlternatives (pré-build): aguardando...`);
 
         const effectiveOriginalHasStock = !exigirEstoque || originalHasStock;
 
@@ -6167,7 +6107,6 @@ condicoesEnriched = condicoes.map((c: any) => {
                 return !isNotFoundName(d) && (a.codDist || 0) > 0;
               });
               const cppdMissing = chosen.filter((a: any) => !a.codProdutoDist).length;
-              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO SUCESSO | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${filtered.length} alternativas (de ${chosen.length}) | semCodProdutoDist=${cppdMissing}`);
               return filtered.length > 0 ? filtered : chosen;
             })()
           });
@@ -6361,7 +6300,6 @@ condicoesEnriched = condicoes.map((c: any) => {
                 return !isNotFoundName(d) && (a.codDist || 0) > 0;
               });
               const cppdMissing = chosen.filter((a: any) => !a.codProdutoDist).length;
-              logs.push(`[DEBUG-ALTS] EAN ${item.ean} | CAMINHO MANTER ORIGINAL | finalAlternatives=${finalAlternatives.length} | rawSubstitutos=${rawSubstitutosForAlternatives.length} | substitutos=${substitutos.length} → RESULTADO: ${filtered.length} alternativas (de ${chosen.length}) | semCodProdutoDist=${cppdMissing}`);
               return filtered.length > 0 ? filtered : chosen;
             })()
           });
