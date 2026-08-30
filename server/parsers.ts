@@ -515,7 +515,7 @@ export function classificarProduto(item: any): ClassificacaoProduto {
     if (m) unidade = parseInt(m[1], 10);
   }
   if (unidade === null && desc) {
-    const m = desc.match(/(\d+)\s*(?:CP|COMP|CAPS|CAP|DRG|BL|AMB|AMP|SACHET|ENVEL|UN)\b/);
+    const m = desc.match(/(\d+)\s*(?:CP|CPR|COMP|CAPS|CAP|DRG|BL|AMB|AMP|SACHET|ENVEL|UN)\b/);
     if (m) unidade = parseInt(m[1], 10);
   }
 

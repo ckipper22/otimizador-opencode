@@ -662,28 +662,6 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const dcbRef1 = product.cod_dcb || produtosRaw[0]?.cod_dcb || null;
         const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao || null;
         const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
-
-        // DEBUG: log temporário pra investigar estoquePorLaboratorio vazio
-        const _debugDesc = (product.description || product.produto || "").toUpperCase();
-        if (_debugDesc.includes("NIMESULIDA") || _debugDesc.includes("OMEPRAZOL")) {
-          console.log(`[DEBUG-APRES] product: ${product.description}`);
-          console.log(`[DEBUG-APRES] productComDcb.cod_dcb=${productComDcb.cod_dcb}, cod_concentracao=${productComDcb.cod_concentracao}`);
-          console.log(`[DEBUG-APRES] produtosRaw.length=${produtosRaw.length}`);
-          if (produtosRaw.length > 0) {
-            for (const [i, p] of produtosRaw.slice(0, 5).entries()) {
-              console.log(`[DEBUG-APRES]   produtosRaw[${i}]: ean=${p.ean} cod_dcb=${p.cod_dcb} cod_concentracao=${p.cod_concentracao} nom_laborat=${p.nom_laborat} desc=${(p.nom_produto||"").substring(0,50)}`);
-            }
-          }
-          console.log(`[DEBUG-APRES] produtosFiltered.length=${produtosFiltered.length}`);
-          for (const [i, p] of produtosFiltered.slice(0, 10).entries()) {
-            const resultado = mesmaApresentacao(productComDcb, p);
-            const classA = classificarProduto(productComDcb);
-            const classB = classificarProduto(p);
-            console.log(`[DEBUG-APRES]   filtered[${i}]: mesmaApresentacao=${resultado} | ean=${p.ean} dcb=${p.cod_dcb}:${p.cod_concentracao} | product.dcbConc=${classA.dcbConcentracao} prod.dcbConc=${classB.dcbConcentracao} | product.dosagem=${classA.dosagemTexto} prod.dosagem=${classB.dosagemTexto} | product.unidade=${classA.unidadeApresentacao} prod.unidade=${classB.unidadeApresentacao} | product.forma=${classA.formaFarmaceutica} prod.forma=${classB.formaFarmaceutica}`);
-          }
-        }
-        // FIM DEBUG
-
         const produtos = produtosFiltered.filter((p: any) => mesmaApresentacao(productComDcb, p));
 
         estoqueTotal = produtos.reduce((sum: number, p: any) => sum + (p.qtd_estoque || 0), 0);
