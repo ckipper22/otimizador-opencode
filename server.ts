@@ -1436,11 +1436,25 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
             if (beforeRefFilter !== erpEans.length) {
               console.log(`[REF-FILTER] ${beforeRefFilter} erpEans → ${erpEans.length} após excluir Referência/Ético (${beforeRefFilter - erpEans.length} removidos)`);
             }
+
+            // REF-FILTER em eanList: excluir EANs de outros produtos "marca" (referência de OUTRO produto)
+            // Mantém: próprio EAN do produto (mesmo que seja marca) + genéricos/similares
+            if (eanList.length > 1) {
+              const beforeEanListFilter = eanList.length;
+              eanList = eanList.filter(ean => {
+                if (ean === product.ean) return true; // próprio EAN sempre fica
+                const cat = eanCategoriaMap.get(ean);
+                return !cat || cat !== "marca"; // exclui referências de outros produtos
+              });
+              if (beforeEanListFilter !== eanList.length) {
+                console.log(`[REF-FILTER-EAN] ${beforeEanListFilter} eanList → ${eanList.length} após REF-FILTER (${beforeEanListFilter - eanList.length} removidos)`);
+              }
+            }
           }
 
           const erpEanSet = new Set(erpEans);
 
-          // PASSO 2: Analisar com TODOS os EANs do grupo
+          // PASSO 2: Analisar com TODOS os EANs do grupo (filtrados)
           const analysis = await analisarUmProduto(product, cnpj, eanList);
           
           // PASSO 3: Agregar vendas/compras de TODOS os EANs do ERP (com filtro de apresentação)
