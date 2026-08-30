@@ -479,21 +479,21 @@ app.post("/api/external-suppliers", async (req, res) => {
       const oldMap = new Map<string, any>();
       for (const p of oldProducts) {
         const n = normalizeForCompare(p);
-        oldMap.set(`${n.e}_${n.d}_${n.pr}`, p);
+        oldMap.set(`${n.e}_${n.d}_${n.pr}_${n.t}_${n.dt}`, p);
       }
       const newMap = new Map<string, any>();
       for (const p of newProducts) {
         const n = normalizeForCompare(p);
-        newMap.set(`${n.e}_${n.d}_${n.pr}`, p);
+        newMap.set(`${n.e}_${n.d}_${n.pr}_${n.t}_${n.dt}`, p);
       }
       
       const added = newProducts.filter((p: any) => {
         const n = normalizeForCompare(p);
-        return !oldMap.has(`${n.e}_${n.d}_${n.pr}`);
+        return !oldMap.has(`${n.e}_${n.d}_${n.pr}_${n.t}_${n.dt}`);
       });
       const modified = newProducts.filter((p: any) => {
         const n = normalizeForCompare(p);
-        const key = `${n.e}_${n.d}_${n.pr}`;
+        const key = `${n.e}_${n.d}_${n.pr}_${n.t}_${n.dt}`;
         // Modificado se existe algo parecido no old mas com preço ou descrição diferente
         for (const [oldKey, oldP] of oldMap) {
           const on = normalizeForCompare(oldP);
@@ -508,7 +508,7 @@ app.post("/api/external-suppliers", async (req, res) => {
       const changedProducts = [...added, ...modified];
       const removed = oldProducts.filter((p: any) => {
         const n = normalizeForCompare(p);
-        return !newMap.has(`${n.e}_${n.d}_${n.pr}`);
+        return !newMap.has(`${n.e}_${n.d}_${n.pr}_${n.t}_${n.dt}`);
       });
       
       console.log(`[OFERTAS-DIA] Products diff for ${id}: +${added.length} added, ~${modified.length} modified, -${removed.length} removed`);
