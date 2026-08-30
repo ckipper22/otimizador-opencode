@@ -564,6 +564,10 @@ export function mesmaApresentacao(a: any, b: any): boolean {
   if (temDcbA && temDcbB) {
     // Ambos têm DCB+concentração → comparar por estrutura (catálogo vs catálogo)
     if (ca.dcbConcentracao !== cb.dcbConcentracao) return false;
+    // DCB bate → mesma apresentação confirmada (DCB é o identificador mais forte)
+    // Trava de liberação prolongada ainda vale
+    if (ca.liberacaoProlongada !== cb.liberacaoProlongada) return false;
+    return true;
   } else {
     // Pelo menos um sem DCB (ex: item SICF cru) → comparar por regex de dosagem
     const temDosagemA = !!ca.dosagemTexto;
