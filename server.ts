@@ -1441,10 +1441,31 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
             // Mantém: próprio EAN do produto (mesmo que seja marca) + genéricos/similares
             if (eanList.length > 1) {
               const beforeEanListFilter = eanList.length;
+              // Classificação do próprio produto (pra comparar unidade)
+              const clsProduct = classificarProduto(product);
+              // Mapa EAN → produto de allProdutos (pra classificar candidatos)
+              const eanToProduto = new Map<string, any>();
+              for (const p of allProdutos) {
+                const e = (p.ean || p.cod_barra || "").replace(/\D/g, "");
+                if (e) eanToProduto.set(e, p);
+              }
               eanList = eanList.filter(ean => {
                 if (ean === product.ean) return true; // próprio EAN sempre fica
+                // Excluir referências de outros produtos
                 const cat = eanCategoriaMap.get(ean);
-                return !cat || cat !== "marca"; // exclui referências de outros produtos
+                if (cat === "marca") return false;
+                // Excluir candidatos com quantidade/embalagem diferente (30cp vs 60cp)
+                if (clsProduct.unidadeApresentacao !== null) {
+                  const candProduto = eanToProduto.get(ean.replace(/\D/g, ""));
+                  if (candProduto) {
+                    const clsCand = classificarProduto(candProduto);
+                    if (clsCand.unidadeApresentacao !== null && clsCand.unidadeApresentacao !== clsProduct.unidadeApresentacao) {
+                      console.log(`[REF-FILTER-EAN] EAN ${ean} excluído: unidade ${clsCand.unidadeApresentacao} ≠ ${clsProduct.unidadeApresentacao}`);
+                      return false;
+                    }
+                  }
+                }
+                return true;
               });
               if (beforeEanListFilter !== eanList.length) {
                 console.log(`[REF-FILTER-EAN] ${beforeEanListFilter} eanList → ${eanList.length} após REF-FILTER (${beforeEanListFilter - eanList.length} removidos)`);
