@@ -650,10 +650,12 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const estoqueData = await estoqueRes.json();
         const produtosRaw = estoqueData?.produtos || [];
 
-        // Filtro: excluir Referência/Ético (categoria "marca") — só incluir genéricos e similares
+        // Filtro por categoria: referência/ético agrupa com referência/ético; genérico/similar agrupa com genérico/similar
+        const catProduct = resolveCategoria(product);
         const produtosFiltered = produtosRaw.filter((p: any) => {
           const cat = resolveCategoria(p);
-          return cat !== "marca";
+          if (catProduct === "marca") return cat === "marca"; // referência: só outras referências
+          return cat !== "marca"; // genérico/similar: exclui referências
         });
 
         // Filtro de apresentação (mesmo padrão do SICF server.ts:3610-3640)
@@ -663,6 +665,28 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         const concRef1 = product.cod_concentracao || produtosRaw[0]?.cod_concentracao || null;
         const productComDcb = (dcbRef1 && concRef1) ? { ...product, cod_dcb: dcbRef1, cod_concentracao: concRef1 } : product;
         const produtos = produtosFiltered.filter((p: any) => mesmaApresentacao(productComDcb, p));
+
+        // DEBUG #2/#3: log temporário pra MUCOSOLVAN, DORFLEX, ALLEGRA PEDIATRICO
+        const _dbgEan = (product.ean || "").replace(/\D/g, "");
+        const _dbgDesc = (product.description || product.produto || "").toUpperCase();
+        if (_dbgEan === "7891058021566" || _dbgEan === "7891058021573" || _dbgDesc.includes("DORFLEX") || _dbgEan === "7891058004347") {
+          const _cls = classificarProduto(productComDcb);
+          console.log(`[DEBUG-PROD] ean=${_dbgEan} desc=${(product.description||"").substring(0,60)}`);
+          console.log(`[DEBUG-PROD] classificacao: unidade=${_cls.unidadeApresentacao} dcbConc=${_cls.dcbConcentracao} dosagem=${_cls.dosagemTexto} forma=${_cls.formaFarmaceutica} identificador=${_cls.identificadorApresentacao}`);
+          console.log(`[DEBUG-PROD] produtosRaw=${produtosRaw.length} filtered=${produtosFiltered.length} match=${produtos.length} estoqueTotal=${estoqueTotal}`);
+          for (const [i, p] of produtos.slice(0, 5).entries()) {
+            const _cp = classificarProduto(p);
+            console.log(`[DEBUG-PROD]   match[${i}]: ean=${(p.ean||"").replace(/\D/g,"")} dcb=${p.cod_dcb}:${p.cod_concentracao} unidade=${_cp.unidadeApresentacao} dosagem=${_cp.dosagemTexto} estoque=${p.qtd_estoque}`);
+          }
+          if (produtos.length === 0 && produtosFiltered.length > 0) {
+            for (const [i, p] of produtosFiltered.slice(0, 5).entries()) {
+              const _res = mesmaApresentacao(productComDcb, p);
+              const _cp = classificarProduto(p);
+              console.log(`[DEBUG-PROD]   rejeitado[${i}]: mesmaApresentacao=${_res} ean=${(p.ean||"").replace(/\D/g,"")} unidade=${_cp.unidadeApresentacao} dosagem=${_cp.dosagemTexto} forma=${_cp.formaFarmaceutica}`);
+            }
+          }
+        }
+        // FIM DEBUG
 
         estoqueTotal = produtos.reduce((sum: number, p: any) => sum + (p.qtd_estoque || 0), 0);
         
@@ -885,6 +909,18 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
       // Usar array filtrado daqui para frente
       allCondicoes.length = 0;
       allCondicoes.push(...allCondicoesFiltradas);
+
+      // DEBUG #4: log temporário pra ALLEGRA PEDIATRICO EAN 7891058004347
+      const _dbgEan4 = (product.ean || "").replace(/\D/g, "");
+      if (_dbgEan4 === "7891058004347") {
+        console.log(`[DEBUG-EAN] eansParaBuscar: [${eansParaBuscar.join(", ")}]`);
+        console.log(`[DEBUG-EAN] eansDoGrupo: [${Array.from(eansDoGrupo).join(", ")}]`);
+        console.log(`[DEBUG-EAN] allCondicoesFiltradas: ${allCondicoesFiltradas.length}`);
+        for (const c of allCondicoesFiltradas.slice(0, 10)) {
+          console.log(`[DEBUG-EAN]   cond: sourceEan=${c._sourceEan} queryEan=${c._queryEan} dist=${c.CodDist} preco=${c.Pliquido || c.Preco} est=${c.Estoque}`);
+        }
+      }
+      // FIM DEBUG
       
       // Enriquecer QtdMin via Molecula (Ean como parâmetro Ean)
       // IMPORTANTE: Sequencial com delay — mesma razão do Ean (API contamina em paralelo)
