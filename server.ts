@@ -1651,31 +1651,11 @@ app.get("/api/ofertas-dia/analisar", async (req, res) => {
           console.log(`[OFERTAS-DIA] Pulando fornecedor ${supplier.name} (nao analisado, search ativo)`);
           continue;
         }
-        // Analisar agora (sincrono) — so quando nao tem search query
-        console.log(`[OFERTAS-DIA] Analisando fornecedor ${supplier.name}...`);
-        await analisarFornecedorEmBackground(supplier.id, cnpj);
-        
-        // Recarregar dados apos analise
-        const updatedRows = await getExternalSuppliers(cnpj);
-        const updatedSupplier = (updatedRows as any[]).find(r => r.id === supplier.id);
-        if (updatedSupplier?.dados_analise) {
-          try {
-            const dados = typeof updatedSupplier.dados_analise === "string"
-              ? JSON.parse(updatedSupplier.dados_analise)
-              : updatedSupplier.dados_analise;
-            
-            if (dados && dados.ofertas) {
-              for (const oferta of dados.ofertas) {
-                allOfertas.push({
-                  ...oferta,
-                  fornecedorLista: supplier.name,
-                  validade: supplier.validade,
-                  fornecedorId: supplier.id,
-                });
-              }
-            }
-          } catch {}
-        }
+        // Analisar em background (NAO bloquear a resposta) — dados ficarao disponiveis na proxima chamada
+        console.log(`[OFERTAS-DIA] Disparando analise em background para ${supplier.name}...`);
+        analisarFornecedorEmBackground(supplier.id, cnpj).catch(err => {
+          console.error(`[OFERTAS-DIA] Erro na analise em background de ${supplier.name}:`, err.message);
+        });
       }
     }
 
