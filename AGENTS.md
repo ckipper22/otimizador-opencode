@@ -373,6 +373,9 @@ Formato: `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). Gerado no build por `vite.conf
 - **NUNCA** fazer deploy sem autorização explícita do usuário
 - **NUNCA** inventar endpoints — verificar `docs/API_TREE_SMARTPED.md` / `docs/API_TREE_TRIER.md` primeiro
 - **NUNCA** usar `JSON.stringify` para comparar listas (usar `normalizeProducts()`)
+- **NUNCA** modificar a construção da linha final do SICF — formato estrito 7 colunas separadas por `;` (`server.ts:6069-6077`). Inserir arrays, colunas adicionais, espaços, ou falhar na conversão do preço de `.` para o padrão ERP quebra o parser do cliente final. Modificar apenas de forma cirúrgica.
+- **NUNCA** serializar `melhor` de `findBestSubstitute` sem chamar `resolveDistName(melhor, codDist)` antes — o objeto retornado NÃO tem `NomeDist` populado (é o objeto bruto da SmartPed). Ler `melhor.NomeDist` direto resulta em código genérico (ex: "Distribuidor 503") em vez do nome real. Regra já respeitada em `server.ts:6162`, mas frágil — qualquer novo ponto de serialização deve repetir a chamada.
+- **NUNCA** filtrar alternativas do dropdown por EAN quando o item está em ruptura (`!originalHasStock`) — o filtro `sameProductEans` (`server.ts:6018-6036`) só se aplica quando `originalHasStock && !isGeneric`. Em ruptura e genéricos sem ruptura, manter TODAS as alternativas. Remover essa exceção some com ofertas de outras distribuidoras (NeoSul, CervoSul etc.) no ConditionSelector.
 
 ---
 
