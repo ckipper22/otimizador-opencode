@@ -397,7 +397,7 @@ export const EanPromoButton = ({ ean, descricao }: { ean: string; descricao?: st
                 {/* Historico de Compras */}
                 {detail.comprasHistorico && detail.comprasHistorico.length > 0 && (
                   <div className="p-3 bg-gray-50 border border-gray-200">
-                    <p className="text-[10px] text-gray-500 font-sans uppercase mb-2">Seus Precos (Ultimos 6 meses)</p>
+                    <p className="text-[10px] text-gray-500 font-sans uppercase mb-2">Seus Precos (Ultimos 12 meses)</p>
                     <div className="overflow-x-auto">
                       <table className="w-full text-[10px] font-sans">
                         <thead>
