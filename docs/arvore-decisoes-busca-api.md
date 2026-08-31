@@ -5,7 +5,7 @@
 
 ---
 
-## 1. `analisarUmProduto` (server.ts:611)
+## 1. `analisarUmProduto` (server.ts:611–1195)
 
 > Função central de análise de 1 produto. Usada pelo botão "P", background, e batch SICF.
 > Retorna: `melhorPrecoSmartPed`, `estoqueTotal`, `estoquePorLaboratorio`, `vendasMensais`, `comprasHistorico`, `smartPedCondicoesTodas`.
@@ -34,16 +34,14 @@
 - Mapear lab de cada compra via `eanToLabMap` (construído a partir de `estoquePorLaboratorio`)
 - `ultimaCompra = comprasHistorico[0]` (mais recente)
 
-### 1d. Melhor preço SmartPed — 2 passos
-
-#### PASSO 1: EAN próprio
+### 1d. Melhor preço SmartPed — PASSO 1: EAN próprio
 
 - Chamar `POST /api/Condicoes/Ean` com `{ Ean: product.ean, AceitaOntem: 1 }`
 - Se retornar condição válida (`preco > 0` E `estoque > 0`): `passo1Sucesso = true`
 - Se sucesso: `eansParaBuscar = [product.ean]` (NÃO expandir)
 - Se falha: `eansParaBuscar = allEans || [product.ean]` (usar grupo se disponível)
 
-#### PASSO EXTRA (só se PASSO 1 falhou E ≤2 EANs)
+### 1e. PASSO EXTRA (só se PASSO 1 falhou E ≤2 EANs) — server.ts:790–833
 
 - Buscar descrição limpa (remove emojis, genérico, laboratórios conhecidos)
 - Extrair primeira palavra significativa (≥3 chars, não-númerica) → `principioAtivo`
@@ -51,30 +49,119 @@
 - Para cada resultado, checar dosagem (`origDosage2`) — manter só candidatos com mesma dosagem (regex `/(\d+)\s*(mg|mcg|g|ml|ui|%)/i`)
 - Adicionar novos EANs a `eansParaBuscar`
 
-#### PASSO 1.5: Wildcards (só se PASSO 1 falhou)
-
-- Gerar wildcards via `getWildcardQueries(product.description)` (server/parsers.ts:322)
-- **FILTRAR por dosagem extraída da descrição** (`origDosage`) antes de aceitar candidato (evita cross-contamination, ex: MUCOSOLVAN AD 30MG vs PED 15MG)
-- Chamar `POST /api/Produtos/Buscar` com `{ Texto: wildcard }` para cada wildcard
-- Para cada resultado: checar dosagem antes de adicionar a `eansParaBuscar`
-
-#### Batch final: Condicoes/Ean
+### 1f. Batch final: Condicoes/Ean — server.ts:838–892
 
 - Lotes de até 40 EANs separados por vírgula
 - Chamar `POST /api/Condicoes/Ean` com `{ Ean: eanParam, AceitaOntem: 1 }`
 - Filtrar: manter só condições com `_sourceEan` pertencente ao `eansDoGrupo` (evita cross-contamination)
-- **NÃO chamar `Condicoes/Molecula`** — `QtdMin` vem do `Ean` aqui (não do Molecula como no SICF)
+
+### 1g. Complemento: Condicoes/Molecula (via campo Molecula) — server.ts:894–934
+
+- Chamar `POST /api/Condicoes/Molecula` com `{ Molecula: eansParaBuscar[0], ConsideraTipo: 1 }`
+- Usa o EAN como parâmetro `Molecula` (a API aceita EAN nesse campo)
+- Retorna condições individuais **sem agrupamento mestre**
+- Enriquecer `allCondicoes`: adicionar condições com preço+estoque que não existem ainda (dedup por `CodDist + _sourceEan + Condicao`)
+- **Sequencial com delay** — mesma razão do batch Ean (API contamina tabela temporária)
+
+### 1h. Enriquecimento QtdMin via Molecula — server.ts:948–983
+
+- Loop sequencial por EAN em `eansParaBuscar` (com delay de 500ms entre chamadas)
+- Chamar `POST /api/Condicoes/Molecula` com `{ Ean: ean, ConsideraTipo: 1 }`
+- Extrair `QtdMin` de cada condição retornada → popular em `eanMetadata[key]`
+- Pra cada condição em `allCondicoes`: se `QtdMin` ausente/zero, preencher de `eanMetadata`
+- **Sequencial com delay** — API contamina em paralelo (já documentado em AGENTS.md)
+
+### 1i. Retorno
+
+- `allCondicoes` (já filtradas e enriquecidas) → melhor preço por distribuidora
+- `estoqueTotal`, `estoquePorLaboratorio`, `vendasMensais`, `comprasHistorico`
 
 ---
 
-## 2. `analisarFornecedorEmBackground` (server.ts:~1173)
+## 2. `analisarFornecedorEmBackground` (server.ts:1197–~1700)
 
 > Processa fornecedores externos (WhatsApp/Parâmetros) em background.
+> Para cada produto: descobre EANs do grupo, filtra, e chama `analisarUmProduto`.
 
-- Para cada fornecedor: verificar `validade` do fornecedor
-- Para cada produto do fornecedor: verificar `validade` individual (override do fornecedor)
-- Enriquecer objeto bruto com dados do catálogo Ferramentinhas (`produtosRaw.find(ean === product.ean)`)
-- Chamar `analisarUmProduto(product)` — segue árvore 1
+### 2a. Validação e setup
+
+- Carregar fornecedor do Turso via `getExternalSuppliers(cnpj)`
+- Parse de `supplier.products` (JSON array)
+- Se `productsToAnalyze` fornecido: modo INCREMENTAL (só produtos mudados)
+- `CONCURRENCY = 2` (throttle proposital — API Ferramentinhas sobrecarrega)
+
+### 2b. Busca de EANs para produtos sem código de barras — server.ts:1232–1303
+
+- Para cada produto sem `ean`: extrair princípio ativo (remove emojis, genérico, laboratórios)
+- Batch de até 20 termos → `POST /api/produtos/buscar-lote` com `{ itens: batch }`
+- Para cada resultado: filtrar por dosagem (`dosageFilter`) antes de aceitar
+- Se encontrou produto com `qtd_estoque > 0`: atribuir `ean` ao produto
+
+### 2c. PASSO 1: Descobrir EANs do grupo — server.ts:1314–1433
+
+#### Fonte primária: `similares/{ean}`
+
+- Chamar `GET /api/produtos/similares/{product.ean}`
+- Retorna lista de produtos do catálogo local (já filtrados por estoque/atividade)
+
+#### Fallback: `buscar-lote` por texto (só se similares retornou vazio ou sem DCB)
+
+- Limpar descrição (remover emojis, genérico, laboratórios, formas farmacêuticas)
+- Chamar `POST /api/produtos/buscar-lote` com `{ itens: [descCompleta] }`
+- Se vazio: fallback wildcards com `%` (ex: `"ACIDO%FOLICO"`)
+- Para cada resultado: adicionar a `allProdutos`
+
+#### Filtrar por DCB + dosagem — server.ts:1399–1432
+
+- Extrair dosagem do produto original (`origDosage` via regex `/(\d+)\s*(mg|mcg|g|ml|ui|%)/i`)
+- Se `allProdutos` tem DCB do EAN original: filtrar por `cod_dcb === dcb` + dosagem
+- Se DCB não encontrado: filtrar só por dosagem
+- Resultado: `eansGrupo` (produtos do mesmo DCB+dosagem) → `eanList` (EANs únicos)
+
+### 2d. PASSO 1.5: Wildcards SmartPed (`Produtos/Buscar`) — server.ts:1436–1488
+
+> **Nota:** essa lógica NÃO está em `analisarUmProduto` — está aqui porque precisa de `product.description`
+> pra gerar wildcards, e `analisarUmProduto` recebe o objeto enriquecido (não o bruto do WhatsApp).
+
+- Gerar wildcards via `getWildcardQueries(product.description)` (server/parsers.ts:322)
+- Para cada wildcard (máx. 3):
+  - Chamar `POST /api/Produtos/Buscar` com `{ Texto: wildcard }`
+  - **FILTRAR por dosagem** (`origDosage`) antes de aceitar candidato — evita cross-contamination (bug #31, corrigido)
+  - Adicionar EANs válidos a `smartPedOnlyEans` e `eanList`
+- `smartPedOnlyEans` = EANs extras da SmartPed: **só pra pricing, NÃO pra vendas/estoque**
+
+### 2e. REF-FILTER (erpEans) — server.ts:1490–1516
+
+- `erpEans` = EANs de `eansGrupo` que NÃO estão em `smartPedOnlyEans`
+- Fallback: se `eansGrupo` vazio, usar `allProdutos` direto
+- Filtrar: excluir EANs de referência/ético de OUTROS produtos (categoria `"marca"`)
+- **Exceção:** próprio EAN do produto sempre fica (mesmo que seja marca)
+
+### 2f. REF-FILTER-EAN (eanList) — server.ts:1517–1550
+
+- `eanList` = EANs completos (ERP + SmartPed) — usado por `analisarUmProduto`
+- Filtrar:
+  - Excluir referências de outros produtos (`cat === "marca"`)
+  - Excluir candidatos com `unidadeApresentacao` diferente (ex: 30cp vs 60cp)
+  - **Exceção:** próprio EAN do produto sempre fica
+
+### 2g. `eanListFiltrado` pra vendas/compras — server.ts:1580–1591
+
+- Filtrar `erpEans` por `mesmaApresentacao(product, pProd)` — só EANs com mesma apresentação
+- Usar pra `fetchVendasResumoBatch` e compras agregadas
+- **Não confundir** com `eanList` (pricing) — `eanListFiltrado` é só vendas/estoque
+
+### 2h. Chamada final — server.ts:1556
+
+- `analisarUmProduto(product, cnpj, eanList)` — segue árvore 1
+- `eanList` já pré-expandido por tudo acima (DCB + wildcards SmartPed)
+- `analisarUmProduto` recebe `allEans = eanList` e usa como `eansParaBuscar` no PASSO 1
+
+### 2i. Enriquecimento pós-análise — server.ts:1558–~1700
+
+- Agregar vendas de `eanListFiltrado` (Ferramentinhas, com filtro `mesmaApresentacao`)
+- Agregar compras de todos os EANs do ERP
+- Calcular `vendasAgregadas` e `comprasAgregadas` (separados do retorno de `analisarUmProduto`)
 
 ---
 
