@@ -14,6 +14,7 @@
 
 - SEMPRE chamar `fetchVendasResumo(product.ean)` — busca agregada sem limite de linhas
 - Calcular `vendasMensais = totalVendas / mesesDiff`
+- **Limitação externa:** o período de agregação é HARDCODED em 4 meses no servidor da Ferramentinhas (`INTERVAL '4 months'` na query SQL, fonte: `api ferramentinhas.txt` ~linhas 2405-2550). Não aceita parâmetro de meses — diferente de `compras-historico` (que aceita `?meses=X` via `CONFIG.HISTORICO_COMPRAS_MESES=12`). Não é possível estender via parâmetro.
 
 ### 1b. Estoque (Ferramentinhas `similares/{ean}`)
 

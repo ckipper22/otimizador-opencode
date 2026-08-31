@@ -242,11 +242,26 @@ diferentes (resumo rápido vs. auditoria completa).
 
 ### Design: card vs modal
 
-- **Card da lista** — escaneamento rápido de dezenas de ofertas. Mostra
-  apenas uma fileira de chips compactos (SmartPed+EAN, economia%, vendas/mês,
-  estoque, pago antes) logo abaixo do preço. Sem caixas grandes.
+- **Card da lista** — escaneamento rápido de dezenas de ofertas. Grid de
+  no máximo 2 cards por linha (era 3, largura insuficiente). Fontes maiores
+  nos pontos-chave: nome do produto (~14px), chips (~11px). fileira de chips
+  compactos logo abaixo do preço.
 - **Modal "Detalhes"** — avaliação a fundo de uma oferta específica. Mostra
   a tabela completa de todas as condições SmartPed com EAN em cada linha.
+
+### Chips compactos — cores com significado
+
+- **SmartPed (azul):** mostra preço, distribuidor, desconto REAL da condição
+  SmartPed (`melhorDescontoSmartPed`, ex: "-2%") — **NÃO confundir** com
+  `economiaPercent` (economia da promoção vs preço SmartPed, conceito
+  diferente). EAN em mono.
+- **Estoque (verde/vermelho):** verde quando `estoqueTotal > 0`, vermelho
+  com ⚠ quando `estoqueTotal === 0` — diferencia visualmente num scan rápido.
+- **Pago antes (violeta):** menor preço já pago em 12 meses + fornecedor.
+  Sem comparativo % contra preço atual (decidido nesta sessão: seria
+  potencialmente enganoso porque o dado é o MENOR preço histórico, não o
+  mais recente).
+- **Não encontrado (amarelo):** badge quando nenhum sistema tem o produto.
 
 **Regra de EAN visível:** o EAN sempre aparece em qualquer lugar que mostre
 preço/oferta — é o principal jeito do usuário auditar se o dado bate com o
