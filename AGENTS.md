@@ -520,8 +520,7 @@ Criar script standalone (`debug-analisar.ts`, já existe) que:
 - Análise em background processa fornecedor JÁ VENCIDO antes de descartar (desperdício)
 - Dados de teste no Turso reduzidos (Forster deletado, TEstando: 9 itens) — sem backup automático
 
-> **Último deploy:** `smartped-cli-00100-f5g`. Commits locais posteriores ainda não deployados:
-> `db8cee0`, `03b951e`, `315f756`, `9d1e554`, `4c78262`, `3964b39`, `138f25e` (TypeScript fixes, decision tree doc, info gaps).
+> **Último deploy:** `smartped-cli-00101-r4n`.
 
 ---
 
