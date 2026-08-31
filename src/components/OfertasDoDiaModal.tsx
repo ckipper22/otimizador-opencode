@@ -619,6 +619,11 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                                   setAddingQtd({ ean: oferta.ean, qtd: '1', selectedPrice: oferta.preco });
                                 } else if (val === 'smartped') {
                                   setAddingQtd({ ean: oferta.melhorEanSmartPed || oferta.ean, qtd: '1', selectedPrice: oferta.melhorPrecoSmartPed || 0 });
+                                } else if (val.startsWith('dt-')) {
+                                  const idx = parseInt(val.slice(3));
+                                  const tier = oferta.discountTiers![idx];
+                                  const price = oferta.preco * (1 - tier.discountPercent / 100);
+                                  setAddingQtd({ ean: oferta.ean, qtd: String(tier.minQty), selectedPrice: price });
                                 } else {
                                   const idx = parseInt(val);
                                   const tier = oferta.tiers![idx];
@@ -637,6 +642,15 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                                   return (
                                     <option key={idx} value={idx}>
                                       {oferta.fornecedorLista || oferta.fornecedor} | {formatCurrency(tier.price)} | {tier.minQty}+ und{isBest ? ' ★' : ''}{savings > 0 ? ` (-${savings.toFixed(0)}%)` : ''}
+                                    </option>
+                                  );
+                                })}
+                                {!oferta.tiers && oferta.discountTiers && oferta.discountTiers.map((tier, idx) => {
+                                  const isBest = idx === oferta.discountTiers!.length - 1;
+                                  const price = oferta.preco * (1 - tier.discountPercent / 100);
+                                  return (
+                                    <option key={`dt-${idx}`} value={`dt-${idx}`}>
+                                      {oferta.fornecedorLista || oferta.fornecedor} | {formatCurrency(price)} | {tier.minQty}+ und (-{tier.discountPercent}%){isBest ? ' ★' : ''}
                                     </option>
                                   );
                                 })}
@@ -997,6 +1011,11 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                         setAddingQtd({ ean: detalheAberto.ean, qtd: '1', selectedPrice: detalheAberto.preco });
                       } else if (val === 'smartped') {
                         setAddingQtd({ ean: detalheAberto.melhorEanSmartPed || detalheAberto.ean, qtd: '1', selectedPrice: detalheAberto.melhorPrecoSmartPed || 0 });
+                      } else if (val.startsWith('dt-')) {
+                        const idx = parseInt(val.slice(3));
+                        const tier = detalheAberto.discountTiers![idx];
+                        const price = detalheAberto.preco * (1 - tier.discountPercent / 100);
+                        setAddingQtd({ ean: detalheAberto.ean, qtd: String(tier.minQty), selectedPrice: price });
                       } else {
                         const idx = parseInt(val);
                         const tier = detalheAberto.tiers![idx];
@@ -1015,6 +1034,15 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                         return (
                           <option key={idx} value={idx}>
                             {detalheAberto.fornecedorLista || detalheAberto.fornecedor} | {formatCurrency(tier.price)} | {tier.minQty}+ und{isBest ? ' ★' : ''}{savings > 0 ? ` (-${savings.toFixed(0)}%)` : ''}
+                          </option>
+                        );
+                      })}
+                      {!detalheAberto.tiers && detalheAberto.discountTiers && detalheAberto.discountTiers.map((tier, idx) => {
+                        const isBest = idx === detalheAberto.discountTiers!.length - 1;
+                        const price = detalheAberto.preco * (1 - tier.discountPercent / 100);
+                        return (
+                          <option key={`dt-${idx}`} value={`dt-${idx}`}>
+                            {detalheAberto.fornecedorLista || detalheAberto.fornecedor} | {formatCurrency(price)} | {tier.minQty}+ und (-{tier.discountPercent}%){isBest ? ' ★' : ''}
                           </option>
                         );
                       })}
