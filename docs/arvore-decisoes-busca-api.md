@@ -128,6 +128,8 @@ O flag `precoCalculadoViaDesconto` sinaliza pro frontend que o preço já embute
 
 #### Filtrar por DCB + dosagem — server.ts:1399–1432
 
+> **Exceção Referência/marca (corrigido em 2026-08-31):** antes de entrar no agrupamento por DCB, resolver categoria via `resolveCategoria(produtoExatoDCB || product)`. Se `categoria === "marca"`: PULAR agrupamento, setar `eansGrupo = [EAN próprio]` e `eanList = [product.ean]` direto. Mesma regra de `analisarUmProduto` (referência nunca busca similares), replicada aqui porque é um mecanismo paralelo/duplicado.
+
 - Filtrar por `cod_dcb === dcb` + dosagem via `mesmaDosagem()` (compara número E unidade)
 - Se DCB não encontrado: filtrar só por dosagem
 - Resultado: `eansGrupo` (produtos do mesmo DCB+dosagem) → `eanList` (EANs únicos)

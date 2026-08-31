@@ -1401,32 +1401,50 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
                 }
               }
 
-              // Extrair dosagem do produto original para filtro de concentracao
-              const origDesc = product.description || "";
+              // Resolver categoria do produto (mesmo padrão de analisarUmProduto)
+              const produtoExatoDCB = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean);
+              const catProduto = resolveCategoria(produtoExatoDCB || product);
 
-              // Filtrar por DCB do EAN original
-              const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
-              if (dcb) {
-                eansGrupo = allProdutos
-                  .filter((p: any) => {
-                    if (p.cod_dcb !== dcb || !(p.ean || p.cod_barra)) return false;
-                    return mesmaDosagem(origDesc, p.nom_produto || "");
-                  })
-                  .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
-                eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb})`);
-              } else if (allProdutos.length > 0) {
-                // DCB não encontrado — usar TODOS os produtos do grupo (mesma descrição) com filtro dosagem
-                eansGrupo = allProdutos
-                  .filter((p: any) => {
-                    if (!(p.ean || p.cod_barra)) return false;
-                    return mesmaDosagem(origDesc, p.nom_produto || "");
-                  })
-                  .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
-                eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado)`);
+              // Referência/marca: NÃO agrupar por DCB+dosagem — usar só o próprio EAN
+              // Mesma regra de analisarUmProduto: "Referência nunca busca similares"
+              if (catProduto === "marca") {
+                const exato = produtoExatoDCB;
+                eansGrupo = product.ean ? [{
+                  ean: product.ean,
+                  lab: (exato?.nom_laborat || "").trim(),
+                  estoque: exato?.qtd_estoque || 0,
+                  nom_produto: exato?.nom_produto || product.description || "",
+                }] : [];
+                eanList = product.ean ? [product.ean] : [];
+                console.log(`[OFERTAS-DIA] REFERENCIA: pulando DCB, usando EAN próprio ${product.ean} (${catProduto})`);
               } else {
-                console.log(`[OFERTAS-DIA] DCB: EAN original ${product.ean} não encontrado em allProdutos (${allProdutos.length} produtos)`);
+                // Extrair dosagem do produto original para filtro de concentracao
+                const origDesc = product.description || "";
+
+                // Filtrar por DCB do EAN original
+                const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
+                if (dcb) {
+                  eansGrupo = allProdutos
+                    .filter((p: any) => {
+                      if (p.cod_dcb !== dcb || !(p.ean || p.cod_barra)) return false;
+                      return mesmaDosagem(origDesc, p.nom_produto || "");
+                    })
+                    .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
+                  eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
+                  console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb})`);
+                } else if (allProdutos.length > 0) {
+                  // DCB não encontrado — usar TODOS os produtos do grupo (mesma descrição) com filtro dosagem
+                  eansGrupo = allProdutos
+                    .filter((p: any) => {
+                      if (!(p.ean || p.cod_barra)) return false;
+                      return mesmaDosagem(origDesc, p.nom_produto || "");
+                    })
+                    .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
+                  eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
+                  console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado)`);
+                } else {
+                  console.log(`[OFERTAS-DIA] DCB: EAN original ${product.ean} não encontrado em allProdutos (${allProdutos.length} produtos)`);
+                }
               }
             } catch {}
           }
