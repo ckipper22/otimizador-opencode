@@ -135,13 +135,15 @@
 | `is_swap` | INTEGER | DEFAULT 0 |
 | `origem` | TEXT | DEFAULT 'manual' |
 | `id_encomenda` | TEXT | |
+| `encomenda_confirmada` | INTEGER | DEFAULT 0 |
 | `created_at` | TEXT | DEFAULT datetime('now') |
 
 - **Propósito:** Itens de cada pedido SmartPed
-- **Quem escreve:** `saveOrderItem` (database.ts:320)
-- **Quem lê:** `getOrderItems` (database.ts:335) — exportado mas NÃO importado por server.ts
+- **Quem escreve:** `saveOrderItem` (database.ts:330), `markEncomendaConfirmadaById` (database.ts)
+- **Quem lê:** `getOrderItems` (database.ts:347), `getEncomendasPendentesReconciliacao` (database.ts)
 - **Purge:** `purgeOldData` (database.ts:601)
 - **Colunas `origem`/`id_encomenda`:** Adicionadas via migração (bug #27, corrigido). `origem` rastreia se item veio de encomenda vs. fluxo manual.
+- **Coluna `encomenda_confirmada`:** Marcada como 1 quando a confirmação é enviada com sucesso pro sistema de Encomendas (tanto via client-side quanto via reconciliação server-side). Previne dupla-confirmação.
 
 ### `api_cache`
 

@@ -101,6 +101,7 @@ const SCHEMA_SQL = `
     is_swap INTEGER DEFAULT 0,
     origem TEXT DEFAULT 'manual',
     id_encomenda TEXT,
+    encomenda_confirmada INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (${NOW_UTC}),
     FOREIGN KEY (num_pedido) REFERENCES orders(num_pedido)
   );
@@ -279,6 +280,7 @@ export async function initTursoSchema() {
     `ALTER TABLE order_items ADD COLUMN id_encomenda TEXT`,
     `ALTER TABLE itens_confirmados ADD COLUMN origem TEXT DEFAULT 'manual'`,
     `ALTER TABLE itens_confirmados ADD COLUMN id_encomenda TEXT`,
+    `ALTER TABLE order_items ADD COLUMN encomenda_confirmada INTEGER DEFAULT 0`,
   ];
   for (const sql of MIGRATE_SQL) {
     try { await d.exec(sql); } catch {} // ignora "duplicate column name" ou "duplicate index"
@@ -350,6 +352,47 @@ export async function getOrderItems(numPedido: string) {
     if (USE_TURSO) { return await d.all(sql, numPedido); }
     return d.prepare(sql).all(numPedido);
   } catch { return []; }
+}
+
+// Encomendas — reconciliação server-side
+export async function getEncomendasPendentesReconciliacao(): Promise<Array<{ numPedido: string; ean: string; codDist: number; idEncomenda: string }>> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const rows = await d.all(
+      `SELECT num_pedido, ean, cod_dist, id_encomenda FROM order_items
+       WHERE origem = 'encomenda' AND id_encomenda IS NOT NULL AND id_encomenda != ''
+       AND encomenda_confirmada = 0`
+    );
+    if (!rows || rows.length === 0) return [];
+    return (rows as any[]).map(r => ({
+      numPedido: r.num_pedido,
+      ean: r.ean,
+      codDist: r.cod_dist,
+      idEncomenda: r.id_encomenda,
+    }));
+  } catch { return []; }
+}
+
+export async function markEncomendaConfirmada(numPedido: string, ean: string, codDist: number) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE order_items SET encomenda_confirmada = 1
+      WHERE num_pedido = ? AND ean = ? AND cod_dist = ? AND origem = 'encomenda'`;
+    const args = [numPedido, ean, codDist];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function markEncomendaConfirmadaById(idEncomenda: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE order_items SET encomenda_confirmada = 1
+      WHERE id_encomenda = ? AND origem = 'encomenda'`;
+    if (USE_TURSO) { await d.run(sql, idEncomenda); } else { d.prepare(sql).run(idEncomenda); }
+  } catch {}
 }
 
 // API Cache with TTL

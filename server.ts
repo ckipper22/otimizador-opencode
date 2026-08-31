@@ -12,7 +12,7 @@ import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatab
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
 import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto, mesmaDosagem } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
-import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, getDistribuidorAliases, saveDistribuidorAlias, deleteDistribuidorAlias, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
+import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, getDistribuidorAliases, saveDistribuidorAlias, deleteDistribuidorAlias, markEncomendaConfirmadaById, getEncomendasPendentesReconciliacao, markEncomendaConfirmada, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
 const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   2: "Pan/Santa",
@@ -2489,6 +2489,188 @@ app.post("/api/integracao/encomendas/confirmar-pedido", async (req, res) => {
   } catch (err: any) {
     console.error("Erro ao confirmar encomendas:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Marcar encomenda como confirmada no banco (chamado pelo client-side após confirmação bem-sucedida)
+app.post("/api/order-items/mark-encomenda-confirmada", async (req, res) => {
+  try {
+    const { idEncomenda } = req.body;
+    if (!idEncomenda) {
+      return res.status(400).json({ error: "idEncomenda é obrigatório." });
+    }
+    await markEncomendaConfirmadaById(idEncomenda);
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== ENCOMENDAS: Reconciliação server-side =====
+// Verifica encomendas pendentes de confirmação que ficaram "esquecidas" porque
+// o navegador do usuário fechou antes do distribuidor retornar.
+// Throttle: CONCURRENCY=1, delay entre chamadas (padrão documentado no AGENTS.md).
+app.post("/api/integracao/encomendas/reconciliar", async (req, res) => {
+  const logs: string[] = [];
+  const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[RECONCILIACAO] ${m}`); };
+
+  try {
+    const pendentes = await getEncomendasPendentesReconciliacao();
+    if (pendentes.length === 0) {
+      log("Nenhuma encomenda pendente de reconciliação.");
+      return res.json({ sucesso: true, reconciliados: 0, logs });
+    }
+
+    // Agrupar por numPedido
+    const porPedido = new Map<string, typeof pendentes>();
+    for (const p of pendentes) {
+      const existing = porPedido.get(p.numPedido) || [];
+      existing.push(p);
+      porPedido.set(p.numPedido, existing);
+    }
+
+    log(`Encontrados ${pendentes.length} itens de encomenda pendentes em ${porPedido.size} pedido(s).`);
+
+    const actualToken = CONFIG.SMARTPED_SANDBOX_TOKEN;
+    const todayStr = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().split("T")[0]; // UTC-3
+
+    let reconciliados = 0;
+
+    // Processar um pedido de cada vez (CONCURRENCY=1)
+    for (const [numPedido, itensPedido] of porPedido) {
+      log(`Consultando retorno do pedido ${numPedido}...`);
+
+      try {
+        // Chamar SmartPed Pedido/Retorno diretamente
+        const baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
+        const endpointRetorno = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Retorno`;
+        const apiCnpj = CONFIG.SMARTPED_DEFAULT_CNPJ || "";
+
+        const resRetorno = await fetch(endpointRetorno, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({
+            Token: actualToken,
+            parametros: {
+              CnpjCLi: apiCnpj,
+              NumeroPedido: parseInt(numPedido) || numPedido,
+              NumPedido: parseInt(numPedido) || numPedido
+            }
+          }),
+          signal: AbortSignal.timeout(15000)
+        });
+
+        if (!resRetorno.ok) {
+          log(`Pedido ${numPedido}: SmartPed retornou HTTP ${resRetorno.status} — pulando, tentará no próximo ciclo.`);
+          continue;
+        }
+
+        const apiData = await resRetorno.json();
+        const rawRetorno = apiData?.Retorno || apiData?.retorno || apiData;
+        const dists = rawRetorno?.dists || rawRetorno?.Dists || [];
+        const itens = rawRetorno?.Itens || rawRetorno?.itens || [];
+
+        if (!dists || dists.length === 0) {
+          log(`Pedido ${numPedido}: nenhum distribuidor no retorno — pulando.`);
+          continue;
+        }
+
+        // Verificar se TODOS os distribuidores deste pedido finalizaram
+        const allFinalized = dists.every((d: any) => d.Status === 3);
+        if (!allFinalized) {
+          log(`Pedido ${numPedido}: ainda aguardando retorno (${dists.filter((d: any) => d.Status === 3).length}/${dists.length} finalizados).`);
+          continue;
+        }
+
+        log(`Pedido ${numPedido}: todos os distribuidores finalizados. Processando ${itensPedido.length} itens de encomenda...`);
+
+        // Para cada item de encomenda deste pedido
+        const confirmarPayload: { id: string; fornecedor: string; dataPrevisao: string; status?: string; observacao?: string }[] = [];
+
+        for (const itemEnc of itensPedido) {
+          // Achar o item de retorno correspondente
+          const retornoItem = itens.find((ri: any) =>
+            String(ri.Ean || ri.ean || "").trim() === itemEnc.ean &&
+            String(ri.CodDist || ri.codDist || "").trim() === String(itemEnc.codDist)
+          );
+
+          if (!retornoItem) {
+            log(`  Item EAN ${itemEnc.ean}: não encontrado no retorno — confirmando como não atendido.`);
+            confirmarPayload.push({
+              id: itemEnc.idEncomenda,
+              fornecedor: "",
+              dataPrevisao: todayStr,
+              status: "nao_atendido",
+              observacao: "Item não encontrado no retorno do distribuidor."
+            });
+            continue;
+          }
+
+          const quantFaturada = parseFloat(retornoItem.QuantFaturada || retornoItem.quantFaturada || "0");
+
+          if (quantFaturada > 0) {
+            // Faturado: confirmar normalmente
+            confirmarPayload.push({
+              id: itemEnc.idEncomenda,
+              fornecedor: "",
+              dataPrevisao: todayStr
+            });
+            log(`  Item EAN ${itemEnc.ean}: faturado (qty=${quantFaturada}) — confirmando.`);
+          } else {
+            // Não faturado: confirmar como não atendido
+            const motivo = retornoItem.Motivo || retornoItem.motivo || "Distribuidor finalizou sem faturar este item.";
+            confirmarPayload.push({
+              id: itemEnc.idEncomenda,
+              fornecedor: "",
+              dataPrevisao: todayStr,
+              status: "nao_atendido",
+              observacao: motivo
+            });
+            log(`  Item EAN ${itemEnc.ean}: NÃO faturado — confirmando como não atendido. Motivo: ${motivo}`);
+          }
+        }
+
+        // Enviar confirmações (sucesso + falha juntas, em lote)
+        if (confirmarPayload.length > 0) {
+          try {
+            const respConfirmar = await fetch(`${ENCOMENDAS_API_URL}/api/integracao/encomendas/confirmar-pedido`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-api-key": ENCOMENDAS_API_KEY },
+              body: JSON.stringify({ itens: confirmarPayload }),
+              signal: AbortSignal.timeout(15000)
+            });
+
+            if (respConfirmar.ok) {
+              log(`Pedido ${numPedido}: ${confirmarPayload.length} encomenda(s) confirmada(s) com sucesso.`);
+              // Marcar encomenda_confirmada=1 no banco
+              for (const itemEnc of itensPedido) {
+                await markEncomendaConfirmadaById(itemEnc.idEncomenda);
+              }
+              reconciliados += confirmarPayload.length;
+            } else {
+              const errText = await respConfirmar.text().catch(() => "Sem detalhes");
+              log(`Pedido ${numPedido}: ERRO ao confirmar (${respConfirmar.status}): ${errText} — tentará no próximo ciclo.`);
+            }
+          } catch (confirmErr: any) {
+            log(`Pedido ${numPedido}: ERRO de rede ao confirmar: ${confirmErr.message} — tentará no próximo ciclo.`);
+          }
+        }
+
+      } catch (pedidoErr: any) {
+        log(`Pedido ${numPedido}: erro ao consultar retorno: ${pedidoErr.message} — tentará no próximo ciclo.`);
+      }
+
+      // Delay entre pedidos (CONCURRENCY=1)
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    log(`Reconciliação concluída. ${reconciliados} encomenda(s) resolvida(s).`);
+    res.json({ sucesso: true, reconciliados, logs });
+
+  } catch (err: any) {
+    log(`Erro geral na reconciliação: ${err.message}`);
+    res.status(500).json({ error: err.message, logs });
   }
 });
 

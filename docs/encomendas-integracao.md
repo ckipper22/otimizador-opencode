@@ -130,6 +130,8 @@ Content-Type: application/json
 | `itens[].id` | number | Sim | ID da encomenda (campo `id` retornado no GET) |
 | `itens[].fornecedor` | string | Sim | Nome da distribuidora que será/foi consultada |
 | `itens[].dataPrevisao` | string | Sim | Data prevista de chegada (YYYY-MM-DD) |
+| `itens[].status` | string | Não | Se `"nao_atendido"`, encomenda NÃO avança pra "Encomendado" — fica "Pendente" com observação anexada. Qualquer outro valor (ou omitido) = confirma normalmente. |
+| `itens[].observacao` | string | Não | Texto livre, anexado ao campo de observações com timestamp automático. Pode vir junto com `status: "nao_atendido"` ou sozinho. |
 
 **Response (Encomendas → Otimizador):**
 ```json
@@ -140,7 +142,7 @@ Content-Type: application/json
 ```
 
 **Efeito no banco Encomendas:**
-- `status` → `"Encomendado"` (era `"Pendente"`)
+- `status` → `"Encomendado"` (era `"Pendente"`) — ou permanece `"Pendente"` se `status: "nao_atendido"`
 - `fornecedor` → preenchido com o nome da distribuidora
 - `dataPrevisao` → preenchida com a data prevista
 
@@ -158,6 +160,39 @@ Content-Type: application/json
 - `CONCURRENCY = 1` (processa 1 EAN por vez)
 - `ENCOMENDA_DELAY_MS = 200` (delay entre EANs)
 - **Motivo:** Bug #39 — APIs externas sobrecarregavam e itens se perdiam quando processados em paralelo
+
+---
+
+### 3.4. POST /api/integracao/encomendas/reconciliar (server-side)
+
+**Purpose:** Verificar encomendas pendentes de confirmação que ficaram "esquecidas" porque o navegador do usuário fechou antes do distribuidor retornar.
+
+**Endpoint local:** `POST /api/integracao/encomendas/reconciliar`
+
+**Lógica:**
+1. Busca em `order_items` linhas com `origem = 'encomenda'`, `id_encomenda IS NOT NULL` e `encomenda_confirmada = 0`
+2. Agrupa por `num_pedido`
+3. Para cada `numPedido`, consulta `/api/pedido-retorno` (SmartPed) — throttle `CONCURRENCY=1`, delay 2s entre pedidos
+4. Para cada item de encomenda:
+   - Se distribuidor finalizou (`Status === 3`) E `QuantFaturada > 0`: confirmar normalmente
+   - Se finalizou E `QuantFaturada === 0`: confirmar com `status: "nao_atendido"` + motivo do retorno
+   - Se ainda não finalizou: pular, tentar no próximo ciclo
+5. Marca `encomenda_confirmada = 1` no banco após confirmação bem-sucedida
+
+**Throttle:**
+- `CONCURRENCY = 1` (1 pedido SmartPed por vez)
+- Delay de 2s entre pedidos
+- Retry automático no próximo ciclo se falhar
+
+**Pode ser chamado:** manualmente (botão) ou futuramente como job periódico (setInterval de alguns minutos). Nesta primeira versão, é sob demanda.
+
+### 3.5. POST /api/order-items/mark-encomenda-confirmada
+
+**Purpose:** Marcar encomenda como confirmada no banco (chamado pelo client-side após confirmação bem-sucedida).
+
+**Payload:** `{ idEncomenda: string }`
+
+**Efeito:** `UPDATE order_items SET encomenda_confirmada = 1 WHERE id_encomenda = ? AND origem = 'encomenda'`
 
 ---
 
@@ -199,8 +234,18 @@ Content-Type: application/json
 │     └─ Faturamento segue fluxo normal                                │
 │                                                                      │
 │  7. POS-FATURAMENTO (automatico)                                     │
-│     └─ Apos retorno SmartPed, POST confirmar-pedido enviado          │
-│        automaticamente pra encomendas processadas                     │
+│     ├─ Apos retorno SmartPed, POST confirmar-pedido enviado          │
+│     │  automaticamente pra encomendas processadas                     │
+│     │  (sucesso → "Encomendado" / falha → "nao_atendido")            │
+│     └─ Marca encomenda_confirmada=1 no banco (previne dupla)         │
+│                                                                      │
+│  8. RECONCILIACAO (server-side, sob demanda)                         │
+│     └─ Se navegador fechou antes do retorno:                          │
+│        ├─ Busca itens com encomenda_confirmada=0                      │
+│        ├─ Consulta SmartPed Pedido/Retorno (CONCURRENCY=1)            │
+│        ├─ Finalizou + faturado → confirma                             │
+│        ├─ Finalizou + NÃO faturado → "nao_atendido"                  │
+│        └─ Ainda aguardando → tenta no próximo ciclo                  │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
