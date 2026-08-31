@@ -58,6 +58,7 @@ interface OfertaDia {
   isReferencia?: boolean;
   tiers?: { minQty: number; price: number }[];
   discountTiers?: { minQty: number; discountPercent: number }[];
+  precoCalculadoViaDesconto?: boolean;
   bestTierPrice?: number;
   smartPedCondicoesTodas?: { distribuidora: string; ean: string; laboratorio: string; precoBruto: number; desconto: number; descExtra: number; valorST: number; precoLiquido: number; qtdMin: number; condicao: string }[];
 }
@@ -622,7 +623,8 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                                 } else if (val.startsWith('dt-')) {
                                   const idx = parseInt(val.slice(3));
                                   const tier = oferta.discountTiers![idx];
-                                  const price = oferta.preco * (1 - tier.discountPercent / 100);
+                                  const base = oferta.precoCalculadoViaDesconto ? (oferta.melhorPrecoSmartPed || oferta.preco) : oferta.preco;
+                                  const price = base * (1 - tier.discountPercent / 100);
                                   setAddingQtd({ ean: oferta.ean, qtd: String(tier.minQty), selectedPrice: price });
                                 } else {
                                   const idx = parseInt(val);
@@ -635,7 +637,9 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                             >
                               <option value="" disabled>Adicionar ▼</option>
                               <optgroup label="PROMOCAO">
-                                <option value="base">{oferta.fornecedorLista || oferta.fornecedor} | {formatCurrency(oferta.preco)} | Sem minimo</option>
+                                {!oferta.precoCalculadoViaDesconto && (
+                                  <option value="base">{oferta.fornecedorLista || oferta.fornecedor} | {formatCurrency(oferta.preco)} | Sem minimo</option>
+                                )}
                                 {oferta.tiers && oferta.tiers.map((tier, idx) => {
                                   const isBest = idx === oferta.tiers!.length - 1;
                                   const savings = oferta.preco > 0 ? ((oferta.preco - tier.price) / oferta.preco * 100) : 0;
@@ -647,7 +651,8 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                                 })}
                                 {!oferta.tiers && oferta.discountTiers && oferta.discountTiers.map((tier, idx) => {
                                   const isBest = idx === oferta.discountTiers!.length - 1;
-                                  const price = oferta.preco * (1 - tier.discountPercent / 100);
+                                  const base = oferta.precoCalculadoViaDesconto ? (oferta.melhorPrecoSmartPed || oferta.preco) : oferta.preco;
+                                  const price = base * (1 - tier.discountPercent / 100);
                                   return (
                                     <option key={`dt-${idx}`} value={`dt-${idx}`}>
                                       {oferta.fornecedorLista || oferta.fornecedor} | {formatCurrency(price)} | {tier.minQty}+ und (-{tier.discountPercent}%){isBest ? ' ★' : ''}
@@ -1014,7 +1019,8 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                       } else if (val.startsWith('dt-')) {
                         const idx = parseInt(val.slice(3));
                         const tier = detalheAberto.discountTiers![idx];
-                        const price = detalheAberto.preco * (1 - tier.discountPercent / 100);
+                        const base = detalheAberto.precoCalculadoViaDesconto ? (detalheAberto.melhorPrecoSmartPed || detalheAberto.preco) : detalheAberto.preco;
+                        const price = base * (1 - tier.discountPercent / 100);
                         setAddingQtd({ ean: detalheAberto.ean, qtd: String(tier.minQty), selectedPrice: price });
                       } else {
                         const idx = parseInt(val);
@@ -1027,7 +1033,9 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                   >
                     <option value="" disabled>Adicionar ▼</option>
                     <optgroup label="PROMOCAO">
-                      <option value="base">{detalheAberto.fornecedorLista || detalheAberto.fornecedor} | {formatCurrency(detalheAberto.preco)} | Sem minimo</option>
+                      {!detalheAberto.precoCalculadoViaDesconto && (
+                        <option value="base">{detalheAberto.fornecedorLista || detalheAberto.fornecedor} | {formatCurrency(detalheAberto.preco)} | Sem minimo</option>
+                      )}
                       {detalheAberto.tiers && detalheAberto.tiers.map((tier, idx) => {
                         const isBest = idx === detalheAberto.tiers!.length - 1;
                         const savings = detalheAberto.preco > 0 ? ((detalheAberto.preco - tier.price) / detalheAberto.preco * 100) : 0;
@@ -1039,7 +1047,8 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                       })}
                       {!detalheAberto.tiers && detalheAberto.discountTiers && detalheAberto.discountTiers.map((tier, idx) => {
                         const isBest = idx === detalheAberto.discountTiers!.length - 1;
-                        const price = detalheAberto.preco * (1 - tier.discountPercent / 100);
+                        const base = detalheAberto.precoCalculadoViaDesconto ? (detalheAberto.melhorPrecoSmartPed || detalheAberto.preco) : detalheAberto.preco;
+                        const price = base * (1 - tier.discountPercent / 100);
                         return (
                           <option key={`dt-${idx}`} value={`dt-${idx}`}>
                             {detalheAberto.fornecedorLista || detalheAberto.fornecedor} | {formatCurrency(price)} | {tier.minQty}+ und (-{tier.discountPercent}%){isBest ? ' ★' : ''}

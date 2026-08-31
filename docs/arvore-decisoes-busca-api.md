@@ -71,7 +71,20 @@
 - Pra cada condição em `allCondicoes`: se `QtdMin` ausente/zero, preencher de `eanMetadata`
 - **Sequencial com delay** — API contamina em paralelo (já documentado em AGENTS.md)
 
-### 1i. Retorno
+### 1i. Preço de promoção com desconto percentual — server.ts:1097–1121
+
+Quando o fornecedor externo (WhatsApp) manda só percentual de desconto (sem preço absoluto), o backend calcula `product.preco` a partir do melhor preço SmartPed:
+
+- Se `product.preco` vazio/zero E `discountPercent > 0` E `melhorPrecoSmartPed` existe:
+  `preco = melhorPrecoSmartPed * (1 - discountPercent/100)`
+  → `precoCalculadoViaDesconto = true`
+- Senão se `product.preco` vazio/zero E `discountTiers` existe E `melhorPrecoSmartPed` existe:
+  `preco = melhorPrecoSmartPed * (1 - menorTier.discountPercent/100)`
+  → `precoCalculadoViaDesconto = true`
+
+O flag `precoCalculadoViaDesconto` sinaliza pro frontend que o preço já embute desconto — **QUALQUER lugar que reaplique desconto/tier em cima de `oferta.preco` precisa checar esse flag**, senão duplica desconto. Regra: quando `precoCalculadoViaDesconto = true`, os preços de TODAS as faixas (inclusive a menor) devem ser calculados a partir de `melhorPrecoSmartPed`, não de `oferta.preco`.
+
+### 1j. Retorno
 
 - `allCondicoes` (já filtradas e enriquecidas) → melhor preço por distribuidora
 - `estoqueTotal`, `estoquePorLaboratorio`, `vendasMensais`, `comprasHistorico`
