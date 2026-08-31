@@ -9,6 +9,7 @@ interface CompraHistorico {
   data: string;
   quantidade: number;
   notaFiscal: number | null;
+  laboratorio: string;
 }
 
 interface EstoqueLaboratorio {

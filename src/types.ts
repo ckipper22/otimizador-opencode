@@ -178,6 +178,7 @@ export interface FaturadoItem {
   laboratorio: string;
   valor: number;
   quantidade: number;
+  notaCupom?: string;
 }
 
 export interface DistributorOption {
