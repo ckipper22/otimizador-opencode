@@ -110,18 +110,6 @@ const SCHEMA_SQL = `
     created_at TEXT DEFAULT (${NOW_UTC}),
     expires_at TEXT
   );
-  CREATE TABLE IF NOT EXISTS faturados (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    num_pedido TEXT,
-    ean TEXT,
-    descricao TEXT,
-    laboratorio TEXT,
-    cod_dist INTEGER,
-    nome_dist TEXT,
-    qtd INTEGER,
-    preco_liquido REAL,
-    created_at TEXT DEFAULT (${NOW_UTC})
-  );
   CREATE TABLE IF NOT EXISTS itens_confirmados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     num_pedido TEXT,
@@ -147,7 +135,6 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_orders_data ON orders(data_pedido);
   CREATE INDEX IF NOT EXISTS idx_order_items_pedido ON order_items(num_pedido);
   CREATE INDEX IF NOT EXISTS idx_api_cache_expires ON api_cache(expires_at);
-  CREATE INDEX IF NOT EXISTS idx_faturados_pedido ON faturados(num_pedido);
   CREATE INDEX IF NOT EXISTS idx_itens_confirmados_cnpj ON itens_confirmados(cnpj);
   CREATE INDEX IF NOT EXISTS idx_itens_confirmados_data ON itens_confirmados(data_confirmacao);
   CREATE TABLE IF NOT EXISTS itens_manuais (
@@ -174,6 +161,14 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_itens_manuais_cnpj ON itens_manuais(cnpj);
   CREATE INDEX IF NOT EXISTS idx_itens_manuais_data ON itens_manuais(data_adicao);
   CREATE INDEX IF NOT EXISTS idx_itens_manuais_status ON itens_manuais(status);
+  CREATE TABLE IF NOT EXISTS sugestoes_eans (
+    ean TEXT PRIMARY KEY,
+    descricao TEXT,
+    laboratorio TEXT,
+    cod_dist INTEGER,
+    nome_dist TEXT,
+    ultima_atualizacao TEXT DEFAULT (${NOW_UTC})
+  );
   CREATE TABLE IF NOT EXISTS precos_cache (
     ean TEXT,
     cod_dist INTEGER,
@@ -408,30 +403,6 @@ export async function purgeExpiredCache() {
   } catch { return 0; }
 }
 
-// Faturados (billed items history)
-export async function saveFaturado(item: {
-  numPedido: string; ean: string; descricao: string; laboratorio: string;
-  codDist: number; nomeDist: string; qtd: number; precoLiquido: number;
-}) {
-  const d = getDb();
-  if (!d) return;
-  try {
-    const sql = `INSERT INTO faturados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd, preco_liquido) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-    const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtd, item.precoLiquido];
-    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
-  } catch {}
-}
-
-export async function getFaturados(cnpj: string, limit = 200) {
-  const d = getDb();
-  if (!d) return [];
-  try {
-    const sql = `SELECT f.* FROM faturados f JOIN orders o ON f.num_pedido = o.num_pedido WHERE o.cnpj = ? ORDER BY f.created_at DESC LIMIT ?`;
-    if (USE_TURSO) { return await d.all(sql, cnpj, limit); }
-    return d.prepare(sql).all(cnpj, limit);
-  } catch { return []; }
-}
-
 // Itens Confirmados (items with confirmed return status)
 export async function saveItemConfirmado(item: {
   numPedido: string; ean: string; descricao: string; laboratorio: string;
@@ -607,7 +578,6 @@ export async function purgeOldData() {
     const tables = [
       { table: "orders", dateCol: "created_at" },
       { table: "order_items", dateCol: "created_at" },
-      { table: "faturados", dateCol: "created_at" },
       { table: "itens_confirmados", dateCol: "created_at" },
       { table: "itens_manuais", dateCol: "created_at" },
       { table: "pedidos_whatsapp", dateCol: "created_at" },
