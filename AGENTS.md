@@ -624,6 +624,18 @@ Exemplo: "CETOCONAZOL 20MG/ML SH 100ML" retorna vazio → `buscar-lote(["CETOCON
 
 ---
 
+## Regras de Processo
+
+### Documentação anda junto com o código
+
+Sempre que uma mudança de código alterar comportamento documentado (regra de negócio, endpoint, schema de banco, fluxo de decisão já descrito em AGENTS.md / `docs/arvore-decisoes-busca-api.md` / `docs/mapa-sistema.md`), atualizar a documentação relevante no MESMO commit da mudança de código — não deixar pra depois. Regra de bolso: se você teve que ler uma dessas docs pra entender o código antes de mexer, você provavelmente precisa atualizá-la depois de mexer. Mudança puramente interna sem impacto em regra documentada não exige atualização.
+
+### Errar na primeira tentativa força reler a documentação
+
+Se uma tentativa de correção falhar (teste não passa, comportamento não muda como esperado, erro persiste, ou o usuário reportar que não funcionou), é OBRIGATÓRIO reler a documentação relevante da área afetada (seção específica do AGENTS.md, `docs/arvore-decisoes-busca-api.md`, ou `docs/mapa-sistema.md`) ANTES de tentar de novo — não iterar às cegas ajustando código por tentativa e erro. Se não existir documentação relevante pra área, isso É um sinal de lacuna — documentá-la depois de resolver o problema.
+
+---
+
 ## Metodologia de debug — script isolado
 
 > Documentado em 2026-08-30. Pra investigar EAN específico sem rodar análise completa (180 itens, lento).
