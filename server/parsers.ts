@@ -319,6 +319,16 @@ export function cleanDescriptionKeepDosage(desc: string): string {
   return words.join(" ").trim();
 }
 
+const DOSAGE_REGEX = /(\d+)\s*(mg|mcg|g|ml|ui|%)/i;
+
+export function mesmaDosagem(descA: string, descB: string): boolean {
+  const matchA = (descA || "").toLowerCase().match(DOSAGE_REGEX);
+  const matchB = (descB || "").toLowerCase().match(DOSAGE_REGEX);
+  if (!matchA && !matchB) return true;
+  if (!matchA || !matchB) return true;
+  return matchA[1] === matchB[1] && matchA[2].toLowerCase() === matchB[2].toLowerCase();
+}
+
 export function getWildcardQueries(desc: string): string[] {
   if (!desc) return [];
   const upper = desc.toUpperCase();

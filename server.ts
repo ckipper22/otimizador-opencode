@@ -10,7 +10,7 @@ import { cacheKey, getFromCache, getFromCacheBatch, setInCache, MINIMOS_GLOBAL_C
 import { rateLimitMiddleware, startRateLimitPurge } from "./server/rate-limiter";
 import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatabaseRecord, loadEanDatabase } from "./server/ean-utils";
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
-import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto } from "./server/parsers";
+import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto, mesmaDosagem } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
 import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
@@ -709,7 +709,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
 
     // Buscar historico de compras
     try {
-      const historicoRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${product.ean}?meses=6`);
+      const historicoRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${product.ean}?meses=${CONFIG.HISTORICO_COMPRAS_MESES}`);
       if (historicoRes.ok) {
         const historicoData = await historicoRes.json();
         if (historicoData?.resumo) {
@@ -809,18 +809,13 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
               const buscaData = await buscaRes.json();
               const resultados = buscaData?.resultados || {};
               let novosEans: string[] = [];
-                const origDosageMatch2 = (product.description || "").match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                const origDosage2 = origDosageMatch2 ? origDosageMatch2[1].toLowerCase() : null;
+                const origDesc2 = product.description || "";
                 for (const key of Object.keys(resultados)) {
                 const prods = resultados[key] || [];
                 for (const p of prods) {
                   const ean = p.ean || p.cod_barra || "";
                   if (!ean || eansParaBuscar.includes(ean)) continue;
-                  if (origDosage2) {
-                    const pDesc = (p.nom_produto || "").toLowerCase();
-                    const pDosageMatch = pDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                    if (pDosageMatch && pDosageMatch[1] !== origDosage2) continue;
-                  }
+                  if (!mesmaDosagem(origDesc2, p.nom_produto || "")) continue;
                   novosEans.push(ean);
                 }
               }
@@ -1038,6 +1033,8 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
           descExtra: Number(rawDescExtra) || 0,
           valorST: Number(rawValorST) || 0,
           precoLiquido: Number(precoLiquido) || 0,
+          qtdMin: c.QtdMin ?? c.qtdMin ?? 0,
+          condicao: String(c.Condicao || c.condicao || "FIXA").trim().toUpperCase(),
         });
         
         // Melhor FIXA (padrão)
@@ -1190,6 +1187,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
     discountPercent: discountPercent || 0,
     bestTierPrice: Math.round(bestTierPrice * 100) / 100,
     smartPedCondicoesTodas,
+    naoEncontradoEmNenhumSistema: estoqueTotal === 0 && melhorPrecoSmartPed === null && comprasHistorico.length === 0,
   };
 }
 
@@ -1387,9 +1385,9 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
                               if (allProdutos.length > 0) {
                                 console.log(`[OFERTAS-DIA] buscar-lote WILDCARD: ${allProdutos.length} produtos via "${termo}"`);
                               }
-                            }
-                          } catch {}
-                        }
+                    }
+                  } catch {}
+                }
                       }
                     }
                   } catch {}
@@ -1397,8 +1395,7 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
               }
 
               // Extrair dosagem do produto original para filtro de concentracao
-              const origDosageMatch = (product.description || "").match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-              const origDosage = origDosageMatch ? origDosageMatch[1].toLowerCase() : null;
+              const origDesc = product.description || "";
 
               // Filtrar por DCB do EAN original
               const dcb = allProdutos.find((p: any) => (p.ean || p.cod_barra) === product.ean)?.cod_dcb;
@@ -1406,27 +1403,21 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
                 eansGrupo = allProdutos
                   .filter((p: any) => {
                     if (p.cod_dcb !== dcb || !(p.ean || p.cod_barra)) return false;
-                    if (!origDosage) return true;
-                    const prodDesc = (p.nom_produto || "").toLowerCase();
-                    const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                    return !prodDosageMatch || prodDosageMatch[1] === origDosage;
+                    return mesmaDosagem(origDesc, p.nom_produto || "");
                   })
                   .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
                 eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb}, dosage: ${origDosage || "any"})`);
+                console.log(`[OFERTAS-DIA] DCB: ${eanList.length} EANs para "${product.description}" (dcb: ${dcb})`);
               } else if (allProdutos.length > 0) {
                 // DCB não encontrado — usar TODOS os produtos do grupo (mesma descrição) com filtro dosagem
                 eansGrupo = allProdutos
                   .filter((p: any) => {
                     if (!(p.ean || p.cod_barra)) return false;
-                    if (!origDosage) return true;
-                    const prodDesc = (p.nom_produto || "").toLowerCase();
-                    const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                    return !prodDosageMatch || prodDosageMatch[1] === origDosage;
+                    return mesmaDosagem(origDesc, p.nom_produto || "");
                   })
                   .map((p: any) => ({ ean: p.ean || p.cod_barra || "", lab: (p.nom_laborat || "").trim(), estoque: p.qtd_estoque || 0, nom_produto: p.nom_produto || "" }));
                 eanList = [...new Set(eansGrupo.filter((e: any) => e.ean).map((e: any) => e.ean))];
-                console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado, dosage: ${origDosage || "any"})`);
+                console.log(`[OFERTAS-DIA] DCB-FALLBACK: ${eanList.length} EANs (DCB não encontrado)`);
               } else {
                 console.log(`[OFERTAS-DIA] DCB: EAN original ${product.ean} não encontrado em allProdutos (${allProdutos.length} produtos)`);
               }
@@ -1443,12 +1434,8 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
               const smartPedBaseUrl = (process.env.SMARTPED_PRODUCTION_URL || "https://api.smartped.com.br").replace(/\/$/, "");
               const wildcards = getWildcardQueries(product.description);
               if (wildcards.length > 0 && smartPedToken) {
-                // Extrair dosagem do produto original para filtro de concentração (mesmo padrão de analisarUmProduto:809-820 e DCB:1377-1402)
-                const origDosageMatch = (product.description || "").match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                const origDosage = origDosageMatch ? origDosageMatch[1].toLowerCase() : null;
-
                 const smartPedEans = new Set<string>();
-                for (const wildcard of wildcards.slice(0, 3)) {
+                for (const wildcard of wildcards) {
                   try {
                     const buscarRes = await fetch(`${smartPedBaseUrl}/api/Produtos/Buscar`, {
                       method: "POST",
@@ -1461,19 +1448,12 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
                       for (const prod of Array.isArray(produtos) ? produtos : []) {
                         const ean = cleanEan(prod.Ean || prod.ean || prod.CodBarra || "");
                         if (!ean || ean.length < 8) continue;
-                        // Filtro de dosagem: comparar dosagem extraída de prod.Descricao com a do produto original
-                        // Mesma regra de tolerância dos outros filtros: se candidato não tem dosagem extraível, permite
-                        if (origDosage) {
-                          const prodDesc = (prod.Descricao || prod.descricao || "").toLowerCase();
-                          const prodDosageMatch = prodDesc.match(/(\d+)\s*(mg|mcg|g|ml|ui|%)/i);
-                          if (prodDosageMatch && prodDosageMatch[1] !== origDosage) {
-                            continue; // dosagem diferente — pular este EAN
-                          }
-                        }
+                        if (!mesmaDosagem(product.description || "", prod.Descricao || prod.descricao || "")) continue;
                         smartPedEans.add(ean);
                       }
                     }
                   } catch {}
+                  if (smartPedEans.size > 0) break;
                 }
                 // EANs extras da SmartPed: só para pricing, NÃO para vendas/estoque
                 const newEans = Array.from(smartPedEans).filter(ean => !eanList.includes(ean));
@@ -1628,7 +1608,7 @@ async function analisarFornecedorEmBackground(supplierId: string, cnpj: string, 
               }
               const comprasPromises = eanListFiltrado.map(async (ean: string) => {
                 try {
-                  const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${ean}?meses=6`);
+                  const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${ean}?meses=${CONFIG.HISTORICO_COMPRAS_MESES}`);
                   if (histRes.ok) {
                     const histData = await histRes.json();
                     return (histData?.compras || []).map((c: any) => ({
@@ -2229,7 +2209,7 @@ app.post("/api/ofertas-dia/analisar-referencia", async (req, res) => {
     const comprasPromises = uniqueEans
       .map(async (e: any) => {
         try {
-          const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${e.ean}?meses=6`);
+          const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${e.ean}?meses=${CONFIG.HISTORICO_COMPRAS_MESES}`);
           if (histRes.ok) {
             const histData = await histRes.json();
             const compras = histData?.compras || [];

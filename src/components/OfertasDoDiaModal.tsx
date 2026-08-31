@@ -49,6 +49,7 @@ interface OfertaDia {
   boaOferta: boolean;
   descartada?: boolean;
   motivoDescarte?: string;
+  naoEncontradoEmNenhumSistema?: boolean;
   erro?: boolean;
   semEan?: boolean;
   description?: string;
@@ -57,7 +58,7 @@ interface OfertaDia {
   tiers?: { minQty: number; price: number }[];
   discountTiers?: { minQty: number; discountPercent: number }[];
   bestTierPrice?: number;
-  smartPedCondicoesTodas?: { distribuidora: string; ean: string; laboratorio: string; precoBruto: number; desconto: number; descExtra: number; valorST: number; precoLiquido: number }[];
+  smartPedCondicoesTodas?: { distribuidora: string; ean: string; laboratorio: string; precoBruto: number; desconto: number; descExtra: number; valorST: number; precoLiquido: number; qtdMin: number; condicao: string }[];
 }
 
 interface OfertasDoDiaModalProps {
@@ -456,9 +457,14 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                         smartped {formatCurrency(oferta.melhorPrecoSmartPed)} ({oferta.melhorDistribuidora}) · <span className="font-mono">{oferta.melhorEanSmartPed || '—'}</span>
                       </span>
                     )}
-                    {!oferta.melhorPrecoSmartPed && (
+                    {!oferta.melhorPrecoSmartPed && oferta.naoEncontradoEmNenhumSistema && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-yellow-100 text-yellow-700 border border-yellow-300">
+                        Nao encontrado — verificar manualmente
+                      </span>
+                    )}
+                    {!oferta.melhorPrecoSmartPed && !oferta.naoEncontradoEmNenhumSistema && (
                       <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-100 text-gray-400 border border-gray-200 italic">
-                        smartped: não encontrado
+                        smartped: nao encontrado
                       </span>
                     )}
                     {oferta.economiaPercent > 0 && (
@@ -703,9 +709,14 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                     smartped {formatCurrency(detalheAberto.melhorPrecoSmartPed)} ({detalheAberto.melhorDistribuidora}) · <span className="font-mono">{detalheAberto.melhorEanSmartPed || '—'}</span>
                   </span>
                 )}
-                {!detalheAberto.melhorPrecoSmartPed && (
+                {!detalheAberto.melhorPrecoSmartPed && detalheAberto.naoEncontradoEmNenhumSistema && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-yellow-100 text-yellow-700 border border-yellow-300">
+                    Nao encontrado — verificar manualmente
+                  </span>
+                )}
+                {!detalheAberto.melhorPrecoSmartPed && !detalheAberto.naoEncontradoEmNenhumSistema && (
                   <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-100 text-gray-400 border border-gray-200 italic">
-                    smartped: não encontrado
+                    smartped: nao encontrado
                   </span>
                 )}
                 {detalheAberto.economiaPercent > 0 && (
@@ -800,6 +811,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                           <th className="text-right py-1 px-1 font-bold text-gray-600">Extra</th>
                           <th className="text-right py-1 px-1 font-bold text-gray-600">ST</th>
                           <th className="text-right py-1 px-1 font-bold text-gray-600">Liquido</th>
+                          <th className="text-right py-1 px-1 font-bold text-gray-600">Qtd Mín</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -819,6 +831,18 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                               <td className="py-1 px-1 text-right text-gray-500">{cond.valorST > 0 ? formatCurrency(cond.valorST) : '—'}</td>
                               <td className={`py-1 px-1 text-right font-mono ${isBest ? 'text-emerald-700 font-bold' : 'text-[#141414]'}`}>
                                 {formatCurrency(cond.precoLiquido)}
+                              </td>
+                              <td className="py-1 px-1 text-right">
+                                {cond.qtdMin > 1 && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium bg-orange-100 text-orange-700">
+                                    min {cond.qtdMin}un
+                                  </span>
+                                )}
+                                {cond.condicao !== "FIXA" && (
+                                  <span className="text-[9px] text-purple-600 ml-1">
+                                    {cond.condicao.toLowerCase()}
+                                  </span>
+                                )}
                               </td>
                             </tr>
                           );

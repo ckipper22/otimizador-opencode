@@ -30,7 +30,7 @@
 
 ### 1c. Histórico de compras (`compras-historico/{ean}`)
 
-- Chamar `GET /api/produtos/compras-historico/{ean}`
+- Chamar `GET /api/produtos/compras-historico/{ean}?meses=${CONFIG.HISTORICO_COMPRAS_MESES}` (12 meses)
 - Mapear lab de cada compra via `eanToLabMap` (construído a partir de `estoquePorLaboratorio`)
 - `ultimaCompra = comprasHistorico[0]` (mais recente)
 
@@ -46,7 +46,7 @@
 - Buscar descrição limpa (remove emojis, genérico, laboratórios conhecidos)
 - Extrair primeira palavra significativa (≥3 chars, não-númerica) → `principioAtivo`
 - Chamar `POST /api/produtos/buscar-lote` com `{ itens: [principioAtivo] }`
-- Para cada resultado, checar dosagem (`origDosage2`) — manter só candidatos com mesma dosagem (regex `/(\d+)\s*(mg|mcg|g|ml|ui|%)/i`)
+- Para cada resultado, checar dosagem via `mesmaDosagem()` (compara número E unidade, ex: "10mg" ≠ "10mcg")
 - Adicionar novos EANs a `eansParaBuscar`
 
 ### 1f. Batch final: Condicoes/Ean — server.ts:838–892
@@ -75,6 +75,8 @@
 
 - `allCondicoes` (já filtradas e enriquecidas) → melhor preço por distribuidora
 - `estoqueTotal`, `estoquePorLaboratorio`, `vendasMensais`, `comprasHistorico`
+- `smartPedCondicoesTodas` inclui `qtdMin` e `condicao` pra cada condição (exibido na tabela "Todas as condições SmartPed" no modal)
+- `naoEncontradoEmNenhumSistema: true` quando `estoqueTotal === 0` E `melhorPrecoSmartPed === null` E `comprasHistorico.length === 0` — badge amarelo no card/modal
 
 ---
 
@@ -113,20 +115,20 @@
 
 #### Filtrar por DCB + dosagem — server.ts:1399–1432
 
-- Extrair dosagem do produto original (`origDosage` via regex `/(\d+)\s*(mg|mcg|g|ml|ui|%)/i`)
-- Se `allProdutos` tem DCB do EAN original: filtrar por `cod_dcb === dcb` + dosagem
+- Filtrar por `cod_dcb === dcb` + dosagem via `mesmaDosagem()` (compara número E unidade)
 - Se DCB não encontrado: filtrar só por dosagem
 - Resultado: `eansGrupo` (produtos do mesmo DCB+dosagem) → `eanList` (EANs únicos)
 
-### 2d. PASSO 1.5: Wildcards SmartPed (`Produtos/Buscar`) — server.ts:1436–1488
+### 2d. PASSO 1.5: Wildcards SmartPed (`Produtos/Buscar`) — server.ts:1436–~1465
 
 > **Nota:** essa lógica NÃO está em `analisarUmProduto` — está aqui porque precisa de `product.description`
 > pra gerar wildcards, e `analisarUmProduto` recebe o objeto enriquecido (não o bruto do WhatsApp).
 
 - Gerar wildcards via `getWildcardQueries(product.description)` (server/parsers.ts:322)
-- Para cada wildcard (máx. 3):
+- Iterar TODOS os wildcards gerados (sem `.slice()`), com early-break: parar assim que pelo menos 1 EAN válido for encontrado
+- Para cada wildcard:
   - Chamar `POST /api/Produtos/Buscar` com `{ Texto: wildcard }`
-  - **FILTRAR por dosagem** (`origDosage`) antes de aceitar candidato — evita cross-contamination (bug #31, corrigido)
+  - **FILTRAR por dosagem** via `mesmaDosagem()` antes de aceitar candidato
   - Adicionar EANs válidos a `smartPedOnlyEans` e `eanList`
 - `smartPedOnlyEans` = EANs extras da SmartPed: **só pra pricing, NÃO pra vendas/estoque**
 
@@ -160,7 +162,7 @@
 ### 2i. Enriquecimento pós-análise — server.ts:1558–~1700
 
 - Agregar vendas de `eanListFiltrado` (Ferramentinhas, com filtro `mesmaApresentacao`)
-- Agregar compras de todos os EANs do ERP
+- Agregar compras de todos os EANs do ERP (janela: 12 meses via `CONFIG.HISTORICO_COMPRAS_MESES`)
 - Calcular `vendasAgregadas` e `comprasAgregadas` (separados do retorno de `analisarUmProduto`)
 
 ---
