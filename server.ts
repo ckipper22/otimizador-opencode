@@ -616,6 +616,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
   let melhorDistribuidora: string | null = null;
   let melhorEanSmartPed: string | null = null;
   let melhorLabSmartPed: string | null = null;
+  let melhorDescontoSmartPed: number = 0;
   let melhorPrecoPromocao: number | null = null;
   let melhorDistPromocao: string | null = null;
   let melhorCondPromocao: string | null = null;
@@ -1002,6 +1003,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
       // Isso evita que o card mostre preço de combo que o comprador não pode usar isoladamente
       let melhorPrecoFixa: number | null = null;
       let melhorDistFixa: string | null = null;
+      let melhorDescontoFixa: number = 0;
       let melhorEanFixa: string | null = null;
       let melhorLabFixa: string | null = null;
       
@@ -1043,6 +1045,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
             console.log(`[ANALISE-BEST-FIXA] dist=${distName}(${c.CodDist}) preco=${precoLiquido} est=${estoqueDist} ean=${c._sourceEan}`);
             melhorPrecoFixa = precoLiquido;
             melhorDistFixa = distName;
+            melhorDescontoFixa = Number(rawDesconto) || 0;
             melhorEanFixa = c._sourceEan || null;
             melhorLabFixa = c._sourceLab || null;
           }
@@ -1069,6 +1072,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
         melhorDistribuidora = melhorDistFixa;
         melhorEanSmartPed = melhorEanFixa;
         melhorLabSmartPed = melhorLabFixa;
+        melhorDescontoSmartPed = melhorDescontoFixa;
         console.log(`[ANALISE-SMARTPED] Melhor FIXA: R$${melhorPrecoFixa.toFixed(2)} (${melhorDistFixa})`);
       } else {
         // Fallback: qualquer condição com estoque (inclui combos/promoções)
@@ -1082,6 +1086,8 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
               melhorDistribuidora = resolveDistName(c);
               melhorEanSmartPed = c._sourceEan || null;
               melhorLabSmartPed = c._sourceLab || null;
+              const fallbackDesconto = c.Desconto !== undefined ? c.Desconto : (c.desconto !== undefined ? c.desconto : 0);
+              melhorDescontoSmartPed = Number(fallbackDesconto) || 0;
             }
           }
         }
@@ -1168,6 +1174,7 @@ async function analisarUmProduto(product: any, cnpj: string, allEans?: string[])
     melhorDistribuidora,
     melhorEanSmartPed,
     melhorLabSmartPed,
+    melhorDescontoSmartPed,
     melhorPrecoPromocao,
     melhorDistPromocao,
     melhorCondPromocao,

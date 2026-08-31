@@ -34,6 +34,7 @@ interface OfertaDia {
   melhorDistribuidora: string | null;
   melhorEanSmartPed?: string | null;
   melhorLabSmartPed?: string | null;
+  melhorDescontoSmartPed?: number;
   melhorPrecoPromocao?: number | null;
   melhorDistPromocao?: string | null;
   melhorCondPromocao?: string | null;
@@ -456,7 +457,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                   <div className="flex flex-wrap gap-1 mb-3">
                     {oferta.melhorPrecoSmartPed && (
                       <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                        smartped {formatCurrency(oferta.melhorPrecoSmartPed)} ({oferta.melhorDistribuidora}){oferta.economiaPercent > 0 ? ` · -${oferta.economiaPercent}% vs smartped` : ''} · <span className="font-mono">{oferta.melhorEanSmartPed || '—'}</span>
+                        smartped {formatCurrency(oferta.melhorPrecoSmartPed)} ({oferta.melhorDistribuidora}{oferta.melhorDescontoSmartPed ? `, -${oferta.melhorDescontoSmartPed}%` : ''}) · <span className="font-mono">{oferta.melhorEanSmartPed || '—'}</span>
                       </span>
                     )}
                     {!oferta.melhorPrecoSmartPed && oferta.naoEncontradoEmNenhumSistema && (
@@ -721,7 +722,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
               <div className="flex flex-wrap gap-1">
                 {detalheAberto.melhorPrecoSmartPed && (
                   <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                    smartped {formatCurrency(detalheAberto.melhorPrecoSmartPed)} ({detalheAberto.melhorDistribuidora}){detalheAberto.economiaPercent > 0 ? ` · -${detalheAberto.economiaPercent}% vs smartped` : ''} · <span className="font-mono">{detalheAberto.melhorEanSmartPed || '—'}</span>
+                    smartped {formatCurrency(detalheAberto.melhorPrecoSmartPed)} ({detalheAberto.melhorDistribuidora}{detalheAberto.melhorDescontoSmartPed ? `, -${detalheAberto.melhorDescontoSmartPed}%` : ''}) · <span className="font-mono">{detalheAberto.melhorEanSmartPed || '—'}</span>
                   </span>
                 )}
                 {!detalheAberto.melhorPrecoSmartPed && detalheAberto.naoEncontradoEmNenhumSistema && (
