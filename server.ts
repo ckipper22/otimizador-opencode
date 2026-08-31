@@ -12,7 +12,7 @@ import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatab
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
 import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto, mesmaDosagem } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
-import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
+import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, getDistribuidorAliases, saveDistribuidorAlias, deleteDistribuidorAlias, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
 const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   2: "Pan/Santa",
@@ -193,6 +193,20 @@ initTursoSchemaWithRetry();
 
 // Start SQLite cache purge
 startDbCachePurge();
+
+// Seed: Profarma é o único alias conhecido que funciona (nome fantasia = nome jurídico)
+// Outros distribuidores precisam de de-para manual pelo Carlos
+(async () => {
+  try {
+    const cnpj = "13408443000168"; // CNPJ principal do sistema
+    const aliases = await getDistribuidorAliases(cnpj);
+    const hasProfarma = aliases.some(a => a.nomeSmartped?.toUpperCase() === "PROFARMA");
+    if (!hasProfarma) {
+      await saveDistribuidorAlias({ codDist: 4, cnpj, aliasTrier: "PROFARMA", nomeSmartped: "Profarma" });
+      console.log("[SEED] Alias Profarma inserido em distribuidor_alias");
+    }
+  } catch {}
+})();
 
 // API Health Check
 app.get("/api/health", (req, res) => {
@@ -482,6 +496,51 @@ app.get("/api/whatsapp-rules/envios-pendentes", async (req, res) => {
     res.json({ envios: result });
   } catch (err: any) {
     console.error("Erro ao buscar envios pendentes WhatsApp lab:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== DISTRIBUIDOR ALIAS (De-Para SmartPed → Trier) =====
+
+// Buscar aliases de distribuidores
+app.get("/api/distribuidor-aliases", async (req, res) => {
+  try {
+    const cnpj = (req.query.cnpj as string || "").replace(/\D/g, "");
+    if (!cnpj) {
+      return res.status(400).json({ error: "cnpj é obrigatório." });
+    }
+    const aliases = await getDistribuidorAliases(cnpj);
+    res.json({ aliases });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Salvar alias de distribuidor
+app.post("/api/distribuidor-aliases", async (req, res) => {
+  try {
+    const { codDist, cnpj, aliasTrier, nomeSmartped } = req.body;
+    if (!codDist || !cnpj || !aliasTrier) {
+      return res.status(400).json({ error: "codDist, cnpj e aliasTrier são obrigatórios." });
+    }
+    await saveDistribuidorAlias({ codDist, cnpj, aliasTrier, nomeSmartped });
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Deletar alias de distribuidor
+app.delete("/api/distribuidor-aliases/:codDist", async (req, res) => {
+  try {
+    const codDist = Number(req.params.codDist);
+    const cnpj = (req.query.cnpj as string || "").replace(/\D/g, "");
+    if (!codDist || !cnpj) {
+      return res.status(400).json({ error: "codDist e cnpj são obrigatórios." });
+    }
+    await deleteDistribuidorAlias(codDist, cnpj);
+    res.json({ sucesso: true });
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });

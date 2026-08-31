@@ -176,6 +176,14 @@ const SCHEMA_SQL = `
     data_envio TEXT DEFAULT (${NOW_UTC}),
     PRIMARY KEY (ean, regra_id)
   );
+  CREATE TABLE IF NOT EXISTS distribuidor_alias (
+    cod_dist INTEGER NOT NULL,
+    cnpj TEXT NOT NULL,
+    alias_trier TEXT NOT NULL,
+    nome_smartped TEXT,
+    updated_at TEXT DEFAULT (${NOW_UTC}),
+    PRIMARY KEY (cod_dist, cnpj)
+  );
   CREATE TABLE IF NOT EXISTS precos_cache (
     ean TEXT,
     cod_dist INTEGER,
@@ -483,30 +491,31 @@ export async function getItensConfirmados(cnpj: string, dataInicio?: string, dat
 }
 
 /**
- * Retorna EANs faturados por qualquer distribuidora (último pedido conhecido por EAN).
- * Usa created_at (setado apenas no INSERT, nunca reescrito no ON CONFLICT)
- * pra obter a data real do faturamento, não updated_at (que é resetado a cada resync).
+ * Retorna EANs faturados por distribuidoras COM ALIAS CONFIGURADO (último pedido conhecido por EAN).
+ * JOIN com distribuidor_alias garante que SÓ distribuidoras com de-para configurado
+ * entram no cálculo — evita falso-positivo por incompatibilidade de nomenclatura
+ * SmartPed (nome fantasia) vs Trier (nome jurídico).
  * Retorna apenas o pedido mais recente por EAN (created_at DESC, dedup por ean).
- * Inclui nome_dist/cod_dist pra permitir matching específico por fornecedor.
  */
-export async function getFaturadosPendentes(cnpj: string): Promise<Array<{ ean: string; dataFaturado: string; nomeDist: string; codDist: number }>> {
+export async function getFaturadosPendentes(cnpj: string): Promise<Array<{ ean: string; dataFaturado: string; aliasTrier: string; codDist: number }>> {
   const d = getDb();
   if (!d) return [];
   try {
     const rows = await d.all(
-      `SELECT ean, created_at, nome_dist, cod_dist FROM itens_confirmados
-       WHERE cnpj = ? AND status = 'faturado'
-       ORDER BY created_at DESC`,
+      `SELECT ic.ean, ic.created_at, ic.cod_dist, da.alias_trier
+       FROM itens_confirmados ic
+       JOIN distribuidor_alias da ON ic.cod_dist = da.cod_dist AND ic.cnpj = da.cnpj
+       WHERE ic.cnpj = ? AND ic.status = 'faturado'
+       ORDER BY ic.created_at DESC`,
       cnpj
     );
     if (!rows || rows.length === 0) return [];
-    // created_at DESC + dedup: mantém só a primeira ocorrência de cada ean (mais recente)
     const seen = new Set<string>();
-    const result: Array<{ ean: string; dataFaturado: string; nomeDist: string; codDist: number }> = [];
+    const result: Array<{ ean: string; dataFaturado: string; aliasTrier: string; codDist: number }> = [];
     for (const row of rows as any[]) {
       if (!seen.has(row.ean)) {
         seen.add(row.ean);
-        result.push({ ean: row.ean, dataFaturado: row.created_at, nomeDist: row.nome_dist || "", codDist: row.cod_dist || 0 });
+        result.push({ ean: row.ean, dataFaturado: row.created_at, aliasTrier: row.alias_trier, codDist: row.cod_dist });
       }
     }
     return result;
@@ -900,6 +909,45 @@ export async function getWhatsAppEnviosLabPendentes(cnpj: string): Promise<Array
     }
     return result;
   } catch { return []; }
+}
+
+// Distribuidor Alias — de-para SmartPed → Trier
+export async function getDistribuidorAliases(cnpj: string): Promise<Array<{ codDist: number; aliasTrier: string; nomeSmartped: string }>> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const rows = await d.all(
+      `SELECT cod_dist, alias_trier, nome_smartped FROM distribuidor_alias WHERE cnpj = ?`,
+      cnpj
+    );
+    if (!rows || rows.length === 0) return [];
+    return (rows as any[]).map(r => ({
+      codDist: r.cod_dist,
+      aliasTrier: r.alias_trier,
+      nomeSmartped: r.nome_smartped || "",
+    }));
+  } catch { return []; }
+}
+
+export async function saveDistribuidorAlias(alias: { codDist: number; cnpj: string; aliasTrier: string; nomeSmartped?: string }) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `INSERT INTO distribuidor_alias (cod_dist, cnpj, alias_trier, nome_smartped, updated_at)
+      VALUES (?, ?, ?, ?, ${NOW_UTC})
+      ON CONFLICT(cod_dist, cnpj) DO UPDATE SET alias_trier = excluded.alias_trier, nome_smartped = excluded.nome_smartped, updated_at = ${NOW_UTC}`;
+    const args = [alias.codDist, alias.cnpj, alias.aliasTrier, alias.nomeSmartped || ""];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function deleteDistribuidorAlias(codDist: number, cnpj: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `DELETE FROM distribuidor_alias WHERE cod_dist = ? AND cnpj = ?`;
+    if (USE_TURSO) { await d.run(sql, codDist, cnpj); } else { d.prepare(sql).run(codDist, cnpj); }
+  } catch {}
 }
 
 export async function saveExternalSupplier(supplier: {
