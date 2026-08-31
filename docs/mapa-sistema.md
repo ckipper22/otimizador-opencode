@@ -322,6 +322,21 @@
 - **Quem escreve:** `saveWhatsAppRule` (database.ts:857), `deleteWhatsAppRule` (database.ts:882)
 - **Quem lê:** `getWhatsAppRules` (database.ts:872)
 
+### `whatsapp_envios_lab`
+
+| Coluna | Tipo | Constraints |
+|--------|------|-------------|
+| `ean` | TEXT | NOT NULL |
+| `regra_id` | TEXT | NOT NULL |
+| `cnpj` | TEXT | NOT NULL |
+| `data_envio` | TEXT | DEFAULT datetime('now') |
+
+- **UNIQUE/PRIMARY KEY:** `(ean, regra_id)`
+- **Propósito:** Registro de envio de mensagem de WhatsApp lab (feita no handleCopy do WhatsAppOrderModal). Usado pra checar se o item chegou (via compras-historico) antes de permitir recompra.
+- **⚠️ Feature nova (2026-08-31):** B.2 (checagem de liberação) e B.3 (alerta visual) ainda não implementados — só o registro está ativo.
+- **Quem escreve:** `saveWhatsAppEnvioLab` (database.ts), endpoint `POST /api/whatsapp-rules/registrar-envio`
+- **Quem lê:** `getWhatsAppEnviosLabPendentes` (database.ts), endpoint `GET /api/whatsapp-rules/envios-pendentes`
+
 ### `external_suppliers`
 
 | Coluna | Tipo | Constraints |

@@ -295,7 +295,7 @@ npm run lint     # Type checking (tsc --noEmit)
 - Similar/Referência → sem subs. Ruptura → qualquer coisa com estoque
 - Perfumaria/Correlatos → nunca buscar subs
 - SmartPed `TipoItem` é fallback
-- **Aguardando Chegar Profarma:** item faturado pela Profarma recentemente sem entrada confirmada → oferta de outro fornecedor ignorada, grupo separado na UI (fonte: `itens_confirmados` via `/api/profarma-faturados-pendentes`, NÃO dailyOrders)
+- **Aguardando Chegar:** item faturado por qualquer distribuidora SmartPed recentemente sem entrada confirmada → oferta de outro fornecedor ignorada, grupo separado na UI (fonte: `itens_confirmados` via `/api/profarma-faturados-pendentes`, NÃO dailyOrders). Generalizado de "Profarma 48h" em 2026-08-31.
 
 ### Motor de trocas
 - Prioridade para ofertas reais (CodDist > 0)
