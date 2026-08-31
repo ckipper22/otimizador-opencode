@@ -41,6 +41,7 @@
 | 31 | Cross-contamination SmartPed: PASSO 1.5 sem filtro de dosagem | Busca wildcard `Produtos/Buscar` (wildcards.slice(0,3) incluia genérico "MUCOSOLVAN%XAROPE") retornava EAN de formulação diferente (PED 15MG vs AD 30MG mesmo DCB). EAN contaminado entrava em `smartPedEans` → `eanList` → `analisarUmProduto` → `Condicoes/Ean`, misturando preço/estoque adulto com pediátrico. REF-FILTER-EAN não pegava (EANs SmartPed não estão no ERP). Fix: aplicar mesmo filtro `origDosage` (regex `/(\d+)\s*(mg|mcg|g|ml|ui|%)/i` em `prod.Descricao`) que já existia em `eansGrupo` (linhas 1377-1402) e PASSO EXTRA `analisarUmProduto` (linhas 809-820) ANTES de adicionar ao `smartPedEans` | server.ts:1413-1451 (PASSO 1.5) |
 | 32 | Filtro de dosagem comparava só número, não unidade | Regex `/(\d+)\s*(mg|mcg|g|ml|ui|%)/i` capturava número E unidade, mas os 4 pontos de comparação só checavam grupo 1 (número) — "10mg" passaria como igual a "10mcg" (1000x diferença). Fix: criar helper `mesmaDosagem()` em `server/parsers.ts` que compara número E unidade (normalizada lowercase), refatorar os 4 pontos: PASSO EXTRA `analisarUmProduto` (812), DCB grouping primário (1400), DCB grouping fallback (1410), PASSO 1.5 wildcards (1435) | server/parsers.ts:321, server.ts (4 locais) |
 | 33 | Referência agrupada por DCB em analisarFornecedorEmBackground | `analisarFornecedorEmBackground` (~1397-1420) agrupava todos os produtos por DCB+dosagem sem verificar se é referência/marca — mas regra de ouro (implementada em `analisarUmProduto` via cdb7ced) diz que referência nunca busca similares. Consequência: referência (ex: MUCOSOLVAN PED) tinha `eansGrupo` vazio (dosagem não batia entre descrição promo e catálogo), vendasMensais=0. Fix: antes do agrupamento DCB, resolver categoria via `resolveCategoria()` — se "marca", pular e setar `eansGrupo = [EAN próprio]` direto | server.ts:1404-1416 |
+| 34 | Fornecedor externo no SICF ignorava EAN existente + preço zerado bloqueava oferta | Bloco `externalSuppliers` em `/api/optimize` (~5657) nunca comparava `extProd.ean` com `item.ean` — todo matching era por texto (score >= 0.6), fraco e propenso a falso-negativo. Além disso, quando `bestSmartPedPrice <= 0` (sem preço SmartPed nem original), a condição `(bestSmartPedPrice - price) >= margemMinima` nunca fechava — fornecedor com preço real era ignorado. Fix: (A) EAN exato como caminho primário antes do texto, via `cleanEan(extProd.ean) === cleanEan(item.ean)`; (B) branch separada quando `bestSmartPedPrice <= 0`: aceita price > 0 sem checar margemMinima; (C) price null → nota em `observacao` ("fornecedor trabalha com item, sem preço") | server.ts:5657-5823 |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
 
@@ -427,6 +428,12 @@ Formato: `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). Gerado no build por `vite.conf
 - `discountTiers`: badges violeta nos mesmos 3 componentes (mutuamente exclusivos com `tiers`)
 - `discountTiers` no SwapsTable é display-only (não é populado pelo backend no `/api/optimize` ainda)
 
+### Integração no SICF (`/api/optimize`)
+
+Fornecedores externos também competem durante a otimização em lote (corrigido em 2026-08-31, CEGUEIRA ANTIGA #34). Matching primário por EAN exato (`cleanEan`), fallback por texto. Detalhes: `docs/arvore-decisoes-busca-api.md` seção 12.
+
+**Fluxos que NÃO recebem `externalSuppliers`:** `/api/encomendas/buscar-ofertas-batch` (pendência pra outra sessão).
+
 ---
 
 ## Busca Manual (Botão "+") — Normalização e Wildcards
@@ -528,7 +535,7 @@ Criar script standalone (`debug-analisar.ts`, já existe) que:
 
 > Pedido explícito do Carlos.
 
-**Integrar listas de promoção externas (fornecedores WhatsApp/aba Parâmetros) no SICF (motor de otimização por arquivo/lote).** Hoje essas fontes ficam isoladas na tela "Ofertas do Dia" e não entram na busca do SICF. Investigar a fundo antes de propor fix — ler como o SICF busca hoje, entender se dá pra reaproveitar `external_suppliers` sem duplicar lógica.
+**Integrar fornecedores externos no fluxo de encomendas (`/api/encomendas/buscar-ofertas-batch`).** Hoje `external_suppliers` só compete no SICF (`/api/optimize`, corrigido na sessão 2026-08-31 — ver CEGUEIRA ANTIGA #34) e na tela "Ofertas do Dia". O fluxo de encomendas não recebe `externalSuppliers` — listas externas não competem lá. Investigar se há bloqueio técnico ou se é só wiring de parâmetro.
 
 ---
 

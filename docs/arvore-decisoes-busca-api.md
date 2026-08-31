@@ -341,6 +341,80 @@ O flag `precoCalculadoViaDesconto` sinaliza pro frontend que o preço já embute
 
 ---
 
+## 12. Fornecedores externos no SICF (server.ts, bloco `externalSuppliers` em `/api/optimize`)
+
+> Listas de preço de fornecedores externos (WhatsApp/aba Parâmetros, tabela `external_suppliers`) competindo com preço SmartPed durante otimização em lote.
+
+### Trigger
+
+- `externalSuppliers` recebido como parâmetro de `/api/optimize` (array de `ExternalSupplier` com `products[]`)
+- Roda pra cada item do SICF, logo após o cálculo de `bestOriginalNovoPreco` e antes da comparação final de preço
+
+### Fonte de dados
+
+- `external_suppliers` no Turso (mesma tabela usada em Ofertas do Dia)
+- Cada produto tem: `description`, `price` (number | null), `discountPercent`, `discountTiers`, `ean` (opcional), `validade`
+
+### Árvore de decisão
+
+```
+1. Calcular bestSmartPedPrice (preço de referência SmartPed)
+   → getUnitCost(finalResult.melhor) se SmartPed achou oferta
+   → bestOriginalNovoPreco se SmartPed não achou mas tem ref. própria
+   → item.precoOriginal como último recurso
+
+2. FASE 1: Match por EAN exato (caminho primário)
+   → Para cada fornecedor ativo (status != "descartada"):
+     → Para cada produto com validade não expirada:
+       → Se extProd.ean preenchido E cleanEan(extProd.ean) === cleanEan(item.ean):
+         → Adicionar a eanMatchCandidates[]
+   → Se há candidatos EAN:
+     → Calcular preço efetivo de cada um (resolveExtPrice)
+     → Escolher o de menor preço
+     → Logs: [FORNECEDOR WHATSAPP] Match por EAN exato
+     → Pular pra step 4
+
+3. FASE 2: Match por texto (fallback — nenhum EAN bateu)
+   → Mesmo comportamento anterior:
+     → validateSwapEquivalence() pra rejeitar divergência
+     → Filtro de dosagem/quantidade via regex
+     → Score de overlap de palavras (>= 0.6) + primeira palavra
+     → Melhor candidato vira matchedExternal
+   → Logs: [FORNECEDOR WHATSAPP] Match por texto
+
+4. Resolver preço do matchedExternal
+   → price direto > 0: usar
+   → discountPercent + bestSmartPedPrice > 0: calcular
+   → discountTiers + bestSmartPedPrice > 0: usar faixa menor
+   → price = null: fornecedor "trabalha com item" (sem preço)
+
+5. Decisão de troca
+   a) matchedExternal.price > 0 AND bestSmartPedPrice <= 0:
+      → ACEITAR (sem baseline, qualquer preço real é melhor que R$ 0)
+      → Não aplicar margemMinima (não há baseline pra calcular economia)
+   b) matchedExternal.price > 0 AND (bestSmartPedPrice - price) >= margemMinima:
+      → CRIAR SWAP (comportamento original)
+   c) matchedExternal.price === null:
+      → NÃO criar troca
+      → Adicionar nota em observacao: "Fornecedor 'X' trabalha com este item (lista sem preço definido)"
+   d) Nenhuma das acima:
+      → Manter original (comportamento padrão)
+```
+
+### Campos no report row
+
+- `observacao`: recebe nota quando fornecedor trabalha com item sem preço (append com `|` se já existir valor)
+- `avisoOriginal`/`avisoNovo`: NÃO afetados (são do Sino de Observação, fonte separada)
+- `motivoAcao`: não é setado neste bloco (reservado pra `whatsapp_regra_lab`)
+
+### Limitações conhecidas
+
+- **Só existe em `/api/optimize`** — `/api/encomendas/buscar-ofertas-batch` NÃO recebe `externalSuppliers` (decisão pra outra sessão)
+- `ean` no `ExternalProduct` é campo opcional (não faz parte do tipo oficial) — muchos fornecedores não preenchem
+- Matching textual é mais fraco que `mesmaApresentacao()`/DCB usado em Ofertas do Dia
+
+---
+
 ## Regra de consistência entre fluxos
 
 > **NÃO misturar lógica de matching entre fluxos diferentes.**
@@ -349,6 +423,7 @@ O flag `precoCalculadoViaDesconto` sinaliza pro frontend que o preço já embute
 |-------|---------------|-------------|----------|
 | Ofertas do Dia (2-4) | Ferramentinhas `similares/{ean}` | SmartPed `Condicoes/Ean` + `Molecula` | `mesmaApresentacao()` pra agrupar, EAN exato pra referência |
 | SICF/Otimização (6-7) | SmartPed `Condicoes` (tem campo `Estoque`) | SmartPed `Condicoes` | DCB+dosagem pra wildcards, EAN exato pra batch |
+| Fornecedores externos no SICF (12) | N/A (não calcula estoque) | Preço próprio do fornecedor | EAN exato (primário), texto overlap (fallback) |
 | Busca manual (5) | SmartPed (retorna estoque por condição) | SmartPed | Texto normalizado + filtro pós-busca |
 | Ferramentinhas (8-9) | Ferramentinhas `similares` | N/A (só estoque) | EAN exato (auto-inclusivo) |
 
