@@ -1,5 +1,10 @@
 # Integração: Sistema de Encomendas (IA Estúdio)
 
+> Atualizado em 2026-08-31. Movido de `docs/_archive/`.
+> Detalhes de schema/tabelas: `docs/mapa-sistema.md` seção 4.
+
+---
+
 ## 1. Visão Geral
 
 Dois sistemas Cloud Run se comunicam via REST:
@@ -35,7 +40,7 @@ x-api-key: SUA_CHAVE_INTEGRACAO
 |--------|----------|-------|
 | `.env` (dev local) | `ENCOMENDAS_INTEGRATION_KEY` | `SUA_CHAVE_INTEGRACAO` |
 | Cloud Run | `ENCOMENDAS_INTEGRATION_KEY` | Mesma chave (via `--env-vars-file`) |
-| Backend (`server.ts:209`) | `ENCOMENDAS_API_KEY` | Lê de `process.env.ENCOMENDAS_INTEGRATION_KEY` |
+| Backend (`server.ts`) | `ENCOMENDAS_API_KEY` | Lê de `process.env.ENCOMENDAS_INTEGRATION_KEY` |
 
 ### Como o Otimizador usa
 
@@ -46,9 +51,9 @@ O Otimizador **nunca** envia o token do frontend. O backend (`server.ts`) funcio
 
 ---
 
-## 3. Endpoints da API Encomendas
+## 3. Endpoints
 
-### 3.1. GET /api/integracao/encomendas/pendentes
+### 3.1. GET /api/integracao/encomendas/pendentes (proxy)
 
 **Purpose:** Buscar encomendas com status "Pendente"
 
@@ -96,7 +101,7 @@ Content-Type: application/json
 
 ---
 
-### 3.2. POST /api/integracao/encomendas/confirmar-pedido
+### 3.2. POST /api/integracao/encomendas/confirmar-pedido (proxy)
 
 **Purpose:** Atualizar status de encomendas para "Encomendado" após o pedido ser enviado à distribuidora
 
@@ -141,6 +146,21 @@ Content-Type: application/json
 
 ---
 
+### 3.3. POST /api/encomendas/buscar-ofertas-batch (direto, não é proxy)
+
+**Purpose:** Buscar ofertas SmartPed pra lote de encomendas de uma vez
+
+**Diferença dos endpoints anteriores:** Este NÃO é proxy pro Encomendas — é busca direta na SmartPed, feito por este servidor.
+
+**Endpoint local:** `POST /api/encomendas/buscar-ofertas-batch`
+
+**Throttle proposital:**
+- `CONCURRENCY = 1` (processa 1 EAN por vez)
+- `ENCOMENDA_DELAY_MS = 200` (delay entre EANs)
+- **Motivo:** Bug #39 — APIs externas sobrecarregavam e itens se perdiam quando processados em paralelo
+
+---
+
 ## 4. Fluxo Completo de Uso
 
 ```
@@ -151,7 +171,7 @@ Content-Type: application/json
 │  1. BALCAO cadastra encomenda                                        │
 │     └─ Sistema Encomendas: status = "Pendente"                       │
 │                                                                      │
-│  2. OTIMIZADOR: Botao "📦 Importar Encomendas"                       │
+│  2. OTIMIZADOR: Botao "Importar Encomendas"                          │
 │     └─ Frontend chama GET /api/integracao/encomendas/pendentes       │
 │        └─ Backend proxy injeta x-api-key e repassa ao Encomendas     │
 │           └─ Encomendas retorna array de encomendas pendentes        │
@@ -163,20 +183,24 @@ Content-Type: application/json
 │                                                                      │
 │  4. MODAL DE REVISAO                                                 │
 │     ├─ Tabela: Checkbox | Produto | Cliente/Hora | Obs | Oferta | Qtd│
-│     ├─ Dropdown: 📦 Mesmo Produto | 🔄 Genericos/Similares          │
+│     ├─ Dropdown: Mesmo Produto | Genericos/Similares                 │
 │     ├─ Usuario ajusta oferta e quantidade                            │
 │     └─ Clica "Importar Selecionados"                                 │
 │                                                                      │
 │  5. CONFIRMACAO                                                      │
 │     ├─ Itens injetados no relatorio com origem="encomenda"           │
 │     ├─ alternatives = TODAS as ofertas (permite trocar no pre-pedido)│
-│     ├─ Salvo em localStorage + Turso (tabela itens_manuais)          │
+│     ├─ Salvo em Turso (tabela itens_manuais, campo origem/id_encomenda)│
 │     └─ (Opcional) POST confirmar-pedido → status "Encomendado"       │
 │                                                                      │
 │  6. PRE-PEDIDO (SwapsTable)                                          │
 │     ├─ ConditionSelector mostra todas as ofertas como alternativas   │
 │     ├─ Usuario pode trocar fornecedor/condicao se pedido min. falhar │
 │     └─ Faturamento segue fluxo normal                                │
+│                                                                      │
+│  7. POS-FATURAMENTO (automatico)                                     │
+│     └─ Apos retorno SmartPed, POST confirmar-pedido enviado          │
+│        automaticamente pra encomendas processadas                     │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -190,24 +214,35 @@ Content-Type: application/json
 | `ENCOMENDAS_API_URL` | Otimizador (backend) | URL base do sistema Encomendas |
 | `ENCOMENDAS_INTEGRATION_KEY` | Otimizador (backend) | Chave `x-api-key` para autenticacao |
 
-**⚠️ IMPORTANTE:** Ambas as variaveis devem estar configuradas no Cloud Run. O deploy com `--set-env-vars` (apenas Turso) APAGA essas variaveis. Sempre usar `--env-vars-file` com todas as 12 variaveis do `.env`.
+**⚠️ IMPORTANTE:** Ambas as variaveis devem estar configuradas no Cloud Run. O deploy com `--set-env-vars` (apenas Turso) APAGA essas variaveis. Sempre usar `--env-vars-file` com todas as variaveis do `.env`.
 
 ---
 
-## 6. Erros Comuns e Solucoes
+## 6. Colunas origem/id_encomenda
+
+As tabelas `order_items`, `itens_confirmados` e `itens_manuais` possuem as colunas `origem` e `id_encomenda` pra rastrear se um item veio de encomenda vs. fluxo manual/normal.
+
+- `origem`: valor `'encomenda'` quando o item foi importado do sistema Encomendas
+- `id_encomenda`: ID da encomenda no sistema Encomendas (cruza dados entre sistemas)
+
+**Histórico:** Bug #27 — migração dessas colunas nunca rodava contra Turso (só existia em `runMigrations`, usado exclusivamente no caminho SQLite puro). Corrigido: `initTursoSchema()` agora tem as 6 migrações ALTER TABLE (database.ts:266-271).
+
+---
+
+## 7. Erros Comuns e Solucoes
 
 | Erro | Causa | Solucao |
 |------|-------|---------|
 | `401 Não autorizado` | `ENCOMENDAS_INTEGRATION_KEY` ausente ou incorreta no Cloud Run | Redeploy com `--env-vars-file` contendo todas as variaveis |
 | `500 Resposta não é JSON` | Encomendas offline ou URL incorreta | Verificar `ENCOMENDAS_API_URL` e status do servico Encomendas |
 | `400 Array 'itens' é obrigatório` | Payload de confirmar-pedido sem campo `itens` | Verificar formato do payload no frontend |
-| Tela branca apos importar | `alternatives` com 1 oferta apenas | Versao 00047+ leva TODAS as ofertas |
 
 ---
 
-## 7. Notas Tecnicas
+## 8. Notas Tecnicas
 
 - **Proxy reverso:** O Otimizador esconde a chave de integracao do frontend. Request do browser → `/api/integracao/...` → backend injeta `x-api-key` → Encomendas.
 - **Filtro duplo:** O backend Otimizador filtra `status === "Pendente"` mesmo que o Encomendas já filtre (garantia extra).
 - **CORS:** O proxy evita problemas de CORS entre navegadores e o servico Encomendas.
 - **Rastreabilidade:** Cada item importado salva `idEncomenda` no Turso (tabela `itens_manuais`), permitindo cruzar dados entre sistemas.
+- **Pendência:** Fornecedores externos (`external_suppliers`) NÃO competem no fluxo de encomendas (`/api/encomendas/buscar-ofertas-batch`). Decisão pra outra sessão.

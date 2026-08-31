@@ -434,5 +434,5 @@ O flag `precoCalculadoViaDesconto` sinaliza pro frontend que o preço já embute
 - **AGENTS.md** → "Dois fluxos de matching independentes" (seção ~linha 89): regra geral
 - **AGENTS.md** → "Mecanismos de Equivalência": 3 mecanismos de agrupamento
 - **AGENTS.md** → "Ofertas do Dia — propósito e funcionalidade": contexto do card/modal
-- **API_TREE_SMARTPED.md** (arquivado): detalhes de cada endpoint SmartPed
-- **API_TREE_TRIER.md** (arquivado): detalhes de cada endpoint Ferramentinhas
+- **API_TREE_SMARTPED.md** (`docs/`): detalhes de cada endpoint SmartPed
+- **API_TREE_TRIER.md** (`docs/`): detalhes de cada endpoint Ferramentinhas

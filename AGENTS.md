@@ -1,6 +1,7 @@
 # Diretrizes de Operação do Sistema
 
 > **Contexto completo:** ver `memorias/` (projectbrief.md, productContext.md, systemPatterns.md, techContext.md, progress.md)
+> **Mapa do sistema (arquitetura, APIs, banco):** ver `docs/mapa-sistema.md`
 
 ---
 
@@ -370,7 +371,7 @@ Formato: `vYYYY-MM-DD-HHmm` (fuso Panambi/UTC-3). Gerado no build por `vite.conf
 - **NUNCA** retornar linhas cruas do banco (snake_case→camelCase)
 - **NUNCA** matar/iniciar processos node (`npm run dev`, `Stop-Process`)
 - **NUNCA** fazer deploy sem autorização explícita do usuário
-- **NUNCA** inventar endpoints — verificar `API_TREE_*.md` primeiro
+- **NUNCA** inventar endpoints — verificar `docs/API_TREE_SMARTPED.md` / `docs/API_TREE_TRIER.md` primeiro
 - **NUNCA** usar `JSON.stringify` para comparar listas (usar `normalizeProducts()`)
 
 ---
@@ -506,6 +507,117 @@ Objeto bruto de promoção (vindo do WhatsApp/fornecedor externo) só tem `{desc
 **Genérico/Similar:** aí sim busca similares via `mesmaApresentacao` — múltiplos fabricantes fazem o "mesmo" produto de fato.
 
 **Categoria do produto** SEMPRE deve ser resolvida a partir do produto MATCHADO no catálogo (`produtoExato`), nunca do objeto bruto da promoção — o objeto bruto não carrega `grupo`/`TipoItem`, sempre cai em "outros" (31da6e3).
+
+---
+
+## Fluxo de Busca por Tipo de Item (Ruptura vs Sem Ruptura)
+
+> Migrado de `docs/_archive/business-rules.md` (seção 4.20). Documentação detalhada do motor de deciding.
+
+### Decisão: o item está em ruptura?
+
+`originalHasStock` é calculado em `server.ts` (~linha 1367):
+
+```
+condicoesOriginal = [...condicoesRaw, ...substitutosRaw]
+  .filter(s => cleanEan(s.Ean) === cleanEan(item.ean))
+originalHasStock = condicoesOriginal.some(s => parseSmartPedEstoque(s.Estoque) > 0)
+```
+
+- `true` → caminho **SEM ruptura** (item tem estoque)
+- `false` → caminho **COM ruptura** (item sem estoque)
+
+### Caminho SEM Ruptura (`originalHasStock = true`)
+
+**Genéricos (TipoItem "G"):** busca completa — RUPTURA-REGEX também ativa pra genéricos com estoque. findBestSubstitute usa tipos estritos (G, O) e exige economia ≥ margemMinima.
+
+**Éticos/Referência/Similares (TipoItem R, E, O, S):** busca do mesmo produto. Filtro do dropdown mantém só EANs com mesma descrição.
+
+**Perfumaria (TipoItem "P"):** SEM busca de substitutos. SmartPed retorna `Substitutos: []`. Buscar APENAS `Condicoes/Ean`.
+
+### Caminho COM Ruptura (`originalHasStock = false`)
+
+3 camadas extras de busca:
+1. **TARGET-EAN-PRE:** consulta EANs alvo dos substitutos já conhecidos
+2. **RUPTURA-REGEX:** busca por descrição via `Produtos/Buscar` + `Condicoes/Ean` — exclusivo de ruptura
+3. **Fallback Ferramentinhas:** se `findBestSubstitute` retorna null, chama `fetchSimilarGenericos` como último recurso
+
+Filtro de tipos **relaxado** (G, S, R, E — qualquer coisa). MargemMinima **não é obrigatória** (bypass).
+
+### Tabela Comparativa
+
+| Aspecto | Ético/Similar s/ ruptura | Genérico s/ ruptura | Qualquer c/ ruptura |
+|---------|--------------------------|---------------------|---------------------|
+| `originalHasStock` | `true` | `true` | `false` |
+| RUPTURA-REGEX | Não | **Sim** | **Sim** |
+| Tipos aceitos (swap-engine) | G, O (estrito) | G, O (estrito) | **G, S, R, E (qualquer)** |
+| Exigir economia ≥ margemMinima | Sim | Sim | **Não** (bypass) |
+| Fallback Ferramentinhas | Não | Não | **Sim** |
+| EANs no dropdown | Mesmo produto | TODOS | TODOS |
+
+### Fluxo Visual
+
+```
+[originalHasStock?]
+    ├── SIM (sem ruptura)
+    │   ├── [isGeneric?]
+    │   │   ├── SIM → [RUPTURA-REGEX] + tipos estritos + margemMinima
+    │   │   └── NÃO → (pula RUPTURA-REGEX)
+    │   └── [Dropdown:] Genérico=TODOS, Ético=mesmo produto
+    │
+    └── NÃO (ruptura)
+        ├── [RUPTURA-REGEX] + tipos relaxados + sem margemMinima
+        ├── [Fallback Ferramentinhas se findBestSubstitute=null]
+        └── [Dropdown: TODOS os EANs encontrados]
+```
+
+---
+
+## Regras de Cálculo — Vendas e Estoque
+
+> Migrado de `docs/_archive/vendas-estoque-reference.md`. Regras fundamentais: SmartPed NÃO tem dados de venda nem estoque real do ERP.
+
+### Vendas Mensais
+
+```
+1. Buscar vendas-detalhadas/{ean} para CADA EAN do grupo (Ferramentinhas)
+2. Filtrar apenas últimos 4 meses
+3. Somar TODAS as vendas (NÃO por-EAN)
+4. Calcular mesesDiff das datas reais (primeiraData / ultimaData)
+5. mediaMensal = Math.round(totalVendas / mesesDiff)
+```
+
+**NÃO:**
+- Calcular por-EAN e depois somar (infla resultado)
+- Usar `vendas-semanais` (desatualizado)
+- Dividir por 4 hardcoded (usar mesesDiff real)
+- Incluir EANs SmartPed (não têm vendas no ERP)
+
+### Estoque
+
+```
+1. Buscar similares/{ean} (Ferramentinhas)
+2. Filtrar por apresentação (SH≠CR≠GEL)
+3. estoqueTotal = soma de qtd_estoque dos produtos filtrados
+4. estoquePorLaboratorio = agrupado por nom_laborat
+```
+
+**NÃO:**
+- Usar estoque de SmartPed (`Estoque` em Condicoes) — é estoque da dist., não do ERP
+- Misturar apresentações (SH com CR)
+- Usar `eansGrupo[].estoque` do buscar-lote (pode estar desatualizado)
+
+### Buscar-lote — Wildcards Trier
+
+A Trier usa `%` como wildcard. Quando `buscar-lote` retorna vazio:
+
+```
+1. Tentar: buscar-lote(["PRINCÍPIO%"])     → wildcard
+2. Tentar: buscar-lote(["PRINCÍPIO"])      → sem wildcard
+3. Fallback: similares/{ean}               → por EAN direto
+```
+
+Exemplo: "CETOCONAZOL 20MG/ML SH 100ML" retorna vazio → `buscar-lote(["CETOCONAZOL%"])` retorna 16 produtos.
 
 ---
 
