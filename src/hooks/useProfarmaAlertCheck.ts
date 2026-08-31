@@ -10,15 +10,18 @@ function cleanEan(e: string): string {
   return cleaned;
 }
 
-interface ProfarmaFaturadoPendente {
+interface FaturadoPendente {
   ean: string;
   dataFaturado: string;
+  nomeDist: string;
+  codDist: number;
 }
 
 /**
- * Hook compartilhado para detecção de itens Profarma faturados sem entrada.
+ * Hook compartilhado para detecção de itens faturados sem entrada confirmada.
+ * Generalizado de "Profarma 48h" pra qualquer distribuidora SmartPed.
  * Fonte: tabela itens_confirmados (Turso) via /api/profarma-faturados-pendentes.
- * Usado tanto em SwapsTable.tsx (alerta visual + grupo "Aguardando Chegar Profarma")
+ * Usado tanto em SwapsTable.tsx (alerta visual + grupo "Aguardando Chegar")
  * quanto em useOptimizationResult.ts (modal de confirmação antes de faturar).
  */
 export function useProfarmaAlertCheck(
@@ -30,14 +33,14 @@ export function useProfarmaAlertCheck(
     () => new Set(relevantEans.map(cleanEan).filter(Boolean)),
     [relevantEans]
   );
-  // Map ean → data do faturamento (YYYY-MM-DD HH:MM:SS do Turso)
-  const [profarmaFaturadosMap, setProfarmaFaturadosMap] = useState<Map<string, string>>(new Map());
+  // Map ean → { dataFaturado, nomeDist, codDist }
+  const [faturadosMap, setFaturadosMap] = useState<Map<string, { dataFaturado: string; nomeDist: string; codDist: number }>>(new Map());
   const [isLoading, setIsLoading] = useState(false);
 
-  // Buscar Profarma faturados pendentes quando o hook é montado ou cnpj muda
+  // Buscar faturados pendentes quando o hook é montado ou cnpj muda
   useEffect(() => {
     if (!alertaProfarma48hEnabled || !cnpj || relevantEansSet.size === 0) {
-      setProfarmaFaturadosMap(new Map());
+      setFaturadosMap(new Map());
       return;
     }
 
@@ -48,16 +51,16 @@ export function useProfarmaAlertCheck(
         const res = await fetch(`/api/profarma-faturados-pendentes?cnpj=${encodeURIComponent(cnpj)}`);
         if (!res.ok) return;
         const data = await res.json();
-        const eans: ProfarmaFaturadoPendente[] = data.eans || [];
+        const eans: FaturadoPendente[] = data.eans || [];
         if (!cancelled) {
-          const map = new Map<string, string>();
+          const map = new Map<string, { dataFaturado: string; nomeDist: string; codDist: number }>();
           for (const entry of eans) {
             const ean = cleanEan(entry.ean);
             if (ean && relevantEansSet.has(ean)) {
-              map.set(ean, entry.dataFaturado);
+              map.set(ean, { dataFaturado: entry.dataFaturado, nomeDist: entry.nomeDist, codDist: entry.codDist });
             }
           }
-          setProfarmaFaturadosMap(map);
+          setFaturadosMap(map);
         }
       } catch {
         // Ignore errors — keep empty map (no alerts)
@@ -68,23 +71,23 @@ export function useProfarmaAlertCheck(
     return () => { cancelled = true; };
   }, [cnpj, alertaProfarma48hEnabled, relevantEansSet]);
 
-  // EANs com entrada confirmada via compras-historico (cheçagem secundária)
-  const [profarmaConfirmedEntries, setProfarmaConfirmedEntries] = useState<Set<string>>(new Set());
-  const [profarmaChecking, setProfarmaChecking] = useState<Set<string>>(new Set());
+  // EANs com entrada confirmada via compras-historico (checagem secundária)
+  const [confirmedEntries, setConfirmedEntries] = useState<Set<string>>(new Set());
+  const [checking, setChecking] = useState<Set<string>>(new Set());
 
   // Verificar entradas confirmadas via proxy compras-historico
   useEffect(() => {
     if (!alertaProfarma48hEnabled) return;
-    if (profarmaFaturadosMap.size === 0) return;
+    if (faturadosMap.size === 0) return;
 
-    const toCheck = Array.from(profarmaFaturadosMap.entries()).filter(
-      ([ean]) => !profarmaConfirmedEntries.has(ean) && !profarmaChecking.has(ean)
+    const toCheck = Array.from(faturadosMap.entries()).filter(
+      ([ean]) => !confirmedEntries.has(ean) && !checking.has(ean)
     );
     if (toCheck.length === 0) return;
 
-    const newChecking = new Set(profarmaChecking);
+    const newChecking = new Set(checking);
     toCheck.forEach(([ean]) => newChecking.add(ean));
-    setProfarmaChecking(newChecking);
+    setChecking(newChecking);
 
     let cancelled = false;
     (async () => {
@@ -94,18 +97,19 @@ export function useProfarmaAlertCheck(
         if (cancelled) break;
         const batch = toCheck.slice(i, i + BATCH_SIZE);
         await Promise.all(
-          batch.map(async ([ean, dataFaturado]) => {
+          batch.map(async ([ean, entry]) => {
             try {
               const res = await fetch(`/api/produtos/compras-historico/${ean}?meses=1`);
               if (!res.ok) return;
               const data = await res.json();
               const compras = data.compras || data.Compras || [];
-              const faturadoDate = new Date(dataFaturado.replace(' ', 'T') + 'Z');
+              const faturadoDate = new Date(entry.dataFaturado.replace(' ', 'T') + 'Z');
               const faturadoDateOnly = new Date(faturadoDate.getFullYear(), faturadoDate.getMonth(), faturadoDate.getDate());
+              const nomeDistUpper = entry.nomeDist.toUpperCase();
               for (const compra of compras) {
                 const fornecedor = String(compra.fornecedor || compra.Fornecedor || "").toUpperCase();
                 const dataEntrada = compra.data || compra.Data || compra.dataEntrada || "";
-                if (fornecedor.includes("PROFARMA") && dataEntrada) {
+                if (nomeDistUpper && fornecedor.includes(nomeDistUpper) && dataEntrada) {
                   const entradaParts = dataEntrada.split("-");
                   const entradaDate =
                     entradaParts.length === 3
@@ -124,12 +128,12 @@ export function useProfarmaAlertCheck(
         );
       }
       if (!cancelled) {
-        setProfarmaConfirmedEntries((prev) => {
+        setConfirmedEntries((prev) => {
           const next = new Set(prev);
           confirmed.forEach((ean) => next.add(ean));
           return next;
         });
-        setProfarmaChecking((prev) => {
+        setChecking((prev) => {
           const next = new Set(prev);
           toCheck.forEach(([ean]) => next.delete(ean));
           return next;
@@ -139,24 +143,31 @@ export function useProfarmaAlertCheck(
     return () => {
       cancelled = true;
     };
-  }, [profarmaFaturadosMap, alertaProfarma48hEnabled]);
+  }, [faturadosMap, alertaProfarma48hEnabled]);
 
-  /** true se o EAN está faturado pela Profarma sem entrada confirmada */
+  /** true se o EAN está faturado sem entrada confirmada */
   const isEanProfarmaAlerted = (rawEan: string): boolean => {
     if (!alertaProfarma48hEnabled) return false;
     const ean = cleanEan(rawEan);
-    return profarmaFaturadosMap.has(ean) && !profarmaConfirmedEntries.has(ean);
+    return faturadosMap.has(ean) && !confirmedEntries.has(ean);
   };
 
-  /** Retorna a data do faturamento Profarma (YYYY-MM-DD HH:MM:SS) ou undefined */
+  /** Retorna a data do faturamento (YYYY-MM-DD HH:MM:SS) ou undefined */
   const getProfarmaOrderDate = (rawEan: string): string | undefined => {
     const ean = cleanEan(rawEan);
-    return profarmaFaturadosMap.get(ean);
+    return faturadosMap.get(ean)?.dataFaturado;
+  };
+
+  /** Retorna o nome da distribuidora que faturou o EAN, ou undefined se não há alerta */
+  const getFaturadoDistribuidora = (rawEan: string): string | undefined => {
+    const ean = cleanEan(rawEan);
+    return faturadosMap.get(ean)?.nomeDist;
   };
 
   return {
     isEanProfarmaAlerted,
     getProfarmaOrderDate,
+    getFaturadoDistribuidora,
     isLoadingProfarma: isLoading,
   };
 }

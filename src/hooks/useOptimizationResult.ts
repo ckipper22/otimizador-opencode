@@ -552,14 +552,14 @@ export function useOptimizationResult({
     () => Array.from(new Set((result?.report || []).flatMap((item: any) => [item.originalEan, item.novoEan]).filter(Boolean))),
     [result]
   );
-  const { isEanProfarmaAlerted, getProfarmaOrderDate } = useProfarmaAlertCheck(config.cnpj, config.alertaProfarma48h !== false, reportEans);
+  const { isEanProfarmaAlerted, getProfarmaOrderDate, getFaturadoDistribuidora } = useProfarmaAlertCheck(config.cnpj, config.alertaProfarma48h !== false, reportEans);
 
   const pendingAlertItems = useMemo(() => {
     if (!result || !result.report) return [];
     return activeReport.filter((item) => {
       if (item.disabled) return false;
 
-      const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) && (isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan));
+      const isProfarmaAlert = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
 
       if (isProfarmaAlert && !item.isProfarmaAlertAck) {
         return true;
@@ -567,7 +567,7 @@ export function useOptimizationResult({
 
       return item.alertaConfirmarQtd;
     }).map((item) => {
-      const isProfarmaAlert = (item.distribuidora && String(item.distribuidora).toUpperCase().includes("PROFARMA")) && (isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan));
+      const isProfarmaAlert = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
 
       if (isProfarmaAlert) {
         const orderDateRaw = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
@@ -576,17 +576,18 @@ export function useOptimizationResult({
               timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short'
             })
           : "";
+        const distName = getFaturadoDistribuidora(item.novoEan) || getFaturadoDistribuidora(item.originalEan) || "distribuidora";
         return {
           ...item,
           isProfarmaAlert: true,
           motivoAlertaProfarma: orderDate
-            ? `Este item foi enviado para a Profarma em ${orderDate} (dentro das últimas 48h). Verifique a quantidade desejada ou digite 0 para remover do lote.`
-            : `Este item foi enviado para a Profarma nas últimas 48h. Verifique a quantidade desejada ou digite 0 para remover do lote.`
+            ? `Este item foi faturado por ${distName} em ${orderDate}. Verifique a quantidade desejada ou digite 0 para remover do lote.`
+            : `Este item foi faturado por ${distName} recentemente. Verifique a quantidade desejada ou digite 0 para remover do lote.`
         };
       }
       return item;
     });
-  }, [result, activeReport, isEanProfarmaAlerted, getProfarmaOrderDate]);
+  }, [result, activeReport, isEanProfarmaAlerted, getProfarmaOrderDate, getFaturadoDistribuidora]);
 
   useEffect(() => {
     if (pendingAlertItems.length > 0) {
