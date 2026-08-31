@@ -54,6 +54,16 @@ export interface SwapReportItem {
   estoqueTotal?: number;
   tiers?: Array<{ minQty: number; price: number }>;
   discountTiers?: Array<{ minQty: number; discountPercent: number }>;
+  originalDist?: string;
+  originalCodDist?: number;
+  originalEstoque?: number;
+  originalPrecoCotado?: number;
+  originalCondicao?: string;
+  originalCodProdutoDist?: string;
+  originalPrazo?: number;
+  originalCodProduto?: string;
+  isProfarmaAlertAck?: boolean;
+  alertaConfirmarQtd?: boolean;
   alternatives?: Array<{
     ean: string;
     descricao: string;
