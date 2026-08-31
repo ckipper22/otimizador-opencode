@@ -506,8 +506,9 @@ export function useBilling({
       dists.filter((d: any) => d.Status === 3).map((d: any) => String(d.CodDist || d.codDist || "").trim())
     );
 
-    // Monta a lista de encomendas elegíveis nesse ciclo (mesma lógica de elegibilidade de antes).
-    const paraConfirmar: { encomenda: any; payload: { id: string; fornecedor: string; dataPrevisao: string } }[] = [];
+    // Monta a lista de encomendas elegíveis nesse ciclo.
+    // Dois tipos: sucesso (pelo menos 1 item faturado) e falha (finalizado mas 0 faturado)
+    const paraConfirmar: { encomenda: any; payload: { id: string; fornecedor: string; dataPrevisao: string; status?: string; observacao?: string } }[] = [];
 
     try {
       for (const encPendente of billingContext.encomendasPendentes) {
@@ -530,6 +531,7 @@ export function useBilling({
         });
 
         if (itensFaturadosDaEnc.length > 0) {
+          // Caso de SUCESSO: pelo menos 1 item faturado
           paraConfirmar.push({
             encomenda: encPendente,
             payload: {
@@ -539,7 +541,32 @@ export function useBilling({
             }
           });
         } else {
-          console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${encPendente.idEncomenda} NÃO confirmada — nenhum item foi faturado.`);
+          // Caso de FALHA: distribuidor finalizou (Status===3) mas NENHUM item foi faturado
+          // Motivo: pegar do campo Motivo/motivo do retorno, ou fallback genérico
+          let motivoFallo = "Distribuidor finalizou o pedido sem faturar nenhum item da encomenda.";
+          for (const itemEnc of encPendente.itens) {
+            const eanLimpo = String(itemEnc.ean || "").trim();
+            const codDistStr = String(itemEnc.codDist || "").trim();
+            const retornoItem = itensRetorno.find((ri: any) =>
+              String(ri.Ean || ri.ean || "").trim() === eanLimpo &&
+              String(ri.CodDist || ri.codDist || "").trim() === codDistStr
+            );
+            if (retornoItem) {
+              const motivo = retornoItem.Motivo || retornoItem.motivo || "";
+              if (motivo) { motivoFallo = motivo; break; }
+            }
+          }
+          paraConfirmar.push({
+            encomenda: encPendente,
+            payload: {
+              id: encPendente.idEncomenda,
+              fornecedor: encPendente.fornecedor,
+              dataPrevisao: new Date().toISOString().split("T")[0],
+              status: "nao_atendido",
+              observacao: motivoFallo
+            }
+          });
+          console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${encPendente.idEncomenda} marcada como NÃO ATENDIDA — motivo: ${motivoFallo}`);
         }
       }
 
@@ -578,6 +605,12 @@ export function useBilling({
       if (confirmadas) {
         for (const p of paraConfirmar) {
           console.log(`[ENCOMENDAS-CONFIRMACAO] Encomenda ${p.encomenda.idEncomenda} confirmada com sucesso.`);
+          // Marcar encomenda_confirmada=1 no banco (server-side reconciliation não vai reprocessar)
+          fetch("/api/order-items/mark-encomenda-confirmada", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idEncomenda: p.encomenda.idEncomenda }),
+          }).catch(() => {});
         }
       } else {
         const msgsFalha = paraConfirmar.map(p => `⚠️ Encomenda ${p.encomenda.idEncomenda} (fornecedor: ${p.encomenda.fornecedor}) faturada no SmartPed mas NÃO foi possível confirmar no sistema de Encomendas após 3 tentativas — verifique manualmente.`);
