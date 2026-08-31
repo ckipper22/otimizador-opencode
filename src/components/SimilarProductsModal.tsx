@@ -364,7 +364,9 @@ export const SimilarProductsModal: React.FC<SimilarProductsModalProps> = ({
                           <td className="px-3 py-2 border-r border-gray-200 whitespace-normal min-w-[200px]">
                             <div className="flex items-center gap-2">
                               {prod.nom_obsvenda && (
-                                <BellRing className="w-4 h-4 text-rose-500 animate-pulse shrink-0" title={prod.nom_obsvenda} />
+                                <span title={prod.nom_obsvenda}>
+                                  <BellRing className="w-4 h-4 text-rose-500 animate-pulse shrink-0" />
+                                </span>
                               )}
                               <span className="font-bold select-text">{prod.nom_produto}</span>
                               - <span className="text-gray-500 select-text">{prod.nom_laborat}</span>

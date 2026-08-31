@@ -17,7 +17,7 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; border: string; 
   Cancelado: { bg: "bg-rose-50", text: "text-rose-800", border: "border-rose-300", icon: <AlertCircle className="w-3.5 h-3.5" /> },
 };
 
-const STATUS_ORDER = ["Pendente", "Confirmado", "Recebido", "Cancelado"];
+const STATUS_ORDER = ["Pendente", "Confirmado", "Recebido", "Cancelado"] as const;
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
