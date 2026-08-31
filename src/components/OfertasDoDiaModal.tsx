@@ -397,7 +397,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
               </p>
             </div>
           ) : (
-            <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
               {filteredOfertas.map((oferta, idx) => (
                 <div
                   key={`${oferta.ean || idx}-${oferta.fornecedor}`}
@@ -412,7 +412,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                   {/* Header do Card */}
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex-1">
-                      <h3 className="text-xs font-black text-[#141414] uppercase tracking-wider font-sans leading-tight">
+                      <h3 className="text-sm font-black text-[#141414] uppercase tracking-wider font-sans leading-tight">
                         {oferta.produto}
                       </h3>
                       {oferta.ean ? (
@@ -455,35 +455,30 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
                   {/* Chips compactos — info rapida */}
                   <div className="flex flex-wrap gap-1 mb-3">
                     {oferta.melhorPrecoSmartPed && (
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                        smartped {formatCurrency(oferta.melhorPrecoSmartPed)} ({oferta.melhorDistribuidora}) · <span className="font-mono">{oferta.melhorEanSmartPed || '—'}</span>
+                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                        smartped {formatCurrency(oferta.melhorPrecoSmartPed)} ({oferta.melhorDistribuidora}{oferta.economiaPercent > 0 ? `, -${oferta.economiaPercent}%` : ''}) · <span className="font-mono">{oferta.melhorEanSmartPed || '—'}</span>
                       </span>
                     )}
                     {!oferta.melhorPrecoSmartPed && oferta.naoEncontradoEmNenhumSistema && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-yellow-100 text-yellow-700 border border-yellow-300">
+                      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-yellow-100 text-yellow-700 border border-yellow-300">
                         Nao encontrado — verificar manualmente
                       </span>
                     )}
                     {!oferta.melhorPrecoSmartPed && !oferta.naoEncontradoEmNenhumSistema && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-100 text-gray-400 border border-gray-200 italic">
+                      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-gray-100 text-gray-400 border border-gray-200 italic">
                         smartped: nao encontrado
                       </span>
                     )}
-                    {oferta.economiaPercent > 0 && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                        -{oferta.economiaPercent}% vs smartped
-                      </span>
-                    )}
                     {oferta.vendasMensais > 0 && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-50 text-gray-600 border border-gray-200">
+                      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-gray-50 text-gray-600 border border-gray-200">
                         {oferta.vendasMensais}/mês
                       </span>
                     )}
-                    <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-50 text-gray-600 border border-gray-200">
-                      {oferta.estoqueTotal} cx estoque
+                    <span className={`inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full border ${oferta.estoqueTotal > 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-300'}`}>
+                      {oferta.estoqueTotal === 0 && '⚠ '}{oferta.estoqueTotal} cx estoque
                     </span>
                     {oferta.melhorPrecoHistorico && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-violet-50 text-violet-700 border border-violet-200">
+                      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-violet-50 text-violet-700 border border-violet-200">
                         pago antes {formatCurrency(oferta.melhorPrecoHistorico)} ({oferta.melhorFornecedorHistorico})
                       </span>
                     )}
@@ -691,7 +686,7 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
             {/* Header */}
             <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gray-50">
               <div>
-                <h3 className="text-sm font-black text-[#141414] uppercase tracking-wider font-sans">
+                <h3 className="text-base font-black text-[#141414] uppercase tracking-wider font-sans">
                   {detalheAberto.produto}
                 </h3>
                 <p className="text-[10px] text-gray-500 font-sans mt-0.5">
@@ -725,35 +720,30 @@ export function OfertasDoDiaModal({ cnpj, onClose, onAddToPedido }: OfertasDoDia
               {/* Chips compactos — info rapida (modal) */}
               <div className="flex flex-wrap gap-1">
                 {detalheAberto.melhorPrecoSmartPed && (
-                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                    smartped {formatCurrency(detalheAberto.melhorPrecoSmartPed)} ({detalheAberto.melhorDistribuidora}) · <span className="font-mono">{detalheAberto.melhorEanSmartPed || '—'}</span>
+                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                    smartped {formatCurrency(detalheAberto.melhorPrecoSmartPed)} ({detalheAberto.melhorDistribuidora}{detalheAberto.economiaPercent > 0 ? `, -${detalheAberto.economiaPercent}%` : ''}) · <span className="font-mono">{detalheAberto.melhorEanSmartPed || '—'}</span>
                   </span>
                 )}
                 {!detalheAberto.melhorPrecoSmartPed && detalheAberto.naoEncontradoEmNenhumSistema && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-yellow-100 text-yellow-700 border border-yellow-300">
+                  <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-yellow-100 text-yellow-700 border border-yellow-300">
                     Nao encontrado — verificar manualmente
                   </span>
                 )}
                 {!detalheAberto.melhorPrecoSmartPed && !detalheAberto.naoEncontradoEmNenhumSistema && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-100 text-gray-400 border border-gray-200 italic">
+                  <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-gray-100 text-gray-400 border border-gray-200 italic">
                     smartped: nao encontrado
                   </span>
                 )}
-                {detalheAberto.economiaPercent > 0 && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    -{detalheAberto.economiaPercent}% vs smartped
-                  </span>
-                )}
                 {detalheAberto.vendasMensais > 0 && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-50 text-gray-600 border border-gray-200">
+                  <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-gray-50 text-gray-600 border border-gray-200">
                     {detalheAberto.vendasMensais}/mês
                   </span>
                 )}
-                <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-gray-50 text-gray-600 border border-gray-200">
-                  {detalheAberto.estoqueTotal} cx estoque
+                <span className={`inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full border ${detalheAberto.estoqueTotal > 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-300'}`}>
+                  {detalheAberto.estoqueTotal === 0 && '⚠ '}{detalheAberto.estoqueTotal} cx estoque
                 </span>
                 {detalheAberto.melhorPrecoHistorico && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-violet-50 text-violet-700 border border-violet-200">
+                  <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-violet-50 text-violet-700 border border-violet-200">
                     pago antes {formatCurrency(detalheAberto.melhorPrecoHistorico)} ({detalheAberto.melhorFornecedorHistorico})
                   </span>
                 )}
