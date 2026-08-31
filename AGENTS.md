@@ -502,9 +502,10 @@ Criar script standalone (`debug-analisar.ts`, já existe) que:
 - Checagem de FORMA (líquido/ML vs sólido/CPR) no fallback de preço SmartPed (passo 2) — nunca implementada
 - Formato "NxM" (ex: "1X10") não reconhecido pelo regex de unidadeApresentacao
 - Análise em background processa fornecedor JÁ VENCIDO antes de descartar (desperdício)
-- Logs de debug temporários (DEBUG-PROD, DEBUG-COMPRAS) ainda no código — limpar antes de deploy
-- **NADA foi deployado pra produção** — tudo é commit local. Cloud Run ainda tem código antigo
 - Dados de teste no Turso reduzidos (Forster deletado, TEstando: 9 itens) — sem backup automático
+
+> **Último deploy:** `smartped-cli-00100-f5g`. Commits locais posteriores ainda não deployados:
+> `db8cee0`, `03b951e`, `315f756`, `9d1e554`, `4c78262`, `3964b39`, `138f25e` (TypeScript fixes, decision tree doc, info gaps).
 
 ---
 
