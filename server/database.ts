@@ -169,6 +169,13 @@ const SCHEMA_SQL = `
     nome_dist TEXT,
     ultima_atualizacao TEXT DEFAULT (${NOW_UTC})
   );
+  CREATE TABLE IF NOT EXISTS whatsapp_envios_lab (
+    ean TEXT NOT NULL,
+    regra_id TEXT NOT NULL,
+    cnpj TEXT NOT NULL,
+    data_envio TEXT DEFAULT (${NOW_UTC}),
+    PRIMARY KEY (ean, regra_id)
+  );
   CREATE TABLE IF NOT EXISTS precos_cache (
     ean TEXT,
     cod_dist INTEGER,
@@ -859,6 +866,40 @@ export async function deleteWhatsAppRule(id: string) {
     const sql = `DELETE FROM whatsapp_rules WHERE id = ?`;
     if (USE_TURSO) { await d.run(sql, id); } else { d.prepare(sql).run(id); }
   } catch {}
+}
+
+// WhatsApp Envios Lab — registro de envio de mensagem pra representante
+export async function saveWhatsAppEnvioLab(envio: { ean: string; regraId: string; cnpj: string }) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `INSERT INTO whatsapp_envios_lab (ean, regra_id, cnpj, data_envio)
+      VALUES (?, ?, ?, ${NOW_UTC})
+      ON CONFLICT(ean, regra_id) DO UPDATE SET data_envio = ${NOW_UTC}`;
+    const args = [envio.ean, envio.regraId, envio.cnpj];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch {}
+}
+
+export async function getWhatsAppEnviosLabPendentes(cnpj: string): Promise<Array<{ ean: string; regraId: string; dataEnvio: string }>> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const rows = await d.all(
+      `SELECT ean, regra_id, data_envio FROM whatsapp_envios_lab WHERE cnpj = ? ORDER BY data_envio DESC`,
+      cnpj
+    );
+    if (!rows || rows.length === 0) return [];
+    const seen = new Set<string>();
+    const result: Array<{ ean: string; regraId: string; dataEnvio: string }> = [];
+    for (const row of rows as any[]) {
+      if (!seen.has(row.ean)) {
+        seen.add(row.ean);
+        result.push({ ean: row.ean, regraId: row.regra_id, dataEnvio: row.data_envio });
+      }
+    }
+    return result;
+  } catch { return []; }
 }
 
 export async function saveExternalSupplier(supplier: {

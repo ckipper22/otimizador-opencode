@@ -114,6 +114,15 @@ export const WhatsAppOrderModal: React.FC<WhatsAppOrderModalProps> = ({
     navigator.clipboard.writeText(generatedMessage);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
+    // Registrar envio no backend (não bloquear feedback visual)
+    if (rule?.id && config?.cnpj) {
+      const eans = activeItems.map(i => i.novoEan || i.originalEan).filter(Boolean);
+      fetch("/api/whatsapp-rules/registrar-envio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ regraId: rule.id, termoFiltro: rule.termoFiltro, eans, cnpj: config.cnpj }),
+      }).catch(() => {});
+    }
   };
 
   const handleOpenWhatsApp = () => {

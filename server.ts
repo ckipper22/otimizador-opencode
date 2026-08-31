@@ -12,7 +12,7 @@ import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatab
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
 import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto, mesmaDosagem } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
-import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
+import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
 const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   2: "Pan/Santa",
@@ -433,6 +433,55 @@ app.delete("/api/whatsapp-rules/:id", async (req, res) => {
     res.json({ sucesso: true });
   } catch (err: any) {
     console.error("Erro ao deletar regra WhatsApp:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== ENVIO DE WHATSAPP LAB — registro e checagem =====
+
+// Registrar envio de mensagem (chamado no handleCopy do WhatsAppOrderModal)
+app.post("/api/whatsapp-rules/registrar-envio", async (req, res) => {
+  try {
+    const { regraId, termoFiltro, eans, cnpj } = req.body;
+    if (!regraId || !cnpj || !Array.isArray(eans)) {
+      return res.status(400).json({ error: "regraId, cnpj e eans (array) são obrigatórios." });
+    }
+    for (const ean of eans) {
+      if (ean) {
+        await saveWhatsAppEnvioLab({ ean, regraId, cnpj });
+      }
+    }
+    res.json({ sucesso: true, registrados: eans.length });
+  } catch (err: any) {
+    console.error("Erro ao registrar envio WhatsApp lab:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Buscar envios pendentes (sem entrada confirmada)
+app.get("/api/whatsapp-rules/envios-pendentes", async (req, res) => {
+  try {
+    const cnpj = (req.query.cnpj as string || "").replace(/\D/g, "");
+    if (!cnpj) {
+      return res.status(400).json({ error: "cnpj é obrigatório." });
+    }
+    const envios = await getWhatsAppEnviosLabPendentes(cnpj);
+    // Buscar regras pra obter termo_filtro
+    const regras = await getWhatsAppRules(cnpj);
+    const regrasMap = new Map(regras.map((r: any) => [r.id, r]));
+    const result = envios.map(e => {
+      const regra = regrasMap.get(e.regraId) as any;
+      return {
+        ean: e.ean,
+        regraId: e.regraId,
+        termoFiltro: regra?.termo_filtro || "",
+        nomeRegra: regra?.nome_regra || "",
+        dataEnvio: e.dataEnvio,
+      };
+    });
+    res.json({ envios: result });
+  } catch (err: any) {
+    console.error("Erro ao buscar envios pendentes WhatsApp lab:", err);
     res.status(500).json({ error: err.message });
   }
 });
