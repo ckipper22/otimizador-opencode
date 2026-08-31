@@ -1,6 +1,19 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { OptimizationResponse, SwapReportItem, OptimizerConfig, FaturadoItem } from "../types";
 import { cleanEan } from "../utils";
+
+// Função pura: calcula delay até a próxima tentativa de polling
+// Base: 7s. Falhas consecutivas: backoff linear até 30s. 429: salta pra 30s direto.
+const POLL_BASE_MS = 7000;
+const POLL_MAX_MS = 30000;
+const RATE_LIMIT_DELAY_MS = 30000;
+
+export function getPollDelay(consecutiveFailures: number, lastWas429: boolean): number {
+  if (lastWas429) return RATE_LIMIT_DELAY_MS;
+  if (consecutiveFailures <= 0) return POLL_BASE_MS;
+  // Backoff linear: 7s, 14s, 21s, 28s, 30s (capped)
+  return Math.min(POLL_BASE_MS * (1 + consecutiveFailures), POLL_MAX_MS);
+}
 
 interface UseBillingParams {
   result: OptimizationResponse | null;
@@ -44,6 +57,11 @@ export function useBilling({
   const [autoPollReturn, setAutoPollReturn] = useState<boolean>(false);
   const [suspectItemAlert, setSuspectItemAlert] = useState<{ item: any; specificDistributorName?: string } | null>(null);
   const [confirmedEncomendaIds, setConfirmedEncomendaIds] = useState<Set<string>>(new Set());
+
+  // Polling: refs pra controle de backoff (não causam re-render)
+  const consecutiveFailuresRef = useRef(0);
+  const lastWas429Ref = useRef(false);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleSendBilling = async (specificDistributorNameInput?: any, bypassSuspectCheck = false, bypassConfirm = false, forceDownloadJson = false) => {
     if (!result) return;
@@ -610,6 +628,10 @@ export function useBilling({
         throw new Error(data.error || "Erro ao consultar retorno.");
       }
 
+      // Sucesso: resetar contadores de falha
+      consecutiveFailuresRef.current = 0;
+      lastWas429Ref.current = false;
+
       setOrderReturn(data.apiResponse);
       if (data.logs) {
         setReturnCheckLogs(data.logs);
@@ -671,21 +693,66 @@ export function useBilling({
         }
     } catch (err: any) {
       console.error(err);
-      alert(err.message || "Erro ao consultar retorno.");
+      consecutiveFailuresRef.current++;
+      // Detectar 429 (rate limit) especificamente
+      const is429 = err.message?.includes("429") || err.message?.toLowerCase()?.includes("rate limit");
+      lastWas429Ref.current = is429;
+
+      // Só mostrar aviso após 5 falhas consecutivas (~35-40s de erro contínuo)
+      // pra não inundar o usuário com popups de erro transitório
+      if (consecutiveFailuresRef.current >= 5) {
+        const msg = is429
+          ? `[TENTATIVA ${consecutiveFailuresRef.current}] Rate limit (429) — aguardando 30s antes da próxima tentativa.`
+          : `[TENTATIVA ${consecutiveFailuresRef.current}] Erro persistente: ${err.message}`;
+        setReturnCheckLogs(prev => [...prev, `⚠️ ${msg}`]);
+        setBilledGroups(prev => {
+          const next = { ...prev };
+          for (const g of (billingContext?.relatedGroups || [])) {
+            const currentLogs = prev[g]?.logs || [];
+            if (!currentLogs.includes(msg)) next[g] = { ...prev[g], logs: [...currentLogs, msg] };
+          }
+          return next;
+        });
+        // Só usar alert() pra falhas MUITO persistentes (10+ = ~70s+)
+        if (consecutiveFailuresRef.current >= 10) {
+          alert(`Erro persistente ao consultar retorno (${consecutiveFailuresRef.current} tentativas). Verifique a conexão.`);
+          consecutiveFailuresRef.current = 0; // reset pra não spammar
+        }
+      }
     } finally {
       setIsCheckingReturn(false);
     }
   };
 
   useEffect(() => {
-    let interval: any;
-    if (autoPollReturn && isBillingModalOpen && billingContext && billingContext.numPedido) {
-      handleCheckOrderReturn();
-      interval = setInterval(() => {
-        handleCheckOrderReturn();
-      }, 2000);
+    // Limpar timer anterior se existir
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
     }
-    return () => clearInterval(interval);
+
+    if (!autoPollReturn || !isBillingModalOpen || !billingContext?.numPedido) return;
+
+    let running = true;
+
+    const poll = async () => {
+      if (!running) return;
+      await handleCheckOrderReturn();
+      if (!running || !autoPollReturn) return;
+      const delay = getPollDelay(consecutiveFailuresRef.current, lastWas429Ref.current);
+      pollTimerRef.current = setTimeout(poll, delay);
+    };
+
+    // Disparar imediatamente na primeira vez
+    poll();
+
+    return () => {
+      running = false;
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
   }, [autoPollReturn, isBillingModalOpen, billingContext?.numPedido]);
 
   const handleExportShortages = () => {
