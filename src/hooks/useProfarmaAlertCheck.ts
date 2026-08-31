@@ -92,6 +92,11 @@ export function useProfarmaAlertCheck(
     let cancelled = false;
     (async () => {
       const confirmed = new Set<string>();
+      // PROTEÇÃO DE PERFORMANCE: manter BATCH_SIZE=8 e escopo relevantEans.
+      // A API da Trier é frágil sob volume (histórico de perda de itens por
+      // sobrecarga — ver CEGUEIRA ANTIGA #24, #25). Nunca aumentar BATCH_SIZE
+      // pra compensar volume maior; aumentar delay entre lotes se necessário.
+      // Nunca expandir relevantEans pra "tudo pendente" — só EANs do relatório.
       const BATCH_SIZE = 8;
       for (let i = 0; i < toCheck.length; i += BATCH_SIZE) {
         if (cancelled) break;

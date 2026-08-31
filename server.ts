@@ -9889,16 +9889,40 @@ app.get("/api/vendas-semanais/:ean", async (req, res) => {
   }
 });
 
-// Proxy para compras-historico (usado na verificação de entrada Profarma 48h)
+// Proxy para compras-historico (usado na verificação de entrada duplicada)
+// Cache em memória de 5min pra evitar rebater na Trier se o mesmo SICF for
+// reprocessado 2x seguidas durante ajustes do usuário. Compartilhado entre
+// Parte A (useProfarmaAlertCheck) e Parte B (envios-pendentes) — ambos
+// chamam este endpoint, nunca o Trier diretamente.
+const comprasHistoricoCache = new Map<string, { data: any; expires: number }>();
+const COMPRAS_HISTORICO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
 app.get("/api/produtos/compras-historico/:ean", async (req, res) => {
   const { ean } = req.params;
   const meses = (req.query.meses as string) || "1";
+  const cacheKey = `${ean}_${meses}`;
+
+  // Checar cache em memória
+  const cached = comprasHistoricoCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return res.json(cached.data);
+  }
+
   try {
     const response = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${ean}?meses=${meses}`);
     if (!response.ok) {
       throw new Error(`API Error: ${response.status}`);
     }
     const data = await response.json();
+    // Armazenar no cache
+    comprasHistoricoCache.set(cacheKey, { data, expires: Date.now() + COMPRAS_HISTORICO_CACHE_TTL_MS });
+    // Limpeza periódica: remover entradas expiradas (a cada 100 chamadasapprox)
+    if (comprasHistoricoCache.size > 100) {
+      const now = Date.now();
+      for (const [key, entry] of comprasHistoricoCache) {
+        if (entry.expires < now) comprasHistoricoCache.delete(key);
+      }
+    }
     return res.json(data);
   } catch (error: any) {
     console.error("Erro ao buscar compras-historico:", error);
