@@ -16,6 +16,7 @@ export interface SwapReportItem {
   novoLaboratorio: string;
   novoPreco: number;
   qtd: number;
+  precoLiquido?: number;
   economiaUnit: number;
   economiaTotal: number;
   distribuidora: string;

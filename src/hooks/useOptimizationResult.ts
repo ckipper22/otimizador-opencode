@@ -6,7 +6,7 @@ import { useProfarmaAlertCheck } from "./useProfarmaAlertCheck";
 interface UseOptimizationResultParams {
   config: OptimizerConfig;
   setConfig: React.Dispatch<React.SetStateAction<OptimizerConfig>>;
-  disabledDistributors: Set<string>;
+  disabledDistributors: Set<number>;
   externalSuppliers: ExternalSupplier[];
   distributors: DistributorOption[];
   handleCheckDailyOrders: (token: string, cnpj: string) => Promise<void>;

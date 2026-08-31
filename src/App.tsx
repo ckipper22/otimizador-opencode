@@ -1249,6 +1249,7 @@ export default function App() {
               }));
 
               setResult({
+                optimizedFileContent: "",
                 cnpj: config.cnpj,
                 summary: {
                   totalItems: injectedReport.length,
@@ -1339,6 +1340,7 @@ export default function App() {
                 }));
 
                 setResult({
+                  optimizedFileContent: "",
                   cnpj: detectedCnpj || config.cnpj,
                   summary: {
                     totalItems: injectedReport.length,
@@ -1583,7 +1585,7 @@ export default function App() {
                 </div>
 
                 <button
-                  onClick={handleCheckDailyOrders}
+                  onClick={() => handleCheckDailyOrders()}
                   disabled={isCheckingDaily}
                   className="flex items-center space-x-1.5 bg-[#141414] text-[#E4E3E0] hover:bg-neutral-800 disabled:opacity-50 text-[10px] uppercase font-bold tracking-widest px-4 py-2.5 rounded transition-all border border-[#141414] cursor-pointer font-mono"
                 >
@@ -2139,7 +2141,7 @@ export default function App() {
                   </span>
                 </div>
 
-                <LazyPendingOrdersTable billedGroups={billedGroups} onViewLogs={(logs, name) => setViewingLogs({groupKeys: [name], title: name})} />
+                <LazyPendingOrdersTable billedGroups={billedGroups} onViewLogs={(name) => setViewingLogs({groupKeys: [name], title: name})} />
                 
                 {isSwapsTableVisible && (
                   <div className="p-5 animate-fade-in">

@@ -91,7 +91,7 @@ const getRecentCutsMap = (orders: any[]) => {
   return cutsMap;
 };
 
-export function useDailyOrders(config: OptimizerConfig, mainView: "optimize" | "returns" | "daily_items") {
+export function useDailyOrders(config: OptimizerConfig, mainView: "optimize" | "returns" | "daily_items" | "whatsapp_orders") {
   const [dailyOrders, setDailyOrders] = useState<any[]>([]);
   const [isCheckingDaily, setIsCheckingDaily] = useState<boolean>(false);
   const [dailyOrderLogs, setDailyOrderLogs] = useState<string[]>([]);
