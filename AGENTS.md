@@ -44,6 +44,8 @@
 
 ---
 
+> **Árvore de decisões completa** de cada busca/matching: `docs/arvore-decisoes-busca-api.md`
+
 ## Mecanismos de Equivalência (como o sistema decide "isso é equivalente àquilo")
 
 > Investigação profunda de 2026-08-27. Três mecanismos independentes decidem quais produtos são "do mesmo grupo" pra fins de estoque total e média de vendas. Cada um usa uma abordagem diferente — o que causava inconsistências reais.
@@ -85,6 +87,8 @@
 **Propósito do botão "P":** o botão "P" fora do contexto de "Ofertas do Dia" é PURAMENTE informativo (comparação de preço/estoque pra decisão do usuário) — não deve ter ação de "adicionar ao pedido" nesse contexto, diferente do mesmo botão dentro do fluxo de Ofertas do Dia, onde comprar a promoção faz sentido.
 
 ---
+
+> **Árvore de decisões completa** de cada busca/matching: `docs/arvore-decisoes-busca-api.md`
 
 ## Dois fluxos de matching independentes — NÃO confundir
 
@@ -188,6 +192,8 @@ Turso via `/api/salvar-item-manual` (ON CONFLICT atualiza a linha
 existente); excluir usa o endpoint `/api/deletar-item-manual`.
 
 ---
+
+> **Árvore de decisões completa** de cada busca/matching: `docs/arvore-decisoes-busca-api.md`
 
 ## Ofertas do Dia (OfertasDoDiaModal) — propósito e funcionalidade
 
