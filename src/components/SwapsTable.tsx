@@ -1401,7 +1401,7 @@ export default function SwapsTable({
                       )}
                       {isAguardando && (
                         <span className="bg-amber-100 text-amber-900 text-[9px] font-black uppercase tracking-widest px-2.5 py-1 border border-amber-400">
-                          ⏳ AGUARDANDO CHEGAR PROFARMA
+                          ⏳ {group.name.toUpperCase()}
                         </span>
                       )}
 
