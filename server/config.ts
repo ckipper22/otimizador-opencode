@@ -4,10 +4,8 @@ dotenv.config();
 
 export const CONFIG = {
   SMARTPED_PRODUCTION_TOKEN: process.env.SMARTPED_PRODUCTION_TOKEN || "",
-  SMARTPED_SANDBOX_TOKEN: process.env.SMARTPED_SANDBOX_TOKEN || "",
   SMARTPED_DEFAULT_CNPJ: process.env.SMARTPED_DEFAULT_CNPJ || "13408443000168",
   SMARTPED_PRODUCTION_URL: process.env.SMARTPED_PRODUCTION_URL || "https://api.smartped.com.br",
-  SMARTPED_SANDBOX_URL: process.env.SMARTPED_SANDBOX_URL || "https://apitest.smartped.com.br",
   FERRAMENTINHAS_API_URL: process.env.FERRAMENTINHAS_API_URL || "https://api.ferramentinhas.com.br",
   APP_ADMIN_EMAILS: (process.env.APP_ADMIN_EMAILS || "ckipper22@gmail.com,aga706panambi@gmail.com").split(",").map(e => e.trim().toLowerCase()),
   APP_ADMIN_PASSWORD: process.env.APP_ADMIN_PASSWORD || "",

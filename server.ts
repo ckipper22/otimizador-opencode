@@ -92,8 +92,8 @@ function resolveDistName(obj: any, codDist?: number): string {
 
 async function loadDistribuidoresFromAPI() {
   try {
-    const baseUrl = CONFIG.SMARTPED_SANDBOX_URL;
-    const actualToken = CONFIG.SMARTPED_SANDBOX_TOKEN;
+    const baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
+    const actualToken = CONFIG.SMARTPED_PRODUCTION_TOKEN;
     const apiCnpj = "11111111111111";
     
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/Condicoes/Distribuidores`, {
@@ -2680,17 +2680,16 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
   const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[ENCOMENDAS-BATCH] ${m}`); };
   try {
-    const { encomendas, token, cnpj, useTestUrl = true, simulationMode = false, margemMinima = 0, disabledDistributors = [] } = req.body;
+    const { encomendas, token, cnpj, margemMinima = 0, disabledDistributors = [] } = req.body;
     const disabledDistSetEncomendas = new Set(disabledDistributors.map(Number));
 
     if (!encomendas || !Array.isArray(encomendas) || encomendas.length === 0) {
       return res.json({ results: [], logs: ["Nenhuma encomenda fornecida."] });
     }
 
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
-    const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
-    const baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+    const apiCnpj = (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+    const baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
 
     log(`Iniciando busca batch para ${encomendas.length} encomendas...`);
 
@@ -3253,8 +3252,6 @@ app.post("/api/optimize", async (req, res) => {
       margemMinima = 0.01,
       tipos = ["G", "O"],
       permitirSemEstoque = false,
-      useTestUrl = true,
-      simulationMode = false,
       customProductionUrl,
       customTestUrl,
       customEndpoint,
@@ -3267,7 +3264,7 @@ app.post("/api/optimize", async (req, res) => {
     } = req.body;
 
     logs.push(`[INÃCIO] Iniciando processo de otimizaÃ§Ã£o.`);
-    logs.push(`[PARÃ‚METROS] Margem mÃ­nima: R$ ${margemMinima.toFixed(2)}, Tipos aceitos: [${tipos.join(", ")}], Exigir estoque: ${!permitirSemEstoque ? 'Sim' : 'NÃ£o'}, Sandbox: ${useTestUrl ? 'Sim' : 'NÃ£o'}, SimulaÃ§Ã£o: ${simulationMode ? 'Sim' : 'NÃ£o'}, Dist. Desabilitados: ${disabledDistributors.length}`);
+    logs.push(`[PARÃ‚METROS] Margem mÃ­nima: R$ ${margemMinima.toFixed(2)}, Tipos aceitos: [${tipos.join(", ")}], Exigir estoque: ${!permitirSemEstoque ? 'Sim' : 'NÃ£o'}, Dist. Desabilitados: ${disabledDistributors.length}`);
     logs.push(`[DEBUG-DIST] Dist. desabilitados (codDist): [${disabledDistributors.join(", ")}]`);
     const disabledDistSet = new Set(disabledDistributors);
 
@@ -3692,45 +3689,23 @@ app.post("/api/optimize", async (req, res) => {
 
     const allMinimos: any[] = [];
 
-    if (simulationMode) {
-      logs.push(`[MOCK] Modo SimulaÃ§Ã£o Ativo. Usando banco de dados simulado local.`);
-      for (const ean of eansToQuote) {
-        if (MOCK_API_DATABASE[ean]) {
-          logs.push(`[MOCK] Carregado produto real mapeado para o EAN ${ean} (${MOCK_API_DATABASE[ean].ItemPedido?.Descricao || ""}).`);
-          apiResponses[ean] = MOCK_API_DATABASE[ean];
-        } else {
-          logs.push(`[MOCK] EAN ${ean} nÃ£o encontrado no banco simulado.`);
-        }
-      }
-    } else {
-      // Call Real SmartPed API
-      let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
-      if (useTestUrl && customTestUrl) {
-        baseUrl = customTestUrl;
-      } else if (!useTestUrl && customProductionUrl) {
-        baseUrl = customProductionUrl;
-      }
+    // Call Real SmartPed API
+    let baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
 
-      let endpointPath = "/api/Condicoes/Molecula";
-      if (customEndpoint) {
-        endpointPath = customEndpoint;
-      }
+    let endpointPath = "/api/Condicoes/Molecula";
+    if (customEndpoint) {
+      endpointPath = customEndpoint;
+    }
 
-      const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim(); 
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim(); 
 
-      // Se o token for o padrÃ£o de teste, usamos o CNPJ padrÃ£o associado "11111111111111"
-      const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
-      const apiCnpj = isSandboxToken ? "11111111111111" : finalCnpj.trim().replace(/\D/g, "");
+    const apiCnpj = finalCnpj.trim().replace(/\D/g, "");
 
-      logs.push(`[API CONEXÃƒO] Iniciando conexÃµes reais com o servidor SmartPed.`);
-      logs.push(`[API CONEXÃƒO] URL Base: ${baseUrl}`);
-      logs.push(`[API CONEXÃƒO] Endpoint Rota: ${endpointPath}`);
-      if (isSandboxToken) {
-        logs.push(`[API CONEXÃƒO] Token de teste padrÃ£o detectado. Utilizando o CNPJ padrÃ£o "11111111111111" associado para evitar erros de vÃ­nculo.`);
-      } else {
-        logs.push(`[API CONEXÃƒO] CNPJ de HomologaÃ§Ã£o/ProduÃ§Ã£o utilizado: ${apiCnpj} (Original: ${finalCnpj})`);
-      }
-      logs.push(`[API CONEXÃƒO] Token de Acesso: ${actualToken.substring(0, 6)}...`);
+    logs.push(`[API CONEXÃƒO] Iniciando conexÃµes reais com o servidor SmartPed.`);
+    logs.push(`[API CONEXÃƒO] URL Base: ${baseUrl}`);
+    logs.push(`[API CONEXÃƒO] Endpoint Rota: ${endpointPath}`);
+    logs.push(`[API CONEXÃƒO] CNPJ de HomologaÃ§Ã£o/ProduÃ§Ã£o utilizado: ${apiCnpj} (Original: ${finalCnpj})`);
+    logs.push(`[API CONEXÃƒO] Token de Acesso: ${actualToken.substring(0, 6)}...`);
 
       const _f3Start = Date.now();
       // Batch call (SmartPed endpoint CondicoesMolecula handles multiple EANs separated by comma)
@@ -3996,15 +3971,10 @@ app.post("/api/optimize", async (req, res) => {
       _p3 = Date.now() - _f3Start;
       logs.push(`[FASE-3-CONDICOES] ${_p3}ms`);
       console.log(`[FASE-3-CONDICOES] ${_p3}ms`);
-    }
 
     // Passo de Enriquecimento por Fallback de Busca Textual (PrincÃ­pio Ativo) para itens sem ofertas/estoque
     logs.push(`[SISTEMA FALLBACK] Analisando itens do pedido para identificar ausÃªncia de estoque/ofertas e aplicar busca por princÃ­pio ativo...`);
     const fallbackPromises: Promise<void>[] = [];
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
-    const apiCnpj = isSandboxToken ? "11111111111111" : finalCnpj.trim().replace(/\D/g, "");
-    let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
 
     // PASSO PÓS-BATCH: Enriquecer EANs que ficaram sem Condicoes ou completamente ausentes
     // A API SmartPed SEMPRE retorna CodProdutoDist — buscar para TODOS os EANs do pedido
@@ -4140,11 +4110,6 @@ app.post("/api/optimize", async (req, res) => {
         }
       }
     }
-    if (useTestUrl && customTestUrl) {
-      baseUrl = customTestUrl;
-    } else if (!useTestUrl && customProductionUrl) {
-      baseUrl = customProductionUrl;
-    }
 
     parsedItems.forEach((item) => {
       const origEan = cleanEan(item.ean);
@@ -4182,7 +4147,7 @@ app.post("/api/optimize", async (req, res) => {
         }
       }
 
-      const shouldTriggerFallback = (!originalHasOffersWithStock || !hasOffers) && !simulationMode;
+      const shouldTriggerFallback = (!originalHasOffersWithStock || !hasOffers);
 
       // Se elegÃ­vel, disparamos a busca de fallback em tempo real na SmartPed
       if (shouldTriggerFallback) {
@@ -6900,9 +6865,7 @@ app.post("/api/faturar", async (req, res) => {
     const {
       items = [],
       token,
-      cnpj,
-      useTestUrl = true,
-      simulationMode = false
+      cnpj
     } = req.body;
 
     logs.push(`[FATURAMENTO] Iniciando faturamento na SmartPed.`);
@@ -6913,9 +6876,8 @@ app.post("/api/faturar", async (req, res) => {
       return res.status(400).json({ error: "Selecione ao menos um item para faturar.", logs });
     }
 
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
-    const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+  const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+  const apiCnpj = (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
 
     logs.push(`[FATURAMENTO] Token: ${actualToken.substring(0, 6)}... | CNPJ: ${apiCnpj}`);
 
@@ -7037,10 +6999,9 @@ app.post("/api/faturar", async (req, res) => {
     let numPedidoSmartPed = Math.floor(2000 + Math.random() * 8000);
     let distribuidorasBloqueadas: any[] = [];
 
-    if (!simulationMode) {
-      let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
-      const endpointEnvio = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Envio`;
-      logs.push(`[API CONEXÃƒO] Registrando faturamento na API SmartPed: ${endpointEnvio}...`);
+    let baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
+    const endpointEnvio = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Envio`;
+    logs.push(`[API CONEXÃƒO] Registrando faturamento na API SmartPed: ${endpointEnvio}...`);
 
       // Mapeamento dos itens para a estrutura oficial da SmartPed (api/Pedido/Envio)
       // Para itens com codProdutoDist ou codProduto vazio/0, buscar nas alternatives
@@ -7162,9 +7123,6 @@ app.post("/api/faturar", async (req, res) => {
           logs
         });
       }
-    } else {
-      logs.push(`[MOCK] Modo de SimulaÃ§Ã£o Ativo. Lote processado localmente.`);
-    }
 
     logs.push(`[SUCESSO] Faturamento concluÃ­do no Otimizador!`);
     logs.push(`[SUCESSO] Protocolo Lote: ${protocoloLote} | ID SmartPed: ${numPedidoSmartPed}`);
@@ -7291,13 +7249,12 @@ app.post("/api/faturar", async (req, res) => {
 app.post("/api/pedidos-do-dia", async (req, res) => {
   const logs: string[] = [];
   try {
-    const { token, cnpj, useTestUrl = true, simulationMode = false } = req.body;
+    const { token, cnpj } = req.body;
 
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN || simulationMode;
-    const apiCnpj = (actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN || simulationMode) ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+    const apiCnpj = (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
 
-    const baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+    const baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
     const endpointListar = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Listar`;
     const endpointRetorno = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Retorno`;
 
@@ -7315,60 +7272,33 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
     
     let pedidosResumidos: any[] = [];
     
-    if (!isSandboxToken) {
-      try {
-        const resListar = await fetch(endpointListar, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({
-            Token: actualToken,
-            parametros: { CnpjCLi: apiCnpj, DataIni: dataIni, DataFim: dataFim }
-          })
-        });
-        
-        if (resListar.ok) {
-          const dataListar = await resListar.json();
-          logs.push(`[MONITORAMENTO RESPOSTA RAW] ${JSON.stringify(dataListar)}`);
-          const retornoListar = dataListar.Retorno || dataListar.retorno || [];
-          if (Array.isArray(retornoListar)) {
-            pedidosResumidos = retornoListar;
-          } else if (retornoListar && Array.isArray(retornoListar.pedidos || retornoListar.Pedidos)) {
-            pedidosResumidos = retornoListar.pedidos || retornoListar.Pedidos;
-          } else if (Array.isArray(dataListar.pedidos)) {
-            pedidosResumidos = dataListar.pedidos;
-          }
-          logs.push(`[MONITORAMENTO SUCESSO] ${pedidosResumidos.length} pedidos encontrados.`);
-        } else {
-          logs.push(`[MONITORAMENTO ALERTA] Falha na API Listar (Status ${resListar.status}).`);
+    try {
+      const resListar = await fetch(endpointListar, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          Token: actualToken,
+          parametros: { CnpjCLi: apiCnpj, DataIni: dataIni, DataFim: dataFim }
+        })
+      });
+      
+      if (resListar.ok) {
+        const dataListar = await resListar.json();
+        logs.push(`[MONITORAMENTO RESPOSTA RAW] ${JSON.stringify(dataListar)}`);
+        const retornoListar = dataListar.Retorno || dataListar.retorno || [];
+        if (Array.isArray(retornoListar)) {
+          pedidosResumidos = retornoListar;
+        } else if (retornoListar && Array.isArray(retornoListar.pedidos || retornoListar.Pedidos)) {
+          pedidosResumidos = retornoListar.pedidos || retornoListar.Pedidos;
+        } else if (Array.isArray(dataListar.pedidos)) {
+          pedidosResumidos = dataListar.pedidos;
         }
-      } catch (err: any) {
-        logs.push(`[MONITORAMENTO ERRO] Erro na API Listar: ${err.message}`);
+        logs.push(`[MONITORAMENTO SUCESSO] ${pedidosResumidos.length} pedidos encontrados.`);
+      } else {
+        logs.push(`[MONITORAMENTO ALERTA] Falha na API Listar (Status ${resListar.status}).`);
       }
-    } else {
-      logs.push(`[MOCK] Modo SimulaÃ§Ã£o (Token de testes). Gerando pedidos fictÃ­cios do dia.`);
-      const now = new Date();
-      const formatDate = (d: Date) => {
-        const dd = String(d.getDate()).padStart(2, '0');
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const yyyy = d.getFullYear();
-        return `${dd}/${mm}/${yyyy}`;
-      };
-      const todayStr = formatDate(now);
-      const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      const yesterdayStr = formatDate(yesterday);
-
-      pedidosResumidos = [
-        { NumPedido: 52, DataPedido: todayStr },
-        { NumPedido: 51, DataPedido: yesterdayStr },
-        { NumPedido: 50, DataPedido: "02/07/2026" },
-        { NumPedido: 49, DataPedido: "02/07/2026" },
-        { NumPedido: 48, DataPedido: "02/07/2026" },
-        { NumPedido: 47, DataPedido: "01/07/2026" },
-        { NumPedido: 46, DataPedido: "30/06/2026" },
-        { NumPedido: 45, DataPedido: "30/06/2026" },
-        { NumPedido: 44, DataPedido: "29/06/2026" },
-        { NumPedido: 43, DataPedido: "29/06/2026" }
-      ];
+    } catch (err: any) {
+      logs.push(`[MONITORAMENTO ERRO] Erro na API Listar: ${err.message}`);
     }
 
     const relatorioFinal: any[] = [];
@@ -7398,91 +7328,25 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
       let pedDetalhes: any = null;
       logs.push(`[MONITORAMENTO DETALHE] Consultando detalhes do Pedido ${numPedido}...`);
 
-      if (!isSandboxToken) {
-        try {
-          const resRetorno = await fetch(endpointRetorno, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Accept": "application/json" },
-            body: JSON.stringify({
-              Token: actualToken,
-              parametros: { CnpjCLi: apiCnpj, NumeroPedido: numPedido, NumPedido: numPedido }
-            })
-          });
+      try {
+        const resRetorno = await fetch(endpointRetorno, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({
+            Token: actualToken,
+            parametros: { CnpjCLi: apiCnpj, NumeroPedido: numPedido, NumPedido: numPedido }
+          })
+        });
 
-          if (resRetorno.ok) {
-            const dataRet = await resRetorno.json();
-            pedDetalhes = dataRet.Retorno || dataRet.retorno;
-            if (!pedDetalhes && dataRet.dists) {
-              pedDetalhes = dataRet;
-            }
+        if (resRetorno.ok) {
+          const dataRet = await resRetorno.json();
+          pedDetalhes = dataRet.Retorno || dataRet.retorno;
+          if (!pedDetalhes && dataRet.dists) {
+            pedDetalhes = dataRet;
           }
-        } catch (err: any) {
-          logs.push(`[MONITORAMENTO ERRO DETALHE] Erro ao consultar detalhes do pedido ${numPedido}: ${err.message}`);
         }
-      } else {
-        // Mock
-        const numP = Number(numPedido);
-        if (numP === 52) {
-          pedDetalhes = {
-            CnpjLoja: apiCnpj,
-            NumeroPedCliente: "REG-52",
-            dists: [{ NomeDist: "Profarma", Status: 3, DesStatus: "3 - Pedido Finalizado", CodDist: 4 }],
-            Itens: [
-              { CodProdutoDist: "900501", Ean: "7896422505987", Descricao: "PANTOPRAZOL SÃ“DICO SESQUI-HIDRATADO 40MG 28CP AD", Laboratorio: "MEDLEY", Quant: 10, QuantFaturada: 10, Preco: 22.50, Desconto: 10.00, ST: 0.80, PrecoLiquido: 20.25, NomeDist: "Profarma", CodDist: 4, Condicao: "FIXA", DifMedio: 0.00, Motivo: "" }
-            ]
-          };
-        } else if (numP === 51) {
-          pedDetalhes = {
-            CnpjLoja: apiCnpj,
-            NumeroPedCliente: "REG-51",
-            dists: [{ NomeDist: "Profarma", Status: 3, DesStatus: "3 - Pedido Finalizado", CodDist: 4 }],
-            Itens: [
-              { CodProdutoDist: "900502", Ean: "7896014194881", Descricao: "FORXIGA 10MG C/30 COMPRIMIDOS", Laboratorio: "ASTRAZENECA", Quant: 5, QuantFaturada: 5, Preco: 154.00, Desconto: 5.00, ST: 4.50, PrecoLiquido: 146.30, NomeDist: "Profarma", CodDist: 4, CodDistOriginal: 4, NomeDistOriginal: "Profarma", CodDistRecomendado: 4, NomeDistRecomendado: "Profarma", CodDistFaturado: 4, NomeDistFaturado: "Profarma", Condicao: "FIXA", DifMedio: 0.00, Motivo: "" }
-            ]
-          };
-        } else if (numP === 48) {
-          pedDetalhes = {
-            CnpjLoja: apiCnpj,
-            NumeroPedCliente: "REG-48",
-            dists: [{ NomeDist: "Pan/Santa", Status: 3, DesStatus: "3 - Pedido Finalizado", CodDist: 2 }],
-            Itens: [
-              { CodProdutoDist: "100570", Ean: "7896004715438", Descricao: "BRONDILAT XAROPE PEDIATRICO 120ML", Laboratorio: "ACHE", Quant: 5, QuantFaturada: 5, Preco: 36.30, Desconto: 5.00, ST: 1.09, PrecoLiquido: 35.58, NomeDist: "Pan/Santa", CodDist: 2, Condicao: "FIXA", DifMedio: 2.25, Motivo: "" },
-              { CodProdutoDist: "400182", Ean: "7896004734892", Descricao: "BISOLVON XAROPE EXPECTORANTE ADULTO 120ML", Laboratorio: "SANOFI", Quant: 10, QuantFaturada: 10, Preco: 29.28, Desconto: 2.00, ST: 1.31, PrecoLiquido: 30.00, NomeDist: "Pan/Santa", CodDist: 2, Condicao: "FIXA", DifMedio: 28.69, Motivo: "" },
-              { CodProdutoDist: "403920", Ean: "7896004702112", Descricao: "SALONPAS ADESIVO GRANDE 4 UNIDADES", Laboratorio: "HISAMITSU", Quant: 15, QuantFaturada: 15, Preco: 14.45, Desconto: 10.00, ST: 1.45, PrecoLiquido: 14.46, NomeDist: "Pan/Santa", CodDist: 2, Condicao: "FIXA", DifMedio: 0.27, Motivo: "" },
-              { CodProdutoDist: "403922", Ean: "7896004702129", Descricao: "SALONPAS ADESIVO PEQUENO 10 UNIDADES", Laboratorio: "HISAMITSU", Quant: 8, QuantFaturada: 8, Preco: 9.06, Desconto: 10.00, ST: 0.91, PrecoLiquido: 9.06, NomeDist: "Pan/Santa", CodDist: 2, Condicao: "FIXA", DifMedio: 0.44, Motivo: "" },
-              { CodProdutoDist: "403733", Ean: "7896004789311", Descricao: "TYLENOL 750MG C/10 COMPRIMIDOS", Laboratorio: "KENVUE / JOHNSON&JOHNSON", Quant: 20, QuantFaturada: 15, Preco: 19.66, Desconto: 12.00, ST: 0.97, PrecoLiquido: 18.27, NomeDist: "Pan/Santa", CodDist: 2, Condicao: "FIXA", DifMedio: 0.98, Motivo: "Corte Parcial de Estoque" }
-            ]
-          };
-        } else if (numP === 50) {
-          pedDetalhes = {
-            CnpjLoja: apiCnpj,
-            NumeroPedCliente: "REG-50",
-            dists: [{ NomeDist: "GAM", Status: 2, DesStatus: "2 - Aguardando faturamento", CodDist: 1 }, { NomeDist: "DrogaCenter", Status: 2, DesStatus: "2 - Aguardando faturamento", CodDist: 3 }],
-            Itens: [
-              { CodProdutoDist: "500120", Ean: "7891010101010", Descricao: "DORFLEX C/36 COMPRIMIDOS", Laboratorio: "SANOFI", Quant: 30, QuantFaturada: 0, Preco: 18.50, Desconto: 8.00, ST: 0.50, PrecoLiquido: 17.50, NomeDist: "GAM", CodDist: 1, Condicao: "FIXA", DifMedio: 1.20, Motivo: "Aguardando faturamento..." },
-              { CodProdutoDist: "500340", Ean: "7892020202020", Descricao: "NEOSALDINA C/30 DRAGEAS", Laboratorio: "TAKEDA", Quant: 20, QuantFaturada: 0, Preco: 25.00, Desconto: 5.00, ST: 0.80, PrecoLiquido: 24.00, NomeDist: "DrogaCenter", CodDist: 3, Condicao: "FIXA", DifMedio: 0.50, Motivo: "Aguardando faturamento..." }
-            ]
-          };
-        } else if (numP === 49) {
-          pedDetalhes = {
-            CnpjLoja: apiCnpj,
-            NumeroPedCliente: "REG-49",
-            dists: [{ NomeDist: "DrogaCenter", Status: 3, DesStatus: "3 - Pedido Finalizado", CodDist: 3 }],
-            Itens: [
-              { CodProdutoDist: "300450", Ean: "7893030303030", Descricao: "AMOXICILINA 500MG C/21 CAPSULAS", Laboratorio: "EMS", Quant: 10, QuantFaturada: 0, Preco: 15.00, Desconto: 12.00, ST: 0.40, PrecoLiquido: 13.20, NomeDist: "DrogaCenter", CodDist: 3, Condicao: "FIXA", DifMedio: 2.10, Motivo: "Sem Estoque Comercial" },
-              { CodProdutoDist: "300460", Ean: "7894040404040", Descricao: "IBUPROFENO 600MG C/20 COMPRIMIDOS", Laboratorio: "MEDLEY", Quant: 15, QuantFaturada: 15, Preco: 12.00, Desconto: 10.00, ST: 0.30, PrecoLiquido: 10.80, NomeDist: "DrogaCenter", CodDist: 3, Condicao: "FIXA", DifMedio: 0.00, Motivo: "" }
-            ]
-          };
-        } else {
-          pedDetalhes = {
-            CnpjLoja: apiCnpj,
-            NumeroPedCliente: "REG-" + numP,
-            dists: [{ NomeDist: "Servimed", Status: 3, DesStatus: "3 - Pedido Finalizado", CodDist: 4 }],
-            Itens: [
-              { CodProdutoDist: "400980", Ean: "7894916145008", Descricao: "OMEPRAZOL 20MG C/28 CAPSULAS", Laboratorio: "CIMED", Quant: 25, QuantFaturada: 25, Preco: 9.90, Desconto: 15.00, ST: 0.20, PrecoLiquido: 8.40, NomeDist: "Servimed", CodDist: 4, Condicao: "FIXA", DifMedio: 0.50, Motivo: "" }
-            ]
-          };
-        }
+      } catch (err: any) {
+        logs.push(`[MONITORAMENTO ERRO DETALHE] Erro ao consultar detalhes do pedido ${numPedido}: ${err.message}`);
       }
 
       if (pedDetalhes) {
@@ -7499,22 +7363,20 @@ app.post("/api/pedidos-do-dia", async (req, res) => {
     }
 
     // Enrich descriptions
-    if (!isSandboxToken) {
-      const eansToEnrich: string[] = [];
-      for (const ped of relatorioFinal) {
-        if (ped.detalhes?.Itens) {
-          for (const it of ped.detalhes.Itens) {
-            const ean = it.Ean || it.ean || it.EAN || "";
-            if (ean) eansToEnrich.push(String(ean));
-          }
+    const eansToEnrich: string[] = [];
+    for (const ped of relatorioFinal) {
+      if (ped.detalhes?.Itens) {
+        for (const it of ped.detalhes.Itens) {
+          const ean = it.Ean || it.ean || it.EAN || "";
+          if (ean) eansToEnrich.push(String(ean));
         }
       }
-      const descMap = await fetchEanDescriptions(baseUrl, actualToken, apiCnpj, eansToEnrich, logs);
-      for (const ped of relatorioFinal) {
-        if (ped.detalhes?.Itens) {
-          for (const it of ped.detalhes.Itens) {
-            enrichReturnedItem(it, ped.numPedido, descMap);
-          }
+    }
+    const descMap = await fetchEanDescriptions(baseUrl, actualToken, apiCnpj, eansToEnrich, logs);
+    for (const ped of relatorioFinal) {
+      if (ped.detalhes?.Itens) {
+        for (const it of ped.detalhes.Itens) {
+          enrichReturnedItem(it, ped.numPedido, descMap);
         }
       }
     }
@@ -7531,12 +7393,11 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
   const logs: string[] = [];
   try {
     const agoraProcessamento = new Date().toISOString();
-    const { token, cnpj, useTestUrl = true, dataInicio, dataFim, simulationMode = false } = req.body;
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN || simulationMode;
-    const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+    const { token, cnpj, dataInicio, dataFim } = req.body;
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+    const apiCnpj = (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
 
-    const baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+    const baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
     const hoje = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     const formatDate = (d: Date) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
     const dataHoje = formatDate(hoje);
@@ -7570,201 +7431,69 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
 
     let itensConfirmados: any[] = [];
 
-    if (!isSandboxToken) {
-      // Passo 1: Listar pedidos do dia
-      logs.push(`[ITENS CONFIRMADOS] Buscando pedidos de ${finalDataIni} atÃ© ${finalDataFim}...`);
-      const resListar = await fetch(`${baseUrl}/api/Pedido/Listar`, {
+    // Passo 1: Listar pedidos do dia
+    logs.push(`[ITENS CONFIRMADOS] Buscando pedidos de ${finalDataIni} atÃ© ${finalDataFim}...`);
+    const resListar = await fetch(`${baseUrl}/api/Pedido/Listar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, DataIni: finalDataIni, DataFim: finalDataFim } })
+    });
+    const dataListar = await resListar.json();
+    const pedidos = dataListar.Retorno || [];
+    
+    // Desduplicar pedidos para evitar duplicar itens se a API retornar mÃºltiplas linhas do mesmo pedido
+    const seenPedidos = new Set<string>();
+    const uniquePedidos: any[] = [];
+    for (const ped of pedidos) {
+      const numPedido = String(ped.NumPedido || ped.numeroPedido || "").trim();
+      if (numPedido && !seenPedidos.has(numPedido)) {
+        seenPedidos.add(numPedido);
+        uniquePedidos.push(ped);
+      }
+    }
+    
+    // Passo 2 & 3: Retorno e Filtros
+    for (const ped of uniquePedidos) {
+      const numPedido = ped.NumPedido;
+      const resRetorno = await fetch(`${baseUrl}/api/Pedido/Retorno`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, DataIni: finalDataIni, DataFim: finalDataFim } })
+        body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, NumeroPedido: numPedido } })
       });
-      const dataListar = await resListar.json();
-      const pedidos = dataListar.Retorno || [];
+      const dataRet = await resRetorno.json();
+      const detalhes = dataRet.Retorno;
       
-      // Desduplicar pedidos para evitar duplicar itens se a API retornar mÃºltiplas linhas do mesmo pedido
-      const seenPedidos = new Set<string>();
-      const uniquePedidos: any[] = [];
-      for (const ped of pedidos) {
-        const numPedido = String(ped.NumPedido || ped.numeroPedido || "").trim();
-        if (numPedido && !seenPedidos.has(numPedido)) {
-          seenPedidos.add(numPedido);
-          uniquePedidos.push(ped);
-        }
-      }
-      
-      // Passo 2 & 3: Retorno e Filtros
-      for (const ped of uniquePedidos) {
-        const numPedido = ped.NumPedido;
-        const resRetorno = await fetch(`${baseUrl}/api/Pedido/Retorno`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ Token: actualToken, parametros: { CnpjCLi: apiCnpj, NumeroPedido: numPedido } })
-        });
-        const dataRet = await resRetorno.json();
-        const detalhes = dataRet.Retorno;
+      if (detalhes && detalhes.dists && detalhes.Itens) {
+        const distsFinalizadas = detalhes.dists.filter((d: any) => d.Status === 3);
+        const codsDistFinalizadas = distsFinalizadas.map((d: any) => d.CodDist);
         
-        if (detalhes && detalhes.dists && detalhes.Itens) {
-          const distsFinalizadas = detalhes.dists.filter((d: any) => d.Status === 3);
-          const codsDistFinalizadas = distsFinalizadas.map((d: any) => d.CodDist);
-          
-          detalhes.Itens.forEach((it: any) => {
-            const rawEan = String(it.Ean || it.ean || it.EAN || it.CodBarra || it.codBarra || it.CodBarras || it.codBarras || "").trim();
-            const descSmart = String(it.Descricao || it.descricao || it.Nome || it.nome || it.Descr || it.descr || "").trim();
-            const codDistNum = typeof it.CodDist === "number" ? it.CodDist : parseInt(it.CodDist) || 2;
-            const codProdDistStr = String(it.CodProdutoDist || it.codProdutoDist || "0").trim();
-            const codProdutoStr = String(it.CodProduto || it.codProduto || "0").trim();
+        detalhes.Itens.forEach((it: any) => {
+          const rawEan = String(it.Ean || it.ean || it.EAN || it.CodBarra || it.codBarra || it.CodBarras || it.codBarras || "").trim();
+          const descSmart = String(it.Descricao || it.descricao || it.Nome || it.nome || it.Descr || it.descr || "").trim();
+          const codDistNum = typeof it.CodDist === "number" ? it.CodDist : parseInt(it.CodDist) || 2;
+          const codProdDistStr = String(it.CodProdutoDist || it.codProdutoDist || "0").trim();
+          const codProdutoStr = String(it.CodProduto || it.codProduto || "0").trim();
 
-            const isFaturado = codsDistFinalizadas.includes(it.CodDist) && it.QuantFaturada > 0;
-            const status = isFaturado ? "faturado" : "nao_confirmado";
-            const distribuidoraNome = detalhes.dists.find((d: any) => d.CodDist === it.CodDist)?.NomeDist || "Desconhecida";
+          const isFaturado = codsDistFinalizadas.includes(it.CodDist) && it.QuantFaturada > 0;
+          const status = isFaturado ? "faturado" : "nao_confirmado";
+          const distribuidoraNome = detalhes.dists.find((d: any) => d.CodDist === it.CodDist)?.NomeDist || "Desconhecida";
 
-            itensConfirmados.push({
-              ean: rawEan,
-              quantSolicitada: it.Quant || it.quant || 0,
-              quantFaturada: it.QuantFaturada || it.quantFaturada || 0,
-              precoLiquido: it.PrecoLiquido || it.Preco || 0,
-              distribuidora: distribuidoraNome,
-              codDist: codDistNum,
-              codProdutoDist: codProdDistStr,
-              codProduto: codProdutoStr,
-              status,
-              motivo: it.Motivo || "",
-              numPedido,
-              descricaoSmartped: descSmart
-            });
+          itensConfirmados.push({
+            ean: rawEan,
+            quantSolicitada: it.Quant || it.quant || 0,
+            quantFaturada: it.QuantFaturada || it.quantFaturada || 0,
+            precoLiquido: it.PrecoLiquido || it.Preco || 0,
+            distribuidora: distribuidoraNome,
+            codDist: codDistNum,
+            codProdutoDist: codProdDistStr,
+            codProduto: codProdutoStr,
+            status,
+            motivo: it.Motivo || "",
+            numPedido,
+            descricaoSmartped: descSmart
           });
-        }
+        });
       }
-    } else {
-      logs.push(`[MOCK] Modo SimulaÃ§Ã£o (Token de testes). Gerando itens confirmados fictÃ­cios para os pedidos do dia.`);
-      itensConfirmados = [
-        {
-          ean: "7896004715438",
-          quantSolicitada: 5,
-          quantFaturada: 5,
-          precoLiquido: 35.58,
-          distribuidora: "Pan/Santa",
-          codDist: 2,
-          codProdutoDist: "100570",
-          codProduto: "100570",
-          status: "faturado",
-          motivo: "",
-          numPedido: 48,
-          descricaoSmartped: "BRONDILAT XAROPE PEDIATRICO 120ML"
-        },
-        {
-          ean: "7896004734892",
-          quantSolicitada: 10,
-          quantFaturada: 10,
-          precoLiquido: 30.00,
-          distribuidora: "Pan/Santa",
-          codDist: 2,
-          codProdutoDist: "400182",
-          codProduto: "400182",
-          status: "faturado",
-          motivo: "",
-          numPedido: 48,
-          descricaoSmartped: "BISOLVON XAROPE EXPECTORANTE ADULTO 120ML"
-        },
-        {
-          ean: "7896004702112",
-          quantSolicitada: 15,
-          quantFaturada: 15,
-          precoLiquido: 14.46,
-          distribuidora: "Pan/Santa",
-          codDist: 2,
-          codProdutoDist: "403920",
-          codProduto: "403920",
-          status: "faturado",
-          motivo: "",
-          numPedido: 48,
-          descricaoSmartped: "SALONPAS ADESIVO GRANDE 4 UNIDADES"
-        },
-        {
-          ean: "7896004702129",
-          quantSolicitada: 8,
-          quantFaturada: 8,
-          precoLiquido: 9.06,
-          distribuidora: "Pan/Santa",
-          codDist: 2,
-          codProdutoDist: "403922",
-          codProduto: "403922",
-          status: "faturado",
-          motivo: "",
-          numPedido: 48,
-          descricaoSmartped: "SALONPAS ADESIVO PEQUENO 10 UNIDADES"
-        },
-        {
-          ean: "7896004789311",
-          quantSolicitada: 20,
-          quantFaturada: 15,
-          precoLiquido: 18.27,
-          distribuidora: "Pan/Santa",
-          codDist: 2,
-          codProdutoDist: "403733",
-          codProduto: "403733",
-          status: "faturado",
-          motivo: "Corte Parcial de Estoque",
-          numPedido: 48,
-          descricaoSmartped: "TYLENOL 750MG C/10 COMPRIMIDOS"
-        },
-        {
-          ean: "7893030303030",
-          quantSolicitada: 10,
-          quantFaturada: 0,
-          precoLiquido: 13.20,
-          distribuidora: "DrogaCenter",
-          codDist: 3,
-          codProdutoDist: "300450",
-          codProduto: "300450",
-          status: "nao_confirmado",
-          motivo: "Sem Estoque Comercial",
-          numPedido: 49,
-          descricaoSmartped: "AMOXICILINA 500MG C/21 CAPSULAS"
-        },
-        {
-          ean: "7894040404040",
-          quantSolicitada: 15,
-          quantFaturada: 15,
-          precoLiquido: 10.80,
-          distribuidora: "DrogaCenter",
-          codDist: 3,
-          codProdutoDist: "300460",
-          codProduto: "300460",
-          status: "faturado",
-          motivo: "",
-          numPedido: 49,
-          descricaoSmartped: "IBUPROFENO 600MG C/20 COMPRIMIDOS"
-        },
-        {
-          ean: "7891010101010",
-          quantSolicitada: 30,
-          quantFaturada: 0,
-          precoLiquido: 17.50,
-          distribuidora: "GAM",
-          codDist: 1,
-          codProdutoDist: "500120",
-          codProduto: "500120",
-          status: "nao_confirmado",
-          motivo: "Aguardando faturamento...",
-          numPedido: 50,
-          descricaoSmartped: "DORFLEX C/36 COMPRIMIDOS"
-        },
-        {
-          ean: "7892020202020",
-          quantSolicitada: 20,
-          quantFaturada: 0,
-          precoLiquido: 24.00,
-          distribuidora: "DrogaCenter",
-          codDist: 3,
-          codProdutoDist: "500340",
-          codProduto: "500340",
-          status: "nao_confirmado",
-          motivo: "Aguardando faturamento...",
-          numPedido: 50,
-          descricaoSmartped: "NEOSALDINA C/30 DRAGEAS"
-        }
-      ];
     }
     
     // Passo 4: TraduÃ§Ã£o EAN (DescriÃ§Ã£o)
@@ -7873,18 +7602,15 @@ app.post("/api/pedido-retorno", async (req, res) => {
       numPedido,
       token,
       cnpj,
-      useTestUrl = true,
-      itemsFaturados = [],
-      simulationMode = false
+      itemsFaturados = []
     } = req.body;
 
     if (!numPedido) {
       return res.status(400).json({ error: "NÃºmero do pedido Ã© obrigatÃ³rio." });
     }
 
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN || simulationMode;
-    const apiCnpj = (actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN || simulationMode) ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+    const apiCnpj = (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
 
     logs.push(`[RETORNO] Consultando status do Pedido ID SmartPed: ${numPedido}`);
     logs.push(`[RETORNO] CNPJ: ${apiCnpj} | Token: ${actualToken.substring(0, 6)}...`);
@@ -7893,46 +7619,41 @@ app.post("/api/pedido-retorno", async (req, res) => {
     checkCount++;
     SIMULATED_CHECKS[String(numPedido)] = checkCount;
 
-    let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+    let baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
     const endpointRetorno = `${baseUrl.replace(/\/$/, "")}/api/Pedido/Retorno`;
 
     let apiResponseData: any = null;
     let fallbackToSimulated = false;
 
-    if (!isSandboxToken) {
-      logs.push(`[API CONEXÃƒO] Chamando endpoint real: ${endpointRetorno}...`);
-      try {
-        const resRetorno = await fetch(endpointRetorno, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-          },
-          body: JSON.stringify({
-            Token: actualToken,
-            parametros: {
-              CnpjCLi: apiCnpj,
-              NumeroPedido: parseInt(numPedido) || numPedido,
-              NumPedido: parseInt(numPedido) || numPedido
-            }
-          }),
-          signal: AbortSignal.timeout(15000)
-        });
+    logs.push(`[API CONEXÃƒO] Chamando endpoint real: ${endpointRetorno}...`);
+    try {
+      const resRetorno = await fetch(endpointRetorno, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify({
+          Token: actualToken,
+          parametros: {
+            CnpjCLi: apiCnpj,
+            NumeroPedido: parseInt(numPedido) || numPedido,
+            NumPedido: parseInt(numPedido) || numPedido
+          }
+        }),
+        signal: AbortSignal.timeout(15000)
+      });
 
-        logs.push(`[API RESPOSTA] Status HTTP ${resRetorno.status}`);
-        if (resRetorno.ok) {
-          apiResponseData = await resRetorno.json();
-          logs.push(`[API SUCESSO] Dados retornados com sucesso pela SmartPed.`);
-        } else {
-          logs.push(`[API CONEXÃƒO ALERTA] Retorno real indisponÃ­vel. Ativando simulaÃ§Ã£o inteligente para CNPJ real.`);
-          fallbackToSimulated = true;
-        }
-      } catch (e: any) {
-        logs.push(`[API CONEXÃƒO ERRO] Erro ao consultar retorno: ${e.message}. Ativando simulaÃ§Ã£o.`);
+      logs.push(`[API RESPOSTA] Status HTTP ${resRetorno.status}`);
+      if (resRetorno.ok) {
+        apiResponseData = await resRetorno.json();
+        logs.push(`[API SUCESSO] Dados retornados com sucesso pela SmartPed.`);
+      } else {
+        logs.push(`[API CONEXÃƒO ALERTA] Retorno real indisponÃ­vel. Ativando simulaÃ§Ã£o inteligente para CNPJ real.`);
         fallbackToSimulated = true;
       }
-    } else {
-      logs.push(`[MOCK] Token de homologaÃ§Ã£o detectado. Utilizando simulaÃ§Ã£o controlada.`);
+    } catch (e: any) {
+      logs.push(`[API CONEXÃƒO ERRO] Erro ao consultar retorno: ${e.message}. Ativando simulaÃ§Ã£o.`);
       fallbackToSimulated = true;
     }
 
@@ -7956,7 +7677,7 @@ app.post("/api/pedido-retorno", async (req, res) => {
       // Decidimos o Status do pedido com base no nÃºmero de consultas (para simular de fato a espera de processamento real!)
       // Primeira consulta: Status 2 (Aguardando Retorno)
       // Segunda consulta ou superior: Status 3 (Finalizado)
-      // Se for homologaÃ§Ã£o sandbox clÃ¡ssica, mantemos 0 ou 3 a depender do desejo de testar.
+      // Se for homologaÃ§Ã£o, mantemos 0 ou 3 a depender do desejo de testar.
       // Vamos simular a transiÃ§Ã£o real! Se checkCount === 1, retornamos status 2 para manter realÃ­stico!
       const simulatedStatus = checkCount === 1 ? 2 : 3;
       const descStatus = simulatedStatus === 2 
@@ -8026,8 +7747,8 @@ app.post("/api/pedido-retorno", async (req, res) => {
       };
     }
 
-    // Enriquecer as descriÃ§Ãµes dos itens se for ambiente real (nÃ£o sandbox)
-    if (!isSandboxToken && apiResponseData) {
+    // Enriquecer as descriÃ§Ãµes dos itens se for ambiente real
+    if (apiResponseData) {
       const apiRet = apiResponseData.Retorno || apiResponseData.retorno || apiResponseData;
       const apiItens = apiRet.Itens || apiRet.itens || [];
       if (Array.isArray(apiItens) && apiItens.length > 0) {
@@ -8109,22 +7830,16 @@ app.post("/api/pedido-retorno", async (req, res) => {
 // Endpoint para buscar distribuidores
 app.post("/api/distribuidores", async (req, res) => {
   try {
-    const { token, cnpj, useTestUrl = true, customTestUrl, customProductionUrl, customEndpoint } = req.body;
+    const { token, cnpj, customEndpoint } = req.body;
     
     if (!token || !cnpj) {
       return res.status(400).json({ error: "Token e CNPJ sÃ£o obrigatÃ³rios." });
     }
 
-    let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
-    if (useTestUrl && customTestUrl) {
-      baseUrl = customTestUrl.replace(/\/$/, "");
-    } else if (!useTestUrl && customProductionUrl) {
-      baseUrl = customProductionUrl.replace(/\/$/, "");
-    }
+    let baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
 
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
-    const apiCnpj = isSandboxToken ? "11111111111111" : cnpj.trim().replace(/\D/g, "");
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+    const apiCnpj = cnpj.trim().replace(/\D/g, "");
 
     const endpoint = `${baseUrl}/api/Condicoes/Distribuidores`;
     const payload = {
@@ -8159,8 +7874,6 @@ app.post("/api/search-products", async (req, res) => {
       query,
       token,
       cnpj,
-      useTestUrl = true,
-      simulationMode = false,
       permitirSemEstoque = false,
       tipos = ["G", "O"],
       margemMinima = 0,
@@ -8174,9 +7887,8 @@ app.post("/api/search-products", async (req, res) => {
     }
 
     const searchQuery = String(query).trim().toUpperCase();
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
-    const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+    const apiCnpj = (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
 
     // Normalizar query de busca: remover stopwords, normalizar abreviacoes, limpar espacos
     const normalizeSearchQuery = (q: string): { query: string; quantity: string | null } => {
@@ -8238,15 +7950,15 @@ app.post("/api/search-products", async (req, res) => {
 
     const { query: normalizedQuery, quantity } = normalizeSearchQuery(searchQuery);
     log(`[BUSCA] Buscando por "${normalizedQuery}" (original: "${searchQuery}", quantidade: ${quantity || "auto"}, EAN Exato: ${onlyExactEan})...`);
-    log(`[DEBUG-PARAMS] queryRaw="${query}" searchQuery="${searchQuery}" isSandboxToken=${isSandboxToken} useTestUrl=${useTestUrl} apiCnpj="${apiCnpj}" baseUrl="${useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL}"`);
+    log(`[DEBUG-PARAMS] queryRaw="${query}" searchQuery="${searchQuery}" apiCnpj="${apiCnpj}" baseUrl="${CONFIG.SMARTPED_PRODUCTION_URL}"`);
 
     let foundItems: any[] = [];
     let usedRealApi = false;
 
     const isPureNumeric = /^\d+$/.test(searchQuery);
 
-    if (!simulationMode && !isSandboxToken) {
-      let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+    if (true) {
+      let baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
       
       if (isPureNumeric) {
         // Busca paralela no endpoint de Ean e de Molecula da SmartPed para trazer tanto o produto exato quanto todos os substitutos
@@ -9080,16 +8792,15 @@ app.post("/api/search-products", async (req, res) => {
 });
 // Endpoint para buscar alternativas de verdade na SmartPed em tempo real para itens "Sem Estoque" ou "NÃ£o Encontrados"
 app.post("/api/smartped-find-substitutes", async (req, res) => {
-  const { ean, descricao, token, cnpj, useTestUrl = true, cortesRecentes = {} } = req.body;
+  const { ean, descricao, token, cnpj, cortesRecentes = {} } = req.body;
   const logs: string[] = [];
   const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[SUBSTITUTES] ${m}`); };
   
   try {
-    const actualToken = (token || CONFIG.SMARTPED_SANDBOX_TOKEN).trim();
-    const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
-    const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
-    let baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+    const apiCnpj = (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+    let baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
     
     let dcbDescoberto = "";
     
@@ -10173,16 +9884,16 @@ app.get("/api/produtos/compras-historico/:ean", async (req, res) => {
 
 // Endpoint de diagnÃ³stico para consultar os retornos reais brutos da API SmartPed para um determinado EAN
 app.post("/api/diagnostico-ean", async (req, res) => {
-  const { ean, token, cnpj, useTestUrl } = req.body;
+  const { ean, token, cnpj } = req.body;
   if (!ean) {
     return res.status(400).json({ success: false, error: "EAN Ã© obrigatÃ³rio." });
   }
 
-  const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
-  const isSandboxToken = actualToken === CONFIG.SMARTPED_SANDBOX_TOKEN;
-  const apiCnpj = isSandboxToken ? "11111111111111" : (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
+    const actualToken = (token || CONFIG.SMARTPED_PRODUCTION_TOKEN).trim();
+    const apiCnpj = (cnpj || CONFIG.SMARTPED_DEFAULT_CNPJ).trim().replace(/\D/g, "");
 
-  const baseUrl = useTestUrl ? CONFIG.SMARTPED_SANDBOX_URL : CONFIG.SMARTPED_PRODUCTION_URL;
+
+  const baseUrl = CONFIG.SMARTPED_PRODUCTION_URL;
   const cleanEanValue = cleanEan(ean);
 
   const logs: string[] = [];
