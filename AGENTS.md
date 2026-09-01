@@ -673,6 +673,12 @@ Antes de considerar qualquer tarefa concluída, passar pelo checklist:
 
 Exemplos reais de onde isso foi esquecido mesmo com regra já escrita: uma tabela nova (`distribuidor_alias`) nunca foi documentada no mapa do sistema, e 2 correções de bug em sequência numa mesma feature não atualizaram a documentação da feature original.
 
+### Pensar um passo à frente antes de finalizar uma solução
+
+Antes de considerar um fix/feature pronto pra commit, pensar explicitamente: "o que acontece nisso no próximo restart do servidor, numa re-execução, com dado que já existia antes desta mudança, ou em escala maior?" — não só resolver o sintoma relatado.
+
+Exemplos reais: generalizar o alerta de duplicidade da Profarma pra qualquer distribuidora causou 563 falsos-positivos (nomes fantasia da SmartPed não batem com nomes jurídicos da Trier — ninguém pensou "o que acontece rodando isso contra o histórico real inteiro"). O fix disso foi bom, mas uma feature seguinte (recompra duplicada, monitoramento em background) repetiu o mesmo tipo de erro num lugar novo: `ALTER TABLE ... DEFAULT 0` marcou toda linha histórica como "pendente" (ninguém pensou no dado que já existia), e um `codDist=0` fixo numa cláusula `WHERE` fez um UPDATE nunca persistir nada — mas o código reportava sucesso mesmo assim.
+
 ### Pode (e deve) contradizer, inclusive o Carlos
 
 Se o prompt recebido pedir algo que pareça tecnicamente causar um problema — baseado em evidência real do código, não em preferência — dizer isso explicitamente ANTES de implementar, em vez de seguir em frente calado e deixar o problema aparecer depois. Isso vale tanto pra apontar um risco técnico quanto pra dizer "isso não bate com o que o código faz hoje, confirma antes de eu prosseguir" (mesma regra que já existe: "se qualquer premissa não bater com o código real, PARAR e reportar" — essa norma só deixa explícito que isso vale mesmo quando quem pediu foi o próprio Carlos).
