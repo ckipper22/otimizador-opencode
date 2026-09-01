@@ -2532,7 +2532,7 @@ app.post("/api/integracao/encomendas/reconciliar", async (req, res) => {
 
     log(`Encontrados ${pendentes.length} itens de encomenda pendentes em ${porPedido.size} pedido(s).`);
 
-    const actualToken = CONFIG.SMARTPED_SANDBOX_TOKEN;
+    const actualToken = CONFIG.SMARTPED_PRODUCTION_TOKEN;
     const todayStr = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().split("T")[0]; // UTC-3
 
     let reconciliados = 0;
@@ -2599,7 +2599,7 @@ app.post("/api/integracao/encomendas/reconciliar", async (req, res) => {
             log(`  Item EAN ${itemEnc.ean}: não encontrado no retorno — confirmando como não atendido.`);
             confirmarPayload.push({
               id: itemEnc.idEncomenda,
-              fornecedor: "",
+              fornecedor: itemEnc.nomeDist,
               dataPrevisao: todayStr,
               status: "nao_atendido",
               observacao: "Item não encontrado no retorno do distribuidor."
@@ -2613,7 +2613,7 @@ app.post("/api/integracao/encomendas/reconciliar", async (req, res) => {
             // Faturado: confirmar normalmente
             confirmarPayload.push({
               id: itemEnc.idEncomenda,
-              fornecedor: "",
+              fornecedor: itemEnc.nomeDist,
               dataPrevisao: todayStr
             });
             log(`  Item EAN ${itemEnc.ean}: faturado (qty=${quantFaturada}) — confirmando.`);
@@ -2622,7 +2622,7 @@ app.post("/api/integracao/encomendas/reconciliar", async (req, res) => {
             const motivo = retornoItem.Motivo || retornoItem.motivo || "Distribuidor finalizou sem faturar este item.";
             confirmarPayload.push({
               id: itemEnc.idEncomenda,
-              fornecedor: "",
+              fornecedor: itemEnc.nomeDist,
               dataPrevisao: todayStr,
               status: "nao_atendido",
               observacao: motivo

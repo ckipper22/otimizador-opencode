@@ -355,12 +355,12 @@ export async function getOrderItems(numPedido: string) {
 }
 
 // Encomendas — reconciliação server-side
-export async function getEncomendasPendentesReconciliacao(): Promise<Array<{ numPedido: string; ean: string; codDist: number; idEncomenda: string }>> {
+export async function getEncomendasPendentesReconciliacao(): Promise<Array<{ numPedido: string; ean: string; codDist: number; nomeDist: string; idEncomenda: string }>> {
   const d = getDb();
   if (!d) return [];
   try {
     const rows = await d.all(
-      `SELECT num_pedido, ean, cod_dist, id_encomenda FROM order_items
+      `SELECT num_pedido, ean, cod_dist, nome_dist, id_encomenda FROM order_items
        WHERE origem = 'encomenda' AND id_encomenda IS NOT NULL AND id_encomenda != ''
        AND encomenda_confirmada = 0`
     );
@@ -369,6 +369,7 @@ export async function getEncomendasPendentesReconciliacao(): Promise<Array<{ num
       numPedido: r.num_pedido,
       ean: r.ean,
       codDist: r.cod_dist,
+      nomeDist: r.nome_dist || "",
       idEncomenda: r.id_encomenda,
     }));
   } catch { return []; }
