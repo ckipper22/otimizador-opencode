@@ -1405,6 +1405,11 @@ export default function SwapsTable({
                           ⏳ {group.name.toUpperCase()}
                         </span>
                       )}
+                      {isDescartado && (
+                        <span className="bg-slate-200 text-slate-700 text-[9px] font-black uppercase tracking-widest px-2.5 py-1 border border-slate-400">
+                          🛑 {group.name.toUpperCase()}
+                        </span>
+                      )}
 
                       <button
                         onClick={() => onDeleteDistributor(group.name)}

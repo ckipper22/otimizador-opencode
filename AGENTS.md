@@ -516,6 +516,30 @@ Objeto bruto de promoção (vindo do WhatsApp/fornecedor externo) só tem `{desc
 
 ---
 
+## Descarte de Recompra Duplicada
+
+> Implementado em 2026-08-31 (commit 145f772). Previne que um EAN faturado recentemente seja processado de novo sem confirmação de entrada.
+
+### Mecanismo
+
+1. **`getFaturadosRecentes(cnpj, eans, janelaHoras)`** (server/database.ts): query 1x em `itens_confirmados` com `IN (...)` — retorna Set de EANs com `status = 'faturado'` e `created_at` dentro da janela. Sem JOIN com `distribuidor_alias` (funciona pra qualquer distribuidora, sem depender de alias configurado).
+
+2. **Inserção no loop** (server.ts ~4530): antes do loop, extrai todos os EANs do SICF e chama `getFaturadosRecentes(cnpj, todosEans, 24)` UMA VEZ (não por item — 1 query com IN). Dentro do loop, se EAN está no Set → checa `compras-historico` (Parte B, com cache de 5min já existente).
+
+3. **Decisão:**
+   - Compra com `data` >= `created_at` do `itens_confirmados` → entrada confirmada → processa normalmente
+   - Sem compra posterior → descarta com `motivoAcao: "descartado_faturado_pendente"`, `distribuidora: "Descartado — Já Faturado"`, `observacao` com detalhes
+
+### Janela de 24h
+
+A janela é hardcoded em 24h no ponto de chamada (server.ts). A função `getFaturadosRecentes` aceita `janelaHoras` como parâmetro — pode ser ajustado sem alterar a função.
+
+### Frontend
+
+Grupo virtual "Descartado — Já Faturado" no SwapsTable.tsx, mesmo padrão de "Não Encontrados", "Sem Estoque", "Aguardando Chegar". Badge visual cinza com 🛑.
+
+---
+
 ## Fluxo de Busca por Tipo de Item (Ruptura vs Sem Ruptura)
 
 > Migrado de `docs/_archive/business-rules.md` (seção 4.20). Documentação detalhada do motor de deciding.
