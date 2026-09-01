@@ -93,6 +93,19 @@ export function useManualSearch({
           skipMolecula: true
         })
       });
+
+      // Diferenciar: falha HTTP vs sucesso sem resultado
+      if (!searchResp.ok) {
+        let erroDetalhado = `Erro ${searchResp.status} ao consultar a SmartPed — tente novamente.`;
+        try {
+          const errorData = await searchResp.json();
+          if (errorData?.error) erroDetalhado = errorData.error;
+        } catch {}
+        setManualSearchError(erroDetalhado);
+        setManualSearchLogs([`[ERRO] HTTP ${searchResp.status}: ${erroDetalhado}`]);
+        return;
+      }
+
       const searchData = await searchResp.json();
       let allAlts: any[] = [];
       let alts: any[] = [];
@@ -100,7 +113,7 @@ export function useManualSearch({
       let dcb: string | null = null;
       let logs: string[] = [];
 
-      if (searchResp.ok && searchData.items) {
+      if (searchData.items) {
         allAlts = searchData.items;
         alts = searchData.items;
         logs = searchData.logs || [];
