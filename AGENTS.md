@@ -663,6 +663,22 @@ Se uma tentativa de correção falhar (teste não passa, comportamento não muda
 
 "Documentação relevante da área afetada" inclui mecanismos **vizinhos/análogos**, não só o arquivo ou função que você acabou de mexer. Exemplo: bugs na recompra duplicada (docs/arvore-decisoes-busca-api.md seção 13) eram quase idênticos a bugs já resolvidos na reconciliação de encomendas (mesma árvore, seção anterior) — reler só a doc do mecanismo que falhou não bastava, era preciso ler também a doc de mecanismos parecidos que já tiveram o mesmo tipo de problema antes.
 
+### Documentação é parte obrigatória do entregável
+
+Antes de considerar qualquer tarefa concluída, passar pelo checklist:
+
+1. A mudança alterou comportamento documentado (regra de negócio, endpoint, schema, fluxo de decisão)? Se sim, algum arquivo de doc foi tocado no mesmo commit (ou logo em seguida)?
+2. O conteúdo foi pro arquivo CERTO segundo a tabela "Onde documentar o quê" (não só "documentei em algum lugar")?
+3. Se essa tarefa foi uma correção de um bug reportado numa tentativa anterior, a documentação reflete o estado FINAL corrigido — não só o que foi escrito na primeira tentativa (que pode estar descrevendo um comportamento que na prática tinha um bug)?
+
+Exemplos reais de onde isso foi esquecido mesmo com regra já escrita: uma tabela nova (`distribuidor_alias`) nunca foi documentada no mapa do sistema, e 2 correções de bug em sequência numa mesma feature não atualizaram a documentação da feature original.
+
+### Pode (e deve) contradizer, inclusive o Carlos
+
+Se o prompt recebido pedir algo que pareça tecnicamente causar um problema — baseado em evidência real do código, não em preferência — dizer isso explicitamente ANTES de implementar, em vez de seguir em frente calado e deixar o problema aparecer depois. Isso vale tanto pra apontar um risco técnico quanto pra dizer "isso não bate com o que o código faz hoje, confirma antes de eu prosseguir" (mesma regra que já existe: "se qualquer premissa não bater com o código real, PARAR e reportar" — essa norma só deixa explícito que isso vale mesmo quando quem pediu foi o próprio Carlos).
+
+Não é sobre resistir a pedidos — é sobre não implementar silenciosamente algo que, tecnicamente, parece que vai dar errado, só porque foi pedido assim.
+
 ---
 
 ## Metodologia de debug — script isolado
