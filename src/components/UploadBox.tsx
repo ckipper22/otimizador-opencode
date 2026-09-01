@@ -1,6 +1,5 @@
 import React, { useRef, useState } from "react";
 import { Upload, FileText, Trash2, CheckCircle, Sparkles, RefreshCw, AlertTriangle, Clipboard, FileDown, Settings2 } from "lucide-react";
-import { SAMPLE_SICF_FILE } from "../utils";
 import { DistributorOption, OptimizerConfig } from "../types";
 
 interface UploadBoxProps {
@@ -79,10 +78,6 @@ export default function UploadBox({
       onFileLoaded(text, file.name);
     };
     reader.readAsText(file, "latin1");
-  };
-
-  const loadSample = () => {
-    onFileLoaded(SAMPLE_SICF_FILE, "pedido_exemplo_smartped.txt");
   };
 
   // Algoritmo de parsing resiliente de payload ou lista de EANs
@@ -550,23 +545,6 @@ export default function UploadBox({
             Arraste seu arquivo SICF aqui ou <span className="text-indigo-600 underline">clique para procurar</span>
           </p>
           <p className="text-xs text-slate-400 font-mono mt-1.5">Formatos compatíveis: .txt, .sicf (Latin-1)</p>
-
-          <div className="mt-8 pt-5 border-t border-slate-100 w-full flex flex-col sm:flex-row items-center justify-center gap-3">
-            <span className="text-xs font-medium text-slate-400 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-              Não possui arquivo agora?
-            </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                loadSample();
-              }}
-              className="text-[11px] font-bold uppercase tracking-wider text-indigo-600 bg-indigo-50 hover:bg-indigo-100 py-2 px-4 rounded-lg transition-all"
-            >
-              Testar com arquivo de exemplo
-            </button>
-          </div>
         </div>
       )}
 
