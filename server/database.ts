@@ -282,16 +282,19 @@ export async function initTursoSchema() {
     `ALTER TABLE itens_confirmados ADD COLUMN origem TEXT DEFAULT 'manual'`,
     `ALTER TABLE itens_confirmados ADD COLUMN id_encomenda TEXT`,
     `ALTER TABLE order_items ADD COLUMN encomenda_confirmada INTEGER DEFAULT 0`,
-    `ALTER TABLE itens_confirmados ADD COLUMN entrada_confirmada INTEGER DEFAULT 0`,
   ];
   for (const sql of MIGRATE_SQL) {
     try { await d.exec(sql); } catch {} // ignora "duplicate column name" ou "duplicate index"
   }
-  // Backfill: marcar itens já existentes como entrada_confirmada=1 (pré-migração)
-  // Idempotente: rodar toda vez é seguro, só marca linhas que ainda estão com 0
+  // Migracao entrada_confirmada: tratar fora do loop genérico pra rodar backfill SÓ na primeira vez
   try {
+    await d.exec(`ALTER TABLE itens_confirmados ADD COLUMN entrada_confirmada INTEGER DEFAULT 0`);
+    // Coluna acabou de ser criada (não existia antes) — marcar linhas existentes como confirmadas
+    // (pré-migração = já receberam, a exceção é "ainda não chegou", não a regra)
     await d.exec(`UPDATE itens_confirmados SET entrada_confirmada = 1 WHERE entrada_confirmada = 0`);
-  } catch {}
+  } catch {
+    // Coluna já existe — nada a fazer (backfill já rodou antes)
+  }
 }
 
 // Orders
