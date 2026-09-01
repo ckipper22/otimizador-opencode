@@ -1,8 +1,8 @@
 ﻿# Plano: Promocoes do Dia (Analise Automatica de Promocoes WhatsApp)
 
-> Status: IMPLEMENTANDO - Prioridade ALTA
-> Data: 2026-08-22
-> Ref: docs/external-suppliers-plan.md, docs/reval-api-reference.md
+> Status: CONCLUÍDO (2026-08-31)
+> Data original: 2026-08-22
+> Implementação: AGENTS.md seção "Ofertas do Dia", docs/arvore-decisoes-busca-api.md seções 2-4
 
 ---
 

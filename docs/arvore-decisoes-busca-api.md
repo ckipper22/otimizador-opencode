@@ -414,6 +414,75 @@ O flag `precoCalculadoViaDesconto` sinaliza pro frontend que o preço já embute
 
 ---
 
+## 13. Descarte de Recompra Duplicada (server.ts ~4530)
+
+> Implementado em 2026-08-31. Previne que um EAN faturado recentemente seja processado de novo sem confirmação de entrada.
+
+### Trigger
+
+- Ao processar um SICF em `/api/optimize`, antes do loop principal por item
+
+### Fonte de dados
+
+- `itens_confirmados` (Turso) — `getFaturadosRecentes(cnpj, eans, janelaHoras)`: query 1x com `IN (...)`, sem JOIN com `distribuidor_alias` (funciona pra qualquer distribuidora)
+- `compras-historico/{ean}` (Ferramentinhas) — cache de 5min já existente
+
+### Árvore de decisão
+
+```
+1. Extrair todos os EANs do SICF (fora do loop, 1x só)
+2. Chamar getFaturadosRecentes(cnpj, todosEans, 24)
+   → Retorna Set de EANs faturados nas últimas 24h
+
+3. Pra cada item do SICF:
+   ├─ EAN NÃO está no Set → processar normalmente (sem alteração)
+   └─ EAN ESTÁ no Set → Parte B (checagem de entrada):
+       ├─ compras-historico: existe compra com data >= dataFaturado?
+       │   ├─ SIM → entrada confirmada → processar normalmente
+       │   └─ NÃO → DESCARTAR
+       └─ Erro ao checar compras-historico → processar por segurança
+
+4. Se DESCARTAR:
+   → motivoAcao: "descartado_faturado_pendente"
+   → distribuidora: "Descartado — Já Faturado"
+   → observacao: "Faturado por {dist} em {data} — sem entrada confirmada"
+   → Pular todo processamento SmartPed, montar linha no relatório
+```
+
+### Janela de 24h
+
+Hardcoded no ponto de chamada (server.ts). A função `getFaturadosRecentes` aceita `janelaHoras` como parâmetro.
+
+### Frontend
+
+Grupo virtual "Descartado — Já Faturado" no SwapsTable.tsx. Badge visual cinza com 🛑.
+
+### Monitoramento em background (Parte C)
+
+Coluna `entrada_confirmada INTEGER DEFAULT 0` em `itens_confirmados`.
+
+- **Backfill:** executado SÓ na primeira migração (ALTER TABLE fora do loop genérico MIGRATE_SQL). Se a coluna já existe, pula — evita resetar itens genuinamente pendentes a cada restart.
+- **`getFaturadosPendentesReconciliacao(cnpj)`**: busca itens com `entrada_confirmada = 0`
+- **`POST /api/reconciliar-faturados-pendentes`**: sob demanda, checa `compras-historico` (CONCURRENCY=1, delay 1.5s), marca `entrada_confirmada = 1` via `markEntradaConfirmadaByEan` (não `markEntradaConfirmada` — essa usa `cod_dist` que não bate com a UNIQUE key)
+- **`POST /api/faturados-marcar-entrada`**: confirmação manual (ação "parar")
+- **`GET /api/faturados-atrasados`**: retorna itens pendentes há mais de X horas (default 5h)
+
+### Alerta de atraso (Parte D)
+
+Teto de 7 dias: itens há mais de 7 dias são ignorados. Critério: evita acúmulo de alerta eterno.
+
+### Bugs corrigidos
+
+- **Backfill retroativo (7e793fc → bbd2fef):** `ALTER TABLE ADD COLUMN DEFAULT 0` marcava TODA linha existente como `0`. Na primeira execução de `getItensAtrasados`, todo item faturado nos últimos 7 dias parecia "atrasado" falsamente. Fix: `ALTER TABLE` fora do loop genérico, backfill roda SÓ quando a coluna é criada pela primeira vez.
+- **Reconciliação nunca persistia (7e793fc):** `markEntradaConfirmada(numPedido, ean, 0)` usava `codDist=0` que não batia com a UNIQUE key `(num_pedido, ean, cod_dist)` — nenhum UPDATE era efetivo. Fix: usar `markEntradaConfirmadaByEan(ean, cnpj)`.
+
+### Limitações conhecidas
+
+- Janela de 24h é hardcoded — pode ser ajustada passando `janelaHoras` diferente
+- Reconciliação é sob demanda (não job automático) — nesta primeira versão
+
+---
+
 ## Regra de consistência entre fluxos
 
 > **NÃO misturar lógica de matching entre fluxos diferentes.**
@@ -423,6 +492,7 @@ O flag `precoCalculadoViaDesconto` sinaliza pro frontend que o preço já embute
 | Ofertas do Dia (2-4) | Ferramentinhas `similares/{ean}` | SmartPed `Condicoes/Ean` + `Molecula` | `mesmaApresentacao()` pra agrupar, EAN exato pra referência |
 | SICF/Otimização (6-7) | SmartPed `Condicoes` (tem campo `Estoque`) | SmartPed `Condicoes` | DCB+dosagem pra wildcards, EAN exato pra batch |
 | Fornecedores externos no SICF (12) | N/A (não calcula estoque) | Preço próprio do fornecedor | EAN exato (primário), texto overlap (fallback) |
+| Recompra duplicada (13) | `itens_confirmados` (banco próprio) | N/A (não busca preço) | EAN exato em `itens_confirmados` + `compras-historico` pra confirmar entrada |
 | Busca manual (5) | SmartPed (retorna estoque por condição) | SmartPed | Texto normalizado + filtro pós-busca |
 | Ferramentinhas (8-9) | Ferramentinhas `similares` | N/A (só estoque) | EAN exato (auto-inclusivo) |
 

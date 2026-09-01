@@ -365,6 +365,21 @@
 - **Consumido por:** `/api/optimize` (bloco `externalSuppliers`), `/api/ofertas-dia-analisar`, `analisarFornecedorEmBackground`
 - **Detalhes:** `AGENTS.md` seção "Fornecedores Externos — Schema e Integração"
 
+### `distribuidor_alias`
+
+| Coluna | Tipo | Constraints |
+|--------|------|-------------|
+| `cod_dist` | INTEGER | NOT NULL, PRIMARY KEY (composite) |
+| `cnpj` | TEXT | NOT NULL, PRIMARY KEY (composite) |
+| `alias_trier` | TEXT | NOT NULL |
+| `nome_smartped` | TEXT | |
+| `updated_at` | TEXT | DEFAULT datetime('now') |
+
+- **Propósito:** De-para entre nome fantasia SmartPed (ex: "GAM") e nome jurídico Trier (ex: "GENESIO A. MENDES & CIA LTDA"). Usado pelo alerta de recompra duplicada e pelo alerta "Aguardando Chegar" (antes "Profarma 48h") — sem alias configurado, o `includes()` no matching de `compras-historico` nunca casa.
+- **Quem escreve:** `saveDistribuidorAlias` (database.ts), seed automático no startup (Profarma)
+- **Quem lê:** `getDistribuidorAliases` (database.ts), `getFaturadosPendentes` (JOIN)
+- **⚠️ Pergunta em aberto:** Carlos deve configurar aliases pra outros distribuidores (GAM, ANB, CervoSul etc.) — hoje só Profarma tem.
+
 ### `sugestoes_eans` (⚠️ sem CREATE TABLE)
 
 - **Propósito:** EANs fixos do módulo Sugestões (populados uma vez via `/api/sync-eans-fixed`)

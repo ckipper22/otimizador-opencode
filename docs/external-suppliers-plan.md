@@ -1,10 +1,8 @@
 # Plano: Fornecedores Externos (Listas + WhatsApp)
 
-> Status: PLANEJAMENTO
-> Data: 2026-08-21
-> Refs: AGENTS.md, LLM_CONTEXT.md, docs/architecture.md, docs/business-rules.md
-> Ref Tecnica Reval: docs/reval-api-reference.md
-> Promocoes do Dia (PRIORIDADE): docs/promocoes-do-dia-plan.md
+> Status: CONCLUÍDO (2026-08-31)
+> Data original: 2026-08-21
+> Implementação: AGENTS.md seção "Fornecedores Externos — Schema e Integração", docs/mapa-sistema.md seção `external_suppliers`
 
 ---
 

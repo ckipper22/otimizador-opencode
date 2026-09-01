@@ -1,7 +1,25 @@
 # Diretrizes de Operação do Sistema
 
-> **Contexto completo:** ver `memorias/` (projectbrief.md, productContext.md, systemPatterns.md, techContext.md, progress.md)
+> **Contexto completo:** ver `docs/mapa-sistema.md` + `docs/arvore-decisoes-busca-api.md`. Histórico arquivado (até 2026-08-27) em `docs/_archive/memorias/`.
 > **Mapa do sistema (arquitetura, APIs, banco):** ver `docs/mapa-sistema.md`
+
+---
+
+## Onde documentar o quê
+
+> **Antes de documentar algo, checar essa tabela pra saber o arquivo certo — não adivinhar.**
+> Se o conteúdo for uma árvore de decisão/fluxo de API, ele NÃO vai inteiro no AGENTS.md — vai na árvore, com ponteiro curto no AGENTS.md.
+
+| Tipo de conteúdo | Vai em |
+|---|---|
+| Bug corrigido (o quê, causa raiz, fix, arquivo:linha) — curto | AGENTS.md, tabela CEGUEIRA ANTIGA |
+| Regra permanente de negócio/comportamento esperado — curto | AGENTS.md, seção temática própria |
+| Árvore de decisão de matching/busca (qual API chamar, em que ordem, como decidir entre opções) — pode ser longo | `docs/arvore-decisoes-busca-api.md`, seção numerada nova. AGENTS.md só ganha um ponteiro de 2-3 linhas. |
+| Schema de banco (tabela/coluna nova, quem lê/escreve) | `docs/mapa-sistema.md` |
+| Integração com sistema externo (Encomendas, Chatbot, etc.) | `docs/encomendas-integracao.md` ou arquivo equivalente dedicado ao sistema |
+| Regra de processo (como trabalhar, não sobre o código) | AGENTS.md, seção "Regras de Processo" |
+
+**Regra adicional:** Se uma correção acontecer numa SEGUNDA tentativa (bug encontrado depois do primeiro commit), a documentação da PRIMEIRA tentativa precisa ser atualizada pra refletir o estado final — não deixar duas versões conflitantes (uma dizendo que funciona de primeira, outra sendo o bug real).
 
 ---
 
@@ -518,38 +536,9 @@ Objeto bruto de promoção (vindo do WhatsApp/fornecedor externo) só tem `{desc
 
 ## Descarte de Recompra Duplicada
 
-> Implementado em 2026-08-31 (commit 145f772). Previne que um EAN faturado recentemente seja processado de novo sem confirmação de entrada.
-
-### Mecanismo
-
-1. **`getFaturadosRecentes(cnpj, eans, janelaHoras)`** (server/database.ts): query 1x em `itens_confirmados` com `IN (...)` — retorna Set de EANs com `status = 'faturado'` e `created_at` dentro da janela. Sem JOIN com `distribuidor_alias` (funciona pra qualquer distribuidora, sem depender de alias configurado).
-
-2. **Inserção no loop** (server.ts ~4530): antes do loop, extrai todos os EANs do SICF e chama `getFaturadosRecentes(cnpj, todosEans, 24)` UMA VEZ (não por item — 1 query com IN). Dentro do loop, se EAN está no Set → checa `compras-historico` (Parte B, com cache de 5min já existente).
-
-3. **Decisão:**
-   - Compra com `data` >= `created_at` do `itens_confirmados` → entrada confirmada → processa normalmente
-   - Sem compra posterior → descarta com `motivoAcao: "descartado_faturado_pendente"`, `distribuidora: "Descartado — Já Faturado"`, `observacao` com detalhes
-
-### Janela de 24h
-
-A janela é hardcoded em 24h no ponto de chamada (server.ts). A função `getFaturadosRecentes` aceita `janelaHoras` como parâmetro — pode ser ajustado sem alterar a função.
-
-### Frontend
-
-Grupo virtual "Descartado — Já Faturado" no SwapsTable.tsx, mesmo padrão de "Não Encontrados", "Sem Estoque", "Aguardando Chegar". Badge visual cinza com 🛑.
-
-### Monitoramento em background (Parte C)
-
-Coluna `entrada_confirmada INTEGER DEFAULT 0` em `itens_confirmados` (SCHEMA_SQL + migração). Marca como 1 quando a entrada é confirmada (via reconciliação server-side ou ação manual do usuário).
-
-- **`getFaturadosPendentesReconciliacao(cnpj)`**: busca itens com `entrada_confirmada = 0`
-- **`POST /api/reconciliar-faturados-pendentes`**: sob demanda, checa `compras-historico` (CONCURRENCY=1, delay 1.5s), marca `entrada_confirmada = 1`
-- **`POST /api/faturados-marcar-entrada`**: confirmação manual (ação "parar" no frontend)
-- **`GET /api/faturados-atrasados`**: retorna itens pendentes há mais de X horas (default 5h)
-
-### Alerta de atraso (Parte D)
-
-Teto de 7 dias: itens há mais de 7 dias são ignorados (não aparecem no alerta, "morrem silenciosamente"). Critério: evita acúmulo de alerta eterno de item muito antigo esquecido.
+> Previne que um EAN faturado recentemente seja processado de novo sem confirmação de entrada. Previne recompra duplicada consultando nosso próprio banco (`itens_confirmados`) + `compras-historico` da Ferramentinhas.
+>
+> **Detalhes completos:** `docs/arvore-decisoes-busca-api.md` seção 13 (árvore de decisão, janela de 24h, monitoramento background, alerta de atraso, bugs corrigidos).
 
 ---
 
@@ -668,7 +657,7 @@ Exemplo: "CETOCONAZOL 20MG/ML SH 100ML" retorna vazio → `buscar-lote(["CETOCON
 
 ### Documentação anda junto com o código
 
-Sempre que uma mudança de código alterar comportamento documentado (regra de negócio, endpoint, schema de banco, fluxo de decisão já descrito em AGENTS.md / `docs/arvore-decisoes-busca-api.md` / `docs/mapa-sistema.md`), atualizar a documentação relevante no MESMO commit da mudança de código — não deixar pra depois. Regra de bolso: se você teve que ler uma dessas docs pra entender o código antes de mexer, você provavelmente precisa atualizá-la depois de mexer. Mudança puramente interna sem impacto em regra documentada não exige atualização.
+Sempre que uma mudança de código alterar comportamento documentado (regra de negócio, endpoint, schema de banco, fluxo de decisão já descrito em AGENTS.md / `docs/arvore-decisoes-busca-api.md` / `docs/mapa-sistema.md`), atualizar a documentação relevante no MESMO commit da mudança de código — não deixar pra depois. Regra de bolso: se você teve que ler uma dessas docs pra entender o código antes de mexer, você provavelmente precisa atualizá-la depois de mexer. Mudança puramente interna sem impacto em regra documentada não exige atualização. Se uma correção acontecer numa SEGUNDA tentativa (bug encontrado depois do primeiro commit), a documentação da PRIMEIRA tentativa precisa ser atualizada pra refletir o estado final — não deixar duas versões conflitantes (uma dizendo que funciona de primeira, outra sendo o bug real).
 
 ### Errar na primeira tentativa força reler a documentação
 
