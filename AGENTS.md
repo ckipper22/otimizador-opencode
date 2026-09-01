@@ -538,6 +538,19 @@ A janela é hardcoded em 24h no ponto de chamada (server.ts). A função `getFat
 
 Grupo virtual "Descartado — Já Faturado" no SwapsTable.tsx, mesmo padrão de "Não Encontrados", "Sem Estoque", "Aguardando Chegar". Badge visual cinza com 🛑.
 
+### Monitoramento em background (Parte C)
+
+Coluna `entrada_confirmada INTEGER DEFAULT 0` em `itens_confirmados` (SCHEMA_SQL + migração). Marca como 1 quando a entrada é confirmada (via reconciliação server-side ou ação manual do usuário).
+
+- **`getFaturadosPendentesReconciliacao(cnpj)`**: busca itens com `entrada_confirmada = 0`
+- **`POST /api/reconciliar-faturados-pendentes`**: sob demanda, checa `compras-historico` (CONCURRENCY=1, delay 1.5s), marca `entrada_confirmada = 1`
+- **`POST /api/faturados-marcar-entrada`**: confirmação manual (ação "parar" no frontend)
+- **`GET /api/faturados-atrasados`**: retorna itens pendentes há mais de X horas (default 5h)
+
+### Alerta de atraso (Parte D)
+
+Teto de 7 dias: itens há mais de 7 dias são ignorados (não aparecem no alerta, "morrem silenciosamente"). Critério: evita acúmulo de alerta eterno de item muito antigo esquecido.
+
 ---
 
 ## Fluxo de Busca por Tipo de Item (Ruptura vs Sem Ruptura)

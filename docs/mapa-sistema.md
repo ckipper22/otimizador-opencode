@@ -200,6 +200,7 @@
 | `data_confirmacao` | TEXT | |
 | `origem` | TEXT | DEFAULT 'manual' |
 | `id_encomenda` | TEXT | |
+| `entrada_confirmada` | INTEGER | DEFAULT 0 |
 | `created_at` | TEXT | DEFAULT datetime('now') |
 | `updated_at` | TEXT | DEFAULT datetime('now') |
 
@@ -207,7 +208,7 @@
 - **Propósito:** Histórico de itens confirmados/faturados no retorno SmartPed
 - **Quem escreve:** `saveItemConfirmado` (database.ts:436), `saveItensConfirmadosBatch` (database.ts:456)
 - **Quem escreve (via server.ts):** `/api/pedido-retorno` (server.ts:~7508, ~7796) — salva itens no momento real do faturamento
-- **Quem lê:** `getItensConfirmados` (database.ts:486), `getProfarmaFaturadosPendentes` (database.ts:513), `getFaturadosRecentes` (database.ts) — detecção de recompra duplicada, sem depender de alias de distribuidora
+- **Quem lê:** `getItensConfirmados` (database.ts:486), `getProfarmaFaturadosPendentes` (database.ts:513), `getFaturadosRecentes` (database.ts) — detecção de recompra duplicada, `getFaturadosPendentesReconciliacao` (database.ts) — monitoramento background, `getItensAtrasados` (database.ts) — alerta de atraso
 - **Purge:** `purgeOldData` (database.ts:601)
 - **⚠️ Não é webhook externo:** O Profarma entra como resposta da API SmartPed, que este servidor então persiste. Não confundir "dado que veio de um distribuidor terceiro" com "distribuidor terceiro escreve no nosso banco".
 - **Colunas `origem`/`id_encomenda`:** Presentes no CREATE TABLE e nas migrações (bug #27 corrigido).
