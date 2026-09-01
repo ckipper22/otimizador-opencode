@@ -53,10 +53,8 @@ export const DailyItemsView = ({
         body: JSON.stringify({
           token: config.token,
           cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
           dataInicio,
-          dataFim,
-          simulationMode: config.simulationMode
+          dataFim
         })
       });
       const data = await response.json();
@@ -356,8 +354,6 @@ export const DailyItemsView = ({
             query: item.ean,
             token: config.token,
             cnpj: config.cnpj,
-            useTestUrl: config.useTestUrl,
-            simulationMode: config.simulationMode,
             tipos: config.tipos,
             permitirSemEstoque: false // Redistribuição sempre foca em quem tem estoque
           })

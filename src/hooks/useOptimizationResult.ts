@@ -91,7 +91,7 @@ export function useOptimizationResult({
     setOverriddenDistributors({});
   };
 
-  const handleOptimize = async (overrideFileContent?: string, overridePreDistributedMap?: any, overrideSimulationMode?: boolean) => {
+  const handleOptimize = async (overrideFileContent?: string, overridePreDistributedMap?: any) => {
     const isOverrideString = typeof overrideFileContent === "string";
     const activeFileContent = isOverrideString ? overrideFileContent : fileContent;
     if (!activeFileContent) return;
@@ -118,7 +118,7 @@ export function useOptimizationResult({
         await fetch("/api/itens-confirmados-do-dia", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: config.token, cnpj: config.cnpj, useTestUrl: config.useTestUrl }),
+          body: JSON.stringify({ token: config.token, cnpj: config.cnpj }),
         });
         setLogs((prev) => [...prev, "[SISTEMA] Itens confirmados sincronizados com sucesso."]);
       } catch (err: any) {
@@ -140,8 +140,6 @@ export function useOptimizationResult({
           margemMinima: config.margemMinima,
           tipos: config.tipos,
           permitirSemEstoque: config.permitirSemEstoque,
-          useTestUrl: config.useTestUrl,
-          simulationMode: overrideSimulationMode !== undefined ? overrideSimulationMode : config.simulationMode,
           customProductionUrl: config.customProductionUrl,
           customTestUrl: config.customTestUrl,
           customEndpoint: config.customEndpoint,

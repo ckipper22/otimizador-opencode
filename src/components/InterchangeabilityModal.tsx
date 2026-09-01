@@ -79,7 +79,6 @@ export const InterchangeabilityModal = ({
           descricao: originalDescricao,
           token: savedConfig.token,
           cnpj: savedConfig.cnpj,
-          useTestUrl: savedConfig.useTestUrl,
           cortesRecentes
         })
       });

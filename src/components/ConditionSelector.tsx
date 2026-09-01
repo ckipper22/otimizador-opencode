@@ -10,7 +10,7 @@ interface ConditionSelectorProps {
   /** Compacto: usado dentro do Painel de Escolhas (linhas mais estreitas) */
   compact?: boolean;
   /** Configuração para buscar alternativas em tempo real */
-  config?: { token?: string; cnpj?: string; useTestUrl?: boolean };
+  config?: { token?: string; cnpj?: string };
 }
 
 /**
@@ -79,8 +79,7 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
           ean: searchEan,
           descricao: searchDesc,
           token: config.token,
-          cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl
+          cnpj: config.cnpj
         };
         console.log(`[CONDITION-SELECTOR-DEBUG] Enviando para /api/smartped-find-substitutes:`, JSON.stringify(requestBody, null, 2));
         

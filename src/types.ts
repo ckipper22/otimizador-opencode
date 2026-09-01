@@ -133,8 +133,6 @@ export interface OptimizerConfig {
   margemMinima: number;
   tipos: string[];
   permitirSemEstoque: boolean;
-  useTestUrl: boolean;
-  simulationMode: boolean;
   customProductionUrl?: string;
   customTestUrl?: string;
   customEndpoint?: string;

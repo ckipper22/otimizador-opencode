@@ -716,7 +716,7 @@ export default function SwapsTable({
                           console.log(`[SWAPS-TABLE] RENDER EAN=${item.originalEan || item.novoEan} "${(item.originalDescricao || "").substring(0, 30)}" codInterno=${item.codInterno} | alternatives=${altsCount} | novoEan=${item.novoEan} | config=${!!config}`);
                           return null;
                         })()}
-                        <ConditionSelector item={item} onSelectCondition={onSelectCondition} compact config={config ? { token: config.token, cnpj: config.cnpj, useTestUrl: config.useTestUrl } : undefined} />
+                        <ConditionSelector item={item} onSelectCondition={onSelectCondition} compact config={config ? { token: config.token, cnpj: config.cnpj } : undefined} />
                       </td>
                     </tr>
                   );
@@ -1680,7 +1680,7 @@ export default function SwapsTable({
                                        console.log(`[SWAPS-TABLE-DETAIL] RENDER EAN=${item.originalEan || item.novoEan} codInterno=${item.codInterno} | alternatives=${altsCount} | isDisregarded=${!!(item as any).isDisregarded}`);
                                        return null;
                                      })()}
-                                     <ConditionSelector item={item} onSelectCondition={onSelectCondition} config={config ? { token: config.token, cnpj: config.cnpj, useTestUrl: config.useTestUrl } : undefined} />
+                                     <ConditionSelector item={item} onSelectCondition={onSelectCondition} config={config ? { token: config.token, cnpj: config.cnpj } : undefined} />
 
                                     {/* Alerta de Duplicidade */}
                                     {isProfarmaAlert && !isDisabled && profarmaDecisions[item.codInterno] !== 'keep' && (
@@ -2175,7 +2175,7 @@ export default function SwapsTable({
       {isWhatsAppModalOpen && (
         <WhatsAppOrderModal
           items={selectedWhatsAppRule ? (ruleMatchesMap.get(selectedWhatsAppRule.id) || eurofarmaItems) : eurofarmaItems}
-          config={config || { token: "", cnpj: "", margemMinima: 0, tipos: [], permitirSemEstoque: false, useTestUrl: false, simulationMode: false }}
+          config={config || { token: "", cnpj: "", margemMinima: 0, tipos: [], permitirSemEstoque: false }}
           rule={selectedWhatsAppRule || undefined}
           onClose={() => {
             setIsWhatsAppModalOpen(false);

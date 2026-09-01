@@ -84,8 +84,6 @@ export function useManualSearch({
           query: manualQuery,
           token: config.token,
           cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
-          simulationMode: config.simulationMode,
           permitirSemEstoque: !manualApenasEstoque || config.permitirSemEstoque,
           tipos: config.tipos,
           margemMinima: config.margemMinima,

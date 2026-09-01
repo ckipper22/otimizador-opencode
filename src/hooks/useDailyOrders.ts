@@ -117,9 +117,7 @@ export function useDailyOrders(config: OptimizerConfig, mainView: "optimize" | "
         },
         body: JSON.stringify({
           token: activeToken,
-          cnpj: activeCnpj,
-          useTestUrl: config.useTestUrl,
-          simulationMode: config.simulationMode
+          cnpj: activeCnpj
         })
       });
       const data = await response.json();
@@ -173,9 +171,7 @@ export function useDailyOrders(config: OptimizerConfig, mainView: "optimize" | "
           numPedido: directNumPedido.trim(),
           token: config.token,
           cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
-          itemsFaturados: [],
-          simulationMode: config.simulationMode
+          itemsFaturados: []
         })
       });
 

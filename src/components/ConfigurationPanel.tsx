@@ -385,30 +385,6 @@ export default function ConfigurationPanel({
   return (
     <div id="configuration-panel" className="text-slate-800 space-y-6">
       <div>
-        {/* Operation Mode */}
-        <div className="mb-5 bg-slate-50 p-4 border border-slate-100 rounded-xl">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Ambiente de Execução</span>
-          </div>
-          <div className="flex flex-col space-y-2">
-            <label className="flex items-start space-x-3 cursor-pointer">
-              <input
-                type="checkbox"
-                name="simulationMode"
-                checked={config.simulationMode}
-                onChange={handleInputChange}
-                className="w-4.5 h-4.5 text-indigo-600 bg-white border-slate-300 rounded focus:ring-indigo-500 accent-indigo-600 mt-0.5"
-              />
-              <div>
-                <p className="text-xs font-bold text-slate-800">Modo de Simulação Offline</p>
-                <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">
-                  Busca condições de ddemonstração locais sem chamadas HTTP externas reais. Ideal para homologação e demonstração.
-                </p>
-              </div>
-            </label>
-          </div>
-        </div>
-
         {/* API Credentials */}
         <div className="space-y-4">
           <div>
@@ -423,8 +399,7 @@ export default function ConfigurationPanel({
             <input
               type="text"
               name="token"
-              disabled={config.simulationMode}
-              value={config.simulationMode ? "" : config.token}
+              value={config.token}
               onChange={handleInputChange}
               placeholder="Digite o Token da sua API"
               className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2 px-3 text-xs font-mono text-slate-800 transition-all disabled:opacity-50 focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
@@ -443,13 +418,12 @@ export default function ConfigurationPanel({
             <input
               type="text"
               name="cnpj"
-              disabled={config.simulationMode}
-              value={config.simulationMode ? "11111111111111" : config.cnpj}
+              value={config.cnpj}
               onChange={handleInputChange}
               placeholder="Auto-extrair do arquivo"
               className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2 px-3 text-xs font-mono text-slate-800 transition-all disabled:opacity-50 focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
             />
-            {((!config.token) && !config.simulationMode) && (
+            {!config.token && (
               <div className="mt-2 p-2.5 bg-emerald-50 border-l-2 border-emerald-500 rounded-r-lg text-[10px] text-emerald-800 leading-relaxed">
                 💡 <strong>Demonstração SmartPed</strong>: Ao usar o Token padrão de testes, o CNPJ é mapeado para <span className="font-bold">11111111111111</span> na API para evitar erros de vínculo. O arquivo baixado preserva seu CNPJ original intacto.
               </div>
@@ -952,21 +926,7 @@ export default function ConfigurationPanel({
             </div>
           )}
 
-          {!config.simulationMode && (
-            <div className="space-y-3 pt-2">
-              <div className="flex items-center">
-                <label className="flex items-center space-x-2 text-xs font-medium text-slate-600 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    name="useTestUrl"
-                    checked={config.useTestUrl}
-                    onChange={handleInputChange}
-                    className="w-4 h-4 text-indigo-600 bg-white border-slate-300 rounded accent-indigo-600"
-                  />
-                  <span>Usar API Testes (Sandbox)</span>
-                </label>
-              </div>
-
+          <div className="space-y-3 pt-2">
               {/* Advanced API Config Toggle */}
               <div className="pt-1">
                 <button
@@ -1014,7 +974,6 @@ export default function ConfigurationPanel({
                 )}
               </div>
             </div>
-          )}
         </div>
       </div>
 

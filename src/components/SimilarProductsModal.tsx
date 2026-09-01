@@ -115,8 +115,7 @@ export const SimilarProductsModal: React.FC<SimilarProductsModalProps> = ({
         body: JSON.stringify({
           ean: productEan,
           token: savedConfig.token,
-          cnpj: savedConfig.cnpj,
-          useTestUrl: savedConfig.useTestUrl
+          cnpj: savedConfig.cnpj
         })
       });
       const result = await response.json();

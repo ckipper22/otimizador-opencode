@@ -46,8 +46,6 @@ export function useOptimizerConfig() {
       margemMinima: 0.01,
       tipos: ["G", "O"],
       permitirSemEstoque: false,
-      useTestUrl: false,
-      simulationMode: false,
       customProductionUrl: "https://api.smartped.com.br",
       customTestUrl: "https://apitest.smartped.com.br",
       customEndpoint: "/api/Condicoes/Molecula",
@@ -86,7 +84,7 @@ export function useOptimizerConfig() {
       }
     }
     fetchDistribuidores();
-  }, [config.token, config.cnpj, config.useTestUrl, config.customTestUrl, config.customProductionUrl, config.customEndpoint]);
+  }, [config.token, config.cnpj, config.customTestUrl, config.customProductionUrl, config.customEndpoint]);
 
   const handleToggleDistributor = (codigo: number) => {
     setDisabledDistributors(prev => {

@@ -484,8 +484,6 @@ export default function App() {
           encomendas,
           token: config.token,
           cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
-          simulationMode: config.simulationMode,
           margemMinima: config.margemMinima,
           disabledDistributors: Array.from(disabledDistributors)
         })
@@ -926,8 +924,6 @@ export default function App() {
         margemMinima: 0.01,
         tipos: ["G", "O"],
         permitirSemEstoque: false,
-        useTestUrl: true,
-        simulationMode: false,
         customProductionUrl: "https://api.smartped.com.br",
         customTestUrl: "https://apitest.smartped.com.br",
         customEndpoint: "/api/Condicoes/Molecula"
@@ -941,8 +937,6 @@ export default function App() {
         margemMinima: 0.01,
         tipos: ["G", "O"],
         permitirSemEstoque: false,
-        useTestUrl: false,
-        simulationMode: false,
         customProductionUrl: "https://api.smartped.com.br",
         customTestUrl: "https://apitest.smartped.com.br",
         customEndpoint: "/api/Condicoes/Molecula"
@@ -1207,19 +1201,6 @@ export default function App() {
             <div>
               <p className="text-xs font-bold uppercase tracking-wide">Falha na Otimização</p>
               <p className="text-xs text-rose-800 mt-1 font-mono">{error}</p>
-              <div className="mt-3">
-                <button
-                  onClick={async () => {
-                    setConfig(prev => ({ ...prev, simulationMode: true }));
-                    if (fileContent) {
-                      await handleOptimize(undefined, undefined, true);
-                    }
-                  }}
-                  className="text-[10px] font-bold uppercase tracking-wider text-[#E4E3E0] bg-[#141414] hover:bg-neutral-800 px-3 py-1.5 rounded-none"
-                >
-                  Ativar Modo Simulação (Offline) para Teste
-                </button>
-              </div>
             </div>
           </div>
         )}
@@ -1416,8 +1397,6 @@ export default function App() {
                           query: shortage.Ean,
                           token: config.token,
                           cnpj: config.cnpj,
-                          useTestUrl: config.useTestUrl,
-                          simulationMode: config.simulationMode,
                           tipos: config.tipos,
                           margemMinima: config.margemMinima,
                           permitirSemEstoque: config.permitirSemEstoque,

@@ -110,8 +110,6 @@ export function useBilling({
         items: payloadItems,
         token: config.token,
         cnpj: config.cnpj,
-        useTestUrl: config.useTestUrl,
-        simulationMode: config.simulationMode,
         tipos: config.tipos,
         margemMinima: config.margemMinima,
         permitirSemEstoque: config.permitirSemEstoque
@@ -192,8 +190,6 @@ export function useBilling({
           }),
           token: config.token,
           cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
-          simulationMode: config.simulationMode,
           tipos: config.tipos,
           margemMinima: config.margemMinima,
           permitirSemEstoque: config.permitirSemEstoque
@@ -360,9 +356,7 @@ export function useBilling({
             numPedido,
             token: config.token,
             cnpj: config.cnpj,
-            useTestUrl: config.useTestUrl,
-            itemsFaturados,
-            simulationMode: config.simulationMode
+            itemsFaturados
           })
         });
 
@@ -650,9 +644,7 @@ export function useBilling({
           numPedido,
           token: config.token,
           cnpj: config.cnpj,
-          useTestUrl: config.useTestUrl,
-          itemsFaturados,
-          simulationMode: config.simulationMode
+          itemsFaturados
         })
       });
 
