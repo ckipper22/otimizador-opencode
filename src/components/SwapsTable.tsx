@@ -333,7 +333,7 @@ export default function SwapsTable({
       const distFaturado = isAguardando ? (getFaturadoDistribuidora(item.novoEan) || getFaturadoDistribuidora(item.originalEan) || "Distribuidora") : null;
       // TODO: Carlos — definir texto final do grupo (ex: "Aguardando Chegar {dist}" ou nome genérico)
       const dist = distFaturado ? `Aguardando Chegar ${distFaturado}` : (item.distribuidora || "Não Encontrados");
-      const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque" || dist.startsWith("Aguardando Chegar");
+      const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque" || dist.startsWith("Aguardando Chegar") || dist === "Descartado — Já Faturado";
       const groupKey = isVirtual 
         ? dist 
         : `${dist} [${item.condicao || "FIXA"} | ${item.prazo !== undefined ? item.prazo : 0}d]`;
@@ -368,8 +368,8 @@ export default function SwapsTable({
     }
 
     return Object.values(map).sort((a, b) => {
-      const isAVirtual = a.distribuidora === "Não Encontrados" || a.distribuidora === "Sem Estoque" || a.distribuidora.startsWith("Aguardando Chegar");
-      const isBVirtual = b.distribuidora === "Não Encontrados" || b.distribuidora === "Sem Estoque" || b.distribuidora.startsWith("Aguardando Chegar");
+      const isAVirtual = a.distribuidora === "Não Encontrados" || a.distribuidora === "Sem Estoque" || a.distribuidora.startsWith("Aguardando Chegar") || a.distribuidora === "Descartado — Já Faturado";
+      const isBVirtual = b.distribuidora === "Não Encontrados" || b.distribuidora === "Sem Estoque" || b.distribuidora.startsWith("Aguardando Chegar") || b.distribuidora === "Descartado — Já Faturado";
 
       if (isAVirtual && !isBVirtual) return 1;
       if (!isAVirtual && isBVirtual) return -1;
@@ -1118,10 +1118,11 @@ export default function SwapsTable({
               const minVal = distributorMinimums[group.name] !== undefined ? distributorMinimums[group.name] : group.pedidoMinimo;
               const isMet = group.totalValue >= minVal;
               const diff = minVal - group.totalValue;
-              const isVirtual = group.name === "Não Encontrados" || group.name === "Sem Estoque" || group.name.startsWith("Aguardando Chegar");
+              const isVirtual = group.name === "Não Encontrados" || group.name === "Sem Estoque" || group.name.startsWith("Aguardando Chegar") || group.name === "Descartado — Já Faturado";
               const isNaoEncontrados = group.name === "Não Encontrados";
               const isSemEstoque = group.name === "Sem Estoque";
               const isAguardando = group.name.startsWith("Aguardando Chegar");
+              const isDescartado = group.name === "Descartado — Já Faturado";
               const hasShortages = group.items.some(item => item.isShortage);
 
               let containerBg = "bg-[#E4E3E0] border-[#141414]";

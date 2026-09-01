@@ -12,7 +12,7 @@ import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatab
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
 import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto, mesmaDosagem } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
-import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, getDistribuidorAliases, saveDistribuidorAlias, deleteDistribuidorAlias, markEncomendaConfirmadaById, getEncomendasPendentesReconciliacao, markEncomendaConfirmada, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
+import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, getDistribuidorAliases, saveDistribuidorAlias, deleteDistribuidorAlias, getFaturadosRecentes, markEncomendaConfirmadaById, getEncomendasPendentesReconciliacao, markEncomendaConfirmada, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
 const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   2: "Pan/Santa",
@@ -4527,6 +4527,15 @@ app.post("/api/optimize", async (req, res) => {
     let _tTargetEanApi = 0, _cTargetEanApi = 0, _cTargetEanCacheHit = 0;
     let _tFallbackSimilares = 0, _cFallbackSimilares = 0;
     const _f4Start = Date.now();
+
+    // ===== CHECAGEM DE RECOMPRA DUPLICADA =====
+    // Buscar EANs faturados recentemente (24h) UMA VEZ (fora do loop, 1 query com IN)
+    const todosEansDoSicf = parsedItems.map(it => cleanEan(it.ean)).filter(Boolean);
+    const { eans: eansFaturadosRecentes, detalhes: detalhesFaturados } = await getFaturadosRecentes(apiCnpj, todosEansDoSicf, 24);
+    if (eansFaturadosRecentes.size > 0) {
+      logs.push(`[RECOMPRA-DUPLICADA] ${eansFaturadosRecentes.size} EAN(s) faturado(s) nas últimas 24h: ${Array.from(eansFaturadosRecentes).join(", ")}`);
+    }
+
     for (const item of parsedItems) {
       // ===== WHATSAPP: Item com regra de laboratório → vai pro WhatsApp com dados SmartPed =====
       const waMatch = whatsappItemsMap.get(item.lineIndex);
@@ -4642,6 +4651,86 @@ app.post("/api/optimize", async (req, res) => {
       }
 
       const origEan = cleanEan(item.ean);
+
+      // ===== CHECAGEM DE RECOMPRA DUPLICADA — por item =====
+      if (eansFaturadosRecentes.has(origEan)) {
+        const detalhe = detalhesFaturados.get(origEan);
+        const dataFaturado = detalhe?.dataFaturado || "desconhecida";
+        const distFaturado = detalhe?.nomeDist || "distribuidora desconhecida";
+
+        // Parte B: checar se já teve entrada (compras-historico, com cache de 5min)
+        let entradaConfirmada = false;
+        try {
+          const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${origEan}?meses=1`);
+          if (histRes.ok) {
+            const histData = await histRes.json();
+            const compras = histData.compras || histData.Compras || [];
+            const faturadoDate = new Date(dataFaturado.replace(' ', 'T') + 'Z');
+            const faturadoDateOnly = new Date(faturadoDate.getFullYear(), faturadoDate.getMonth(), faturadoDate.getDate());
+            for (const compra of compras) {
+              const dataEntrada = compra.data || compra.Data || compra.dataEntrada || "";
+              if (dataEntrada) {
+                const entradaParts = dataEntrada.split("-");
+                const entradaDate = entradaParts.length === 3
+                  ? new Date(parseInt(entradaParts[0]), parseInt(entradaParts[1]) - 1, parseInt(entradaParts[2]))
+                  : new Date(dataEntrada);
+                if (!isNaN(entradaDate.getTime()) && entradaDate >= faturadoDateOnly) {
+                  entradaConfirmada = true;
+                  break;
+                }
+              }
+            }
+          }
+        } catch {
+          // Erro na checagem — não descartar por segurança
+          logs.push(`[RECOMPRA-DUPLICADA] EAN ${origEan}: erro ao checar compras-historico, processando normalmente.`);
+        }
+
+        if (!entradaConfirmada) {
+          // Sem entrada confirmada → descartar
+          const qtdNum = parseFloat(item.qtd.replace(",", "."));
+          logs.push(`[RECOMPRA-DUPLICADA] ⛔ EAN ${origEan} descartado — faturado por "${distFaturado}" em ${dataFaturado}, sem entrada confirmada.`);
+          report.push({
+            codInterno: item.codInterno,
+            originalEan: item.ean,
+            originalDescricao: item.descricao,
+            originalLaboratorio: item.laboratorio,
+            originalPreco: item.precoOriginal,
+            novoEan: item.ean,
+            novaDescricao: item.descricao,
+            novoLaboratorio: item.laboratorio,
+            novoPreco: item.precoOriginal,
+            qtd: qtdNum,
+            economiaUnit: 0,
+            economiaTotal: 0,
+            distribuidora: "Descartado — Já Faturado",
+            estoque: 0,
+            codDist: 0,
+            condicao: "DESCARTADO",
+            prazo: 0,
+            codProdutoDist: "",
+            codProduto: "",
+            pedidoMinimo: 0,
+            qtdMin: 0,
+            qtdMax: 0,
+            cx: 1,
+            qtdMinima: 0,
+            observacao: `Faturado por "${distFaturado}" em ${dataFaturado} — sem entrada confirmada. Possível recompra duplicada.`,
+            motivoAcao: "descartado_faturado_pendente",
+            originalSemEstoque: false,
+            isRupturaSubstitution: false,
+            alertaConfirmarQtd: false,
+            vendasMensais: 0,
+            estoqueTotal: 0,
+            alternatives: []
+          });
+          finalLines.push(item.originalLine);
+          continue;
+        } else {
+          logs.push(`[RECOMPRA-DUPLICADA] ✅ EAN ${origEan}: faturado por "${distFaturado}" mas entrada confirmada — processando normalmente.`);
+        }
+      }
+
       try {
       const localEquivs = getLocalEquivalents(origEan, item.descricao);
       const apiSimilars = (marketSimilarMap[origEan] || []).map(s => cleanEan(s.cod_barra || s.Ean || s.ean || ""));

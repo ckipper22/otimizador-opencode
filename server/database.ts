@@ -569,6 +569,40 @@ export async function getFaturadosPendentes(cnpj: string): Promise<Array<{ ean: 
 // Backward compat alias
 export const getProfarmaFaturadosPendentes = getFaturadosPendentes;
 
+/**
+ * Retorna EANs faturados recentemente (dentro de janelaHoras) sem JOIN com distribuidor_alias.
+ * Usado pra detectar risco de recompra duplicada — consulta direta em itens_confirmados,
+ * sem depender de alias de distribuidora.
+ * Retorna Set<string> de EANs (dedup).
+ */
+export async function getFaturadosRecentes(cnpj: string, eans: string[], janelaHoras: number): Promise<{ eans: Set<string>; detalhes: Map<string, { dataFaturado: string; nomeDist: string }> }> {
+  const d = getDb();
+  if (!d) return { eans: new Set(), detalhes: new Map() };
+  if (eans.length === 0) return { eans: new Set(), detalhes: new Map() };
+  try {
+    const placeholders = eans.map(() => "?").join(",");
+    const rows = await d.all(
+      `SELECT ean, created_at, nome_dist FROM itens_confirmados
+       WHERE cnpj = ? AND status = 'faturado'
+       AND ean IN (${placeholders})
+       AND created_at >= datetime('now', '-${janelaHoras} hours')
+       ORDER BY created_at DESC`,
+      cnpj, ...eans
+    );
+    const eanSet = new Set<string>();
+    const detalhes = new Map<string, { dataFaturado: string; nomeDist: string }>();
+    if (rows) {
+      for (const row of rows as any[]) {
+        if (!eanSet.has(row.ean)) {
+          eanSet.add(row.ean);
+          detalhes.set(row.ean, { dataFaturado: row.created_at, nomeDist: row.nome_dist || "" });
+        }
+      }
+    }
+    return { eans: eanSet, detalhes };
+  } catch { return { eans: new Set(), detalhes: new Map() }; }
+}
+
 // Itens Manuais (items added manually via button "+")
 export async function saveItemManual(item: {
   codInterno: string; ean: string; descricao: string; laboratorio: string;
