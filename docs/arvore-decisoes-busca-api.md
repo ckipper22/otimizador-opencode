@@ -243,7 +243,6 @@ O flag `precoCalculadoViaDesconto` sinaliza pro frontend que o preço já embute
 
 ### Outros parâmetros
 
-- `simulationMode`: simula sem API real
 - `permitirSemEstoque`: inclui itens com estoque 0
 - `tipos`: filtro por tipo (default ["G", "O"])
 

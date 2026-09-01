@@ -1,8 +1,6 @@
 SMARTPED_PRODUCTION_TOKEN: "fddfd9871b77f44f243e145207c8e93a"
-SMARTPED_SANDBOX_TOKEN: "79770c03eb119691f0355c5628c496e2"
 SMARTPED_DEFAULT_CNPJ: "13408443000168"
 SMARTPED_PRODUCTION_URL: "https://api.smartped.com.br"
-SMARTPED_SANDBOX_URL: "https://apitest.smartped.com.br"
 FERRAMENTINHAS_API_URL: "https://api.ferramentinhas.com.br"
 APP_ADMIN_EMAILS: "ckipper22@gmail.com,aga706panambi@gmail.com"
 APP_ADMIN_PASSWORD: "Aq1sw2de#fr4"

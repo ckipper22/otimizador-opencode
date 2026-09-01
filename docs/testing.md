@@ -12,7 +12,6 @@
 #### A) API de CondiÃ§Ãµes SmartPed (ProduÃ§Ã£o Real)
 *   **Base URL:** Definida em `CONFIG.SMARTPED_PRODUCTION_URL` (env: `SMARTPED_PRODUCTION_URL`, padrÃ£o: `https://api.smartped.com.br`)
 *   **Token de ProduÃ§Ã£o:** Definido em `CONFIG.SMARTPED_PRODUCTION_TOKEN` (env: `SMARTPED_PRODUCTION_TOKEN`)
-*   **Token de Sandbox:** Definido em `CONFIG.SMARTPED_SANDBOX_TOKEN` (env: `SMARTPED_SANDBOX_TOKEN`)
 *   **CNPJ PadrÃ£o:** Definido em `CONFIG.SMARTPED_DEFAULT_CNPJ` (env: `SMARTPED_DEFAULT_CNPJ`)
 *   **Endpoints Principais:**
     *   `/api/Condicoes/Ean`: Retorna condiÃ§Ãµes comerciais diretas do produto de todas as distribuidoras liberadas para envio.

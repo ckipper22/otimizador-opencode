@@ -265,10 +265,8 @@ otimizador-de-pedidos-smartped/
 | Variável | Descrição | Obrigatória |
 |----------|-----------|-------------|
 | `SMARTPED_PRODUCTION_TOKEN` | Token API SmartPed produção | Sim |
-| `SMARTPED_SANDBOX_TOKEN` | Token API SmartPed sandbox | Não |
 | `SMARTPED_DEFAULT_CNPJ` | CNPJ default para chamadas | Sim |
 | `SMARTPED_PRODUCTION_URL` | URL base produção | Não (default: api.smartped.com.br) |
-| `SMARTPED_SANDBOX_URL` | URL base sandbox | Não (default: apitest.smartped.com.br) |
 
 ### Banco de Dados
 
