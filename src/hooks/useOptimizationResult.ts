@@ -140,8 +140,6 @@ export function useOptimizationResult({
           margemMinima: config.margemMinima,
           tipos: config.tipos,
           permitirSemEstoque: config.permitirSemEstoque,
-          customProductionUrl: config.customProductionUrl,
-          customTestUrl: config.customTestUrl,
           customEndpoint: config.customEndpoint,
           disabledDistributors: Array.from(disabledDistributors),
           externalSuppliers,

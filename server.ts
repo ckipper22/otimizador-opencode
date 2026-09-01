@@ -3252,8 +3252,6 @@ app.post("/api/optimize", async (req, res) => {
       margemMinima = 0.01,
       tipos = ["G", "O"],
       permitirSemEstoque = false,
-      customProductionUrl,
-      customTestUrl,
       customEndpoint,
       disabledDistributors = [],
       externalSuppliers = [],

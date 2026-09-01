@@ -1,5 +1,5 @@
 import React from "react";
-import { Settings, HelpCircle, Shield, Play, Sliders, Plus, Trash2, ChevronDown, ChevronUp, MessageSquare, Edit2, Save, FileText, List, Check, X, Building2, UserCheck } from "lucide-react";
+import { Settings, HelpCircle, Shield, Play, Plus, Trash2, ChevronDown, ChevronUp, MessageSquare, Edit2, Save, FileText, List, Check, X, Building2, UserCheck } from "lucide-react";
 import { OptimizerConfig, ExternalSupplier, AuthorizedCompany, WhatsAppRule } from "../types";
 
 interface ConfigurationPanelProps {
@@ -31,7 +31,6 @@ export default function ConfigurationPanel({
   onUpdateAuthorizedCompanies,
   isAdmin = false
 }: ConfigurationPanelProps) {
-  const [showAdvanced, setShowAdvanced] = React.useState<boolean>(false);
   const [showCompaniesSection, setShowCompaniesSection] = React.useState<boolean>(false);
   const [expandedSupplierId, setExpandedSupplierId] = React.useState<string | null>(null);
   const [whatsappTab, setWhatsappTab] = React.useState<"regras" | "tabelas">("regras");
@@ -927,52 +926,7 @@ export default function ConfigurationPanel({
           )}
 
           <div className="space-y-3 pt-2">
-              {/* Advanced API Config Toggle */}
-              <div className="pt-1">
-                <button
-                  type="button"
-                  onClick={() => setShowAdvanced(!showAdvanced)}
-                  id="toggle-advanced-api"
-                  className="text-xs text-left font-semibold text-indigo-600 hover:text-indigo-800 focus:outline-none flex items-center space-x-1"
-                >
-                  <Sliders className="w-3.5 h-3.5" />
-                  <span>{showAdvanced ? "Ocultar domínios da API" : "Customizar URLs da API"}</span>
-                </button>
-                
-                {showAdvanced && (
-                  <div id="advanced-api-fields" className="mt-2.5 p-3 border border-slate-150 bg-slate-50 rounded-lg space-y-3 font-mono text-[10px]">
-                    <div>
-                      <label className="block font-bold text-slate-500 mb-1">
-                        URL de Produção
-                      </label>
-                      <input
-                        type="text"
-                        name="customProductionUrl"
-                        value={config.customProductionUrl || ""}
-                        onChange={handleInputChange}
-                        placeholder="https://api.smartped.com.br"
-                        className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-[10px] focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-bold text-slate-500 mb-1">
-                        URL de Homologação (Sandbox)
-                      </label>
-                      <input
-                        type="text"
-                        name="customTestUrl"
-                        value={config.customTestUrl || ""}
-                        onChange={handleInputChange}
-                        placeholder="https://apitest.smartped.com.br"
-                        className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-[10px] focus:outline-none"
-                      />
-                    </div>
-                    <p className="text-[9px] text-slate-400 leading-normal">
-                      Modifique apenas em caso de migrações nos caminhos de infraestrutura da distribuidora.
-                    </p>
-                  </div>
-                )}
-              </div>
+
             </div>
         </div>
       </div>

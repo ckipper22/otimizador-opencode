@@ -133,8 +133,6 @@ export interface OptimizerConfig {
   margemMinima: number;
   tipos: string[];
   permitirSemEstoque: boolean;
-  customProductionUrl?: string;
-  customTestUrl?: string;
   customEndpoint?: string;
   direcionarEurofarmaWhatsapp?: boolean;
   telefoneWhatsappEurofarma?: string;

@@ -924,8 +924,6 @@ export default function App() {
         margemMinima: 0.01,
         tipos: ["G", "O"],
         permitirSemEstoque: false,
-        customProductionUrl: "https://api.smartped.com.br",
-        customTestUrl: "https://apitest.smartped.com.br",
         customEndpoint: "/api/Condicoes/Molecula"
       });
     } else {
@@ -937,8 +935,6 @@ export default function App() {
         margemMinima: 0.01,
         tipos: ["G", "O"],
         permitirSemEstoque: false,
-        customProductionUrl: "https://api.smartped.com.br",
-        customTestUrl: "https://apitest.smartped.com.br",
         customEndpoint: "/api/Condicoes/Molecula"
       });
     }
@@ -3452,9 +3448,6 @@ export default function App() {
                         <p className="text-xs font-bold uppercase tracking-wider">Aguardando Consulta Inicial</p>
                         <p className="text-[11px] leading-relaxed mt-1">
                           Clique em <strong>"Consultar Retorno"</strong> acima para consultar se as distribuidoras parceiras já enviaram a confirmação final do faturamento e se houve cortes de itens por falta de estoque.
-                        </p>
-                        <p className="text-[10px] text-amber-800 font-semibold uppercase mt-1.5 font-mono">
-                          💡 Teste Sandbox: A primeira consulta simula o estado "Aguardando Retorno (Status 2)", e a segunda simula "Pedido Finalizado (Status 3)" com corte simulado realista!
                         </p>
                       </div>
                     </div>
