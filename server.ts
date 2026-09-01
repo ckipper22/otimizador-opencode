@@ -12,7 +12,7 @@ import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatab
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
 import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto, mesmaDosagem } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
-import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, getDistribuidorAliases, saveDistribuidorAlias, deleteDistribuidorAlias, getFaturadosRecentes, markEncomendaConfirmadaById, getEncomendasPendentesReconciliacao, markEncomendaConfirmada, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
+import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, getDistribuidorAliases, saveDistribuidorAlias, deleteDistribuidorAlias, getFaturadosRecentes, getFaturadosPendentesReconciliacao, markEntradaConfirmada, markEntradaConfirmadaByEan, getItensAtrasados, markEncomendaConfirmadaById, getEncomendasPendentesReconciliacao, markEncomendaConfirmada, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
 const DISTRIBUIDORAS_DYNAMIC_CACHE: Record<number, string> = {
   2: "Pan/Santa",
@@ -2671,6 +2671,110 @@ app.post("/api/integracao/encomendas/reconciliar", async (req, res) => {
   } catch (err: any) {
     log(`Erro geral na reconciliação: ${err.message}`);
     res.status(500).json({ error: err.message, logs });
+  }
+});
+
+// ===== RECOMPRA DUPLICADA: Reconciliação server-side =====
+// Verifica faturados pendentes que ficaram sem confirmação de entrada
+// (mesmo padrão da reconciliação de encomendas: sob demanda, CONCURRENCY=1)
+app.post("/api/reconciliar-faturados-pendentes", async (req, res) => {
+  const logs: string[] = [];
+  const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[RECOMPRA-RECONCILIACAO] ${m}`); };
+
+  try {
+    const { cnpj } = req.body;
+    if (!cnpj) {
+      return res.status(400).json({ error: "cnpj é obrigatório." });
+    }
+
+    const pendentes = await getFaturadosPendentesReconciliacao(cnpj);
+    if (pendentes.length === 0) {
+      log("Nenhum faturado pendente de reconciliação.");
+      return res.json({ sucesso: true, reconciliados: 0, logs });
+    }
+
+    log(`Encontrados ${pendentes.length} itens faturados pendentes.`);
+    let reconciliados = 0;
+
+    for (const item of pendentes) {
+      try {
+        const histRes = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico/${item.ean}?meses=1`);
+        if (!histRes.ok) {
+          log(`EAN ${item.ean}: Erro HTTP ${histRes.status} ao checar compras-historico — tentará no próximo ciclo.`);
+          continue;
+        }
+
+        const histData = await histRes.json();
+        const compras = histData.compras || histData.Compras || [];
+        const faturadoDate = new Date(item.dataFaturado.replace(' ', 'T') + 'Z');
+        const faturadoDateOnly = new Date(faturadoDate.getFullYear(), faturadoDate.getMonth(), faturadoDate.getDate());
+
+        let entradaConfirmada = false;
+        for (const compra of compras) {
+          const dataEntrada = compra.data || compra.Data || compra.dataEntrada || "";
+          if (dataEntrada) {
+            const entradaParts = dataEntrada.split("-");
+            const entradaDate = entradaParts.length === 3
+              ? new Date(parseInt(entradaParts[0]), parseInt(entradaParts[1]) - 1, parseInt(entradaParts[2]))
+              : new Date(dataEntrada);
+            if (!isNaN(entradaDate.getTime()) && entradaDate >= faturadoDateOnly) {
+              entradaConfirmada = true;
+              break;
+            }
+          }
+        }
+
+        if (entradaConfirmada) {
+          await markEntradaConfirmada(item.numPedido, item.ean, 0); // codDist=0 porque não temos no retorno simples
+          log(`EAN ${item.ean}: ✅ entrada confirmada — marcado.`);
+          reconciliados++;
+        } else {
+          log(`EAN ${item.ean}: ⏳ ainda sem entrada.`);
+        }
+      } catch (err: any) {
+        log(`EAN ${item.ean}: erro: ${err.message}`);
+      }
+
+      // Throttle: 1 por vez, delay entre chamadas
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    log(`Reconciliação concluída. ${reconciliados}/${pendentes.length} resolvidos.`);
+    res.json({ sucesso: true, reconciliados, total: pendentes.length, logs });
+
+  } catch (err: any) {
+    log(`Erro geral: ${err.message}`);
+    res.status(500).json({ error: err.message, logs });
+  }
+});
+
+// Marcar faturado como entrada confirmada manualmente (chamado pelo frontend, ex: Parte D)
+app.post("/api/faturados-marcar-entrada", async (req, res) => {
+  try {
+    const { ean, cnpj } = req.body;
+    if (!ean || !cnpj) {
+      return res.status(400).json({ error: "ean e cnpj são obrigatórios." });
+    }
+    await markEntradaConfirmadaByEan(ean, cnpj);
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Verificar faturados pendentes há mais de X horas (Parte D)
+app.get("/api/faturados-atrasados", async (req, res) => {
+  try {
+    const cnpj = (req.query.cnpj as string || "").replace(/\D/g, "");
+    const horas = parseInt(req.query.horas as string) || 5;
+    if (!cnpj) {
+      return res.status(400).json({ error: "cnpj é obrigatório." });
+    }
+    const atrasados = await getItensAtrasados(cnpj, horas);
+    res.json({ itens: atrasados, total: atrasados.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

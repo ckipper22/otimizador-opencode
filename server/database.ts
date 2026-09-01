@@ -128,6 +128,7 @@ const SCHEMA_SQL = `
     data_confirmacao TEXT,
     origem TEXT DEFAULT 'manual',
     id_encomenda TEXT,
+    entrada_confirmada INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (${NOW_UTC}),
     updated_at TEXT DEFAULT (${NOW_UTC}),
     UNIQUE(num_pedido, ean, cod_dist)
@@ -281,6 +282,7 @@ export async function initTursoSchema() {
     `ALTER TABLE itens_confirmados ADD COLUMN origem TEXT DEFAULT 'manual'`,
     `ALTER TABLE itens_confirmados ADD COLUMN id_encomenda TEXT`,
     `ALTER TABLE order_items ADD COLUMN encomenda_confirmada INTEGER DEFAULT 0`,
+    `ALTER TABLE itens_confirmados ADD COLUMN entrada_confirmada INTEGER DEFAULT 0`,
   ];
   for (const sql of MIGRATE_SQL) {
     try { await d.exec(sql); } catch {} // ignora "duplicate column name" ou "duplicate index"
@@ -601,6 +603,66 @@ export async function getFaturadosRecentes(cnpj: string, eans: string[], janelaH
     }
     return { eans: eanSet, detalhes };
   } catch { return { eans: new Set(), detalhes: new Map() }; }
+}
+
+// Recompra duplicada — monitoramento em background
+export async function getFaturadosPendentesReconciliacao(cnpj: string): Promise<Array<{ numPedido: string; ean: string; nomeDist: string; dataFaturado: string }>> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const rows = await d.all(
+      `SELECT num_pedido, ean, nome_dist, created_at FROM itens_confirmados
+       WHERE cnpj = ? AND status = 'faturado' AND entrada_confirmada = 0
+       ORDER BY created_at DESC`
+    , cnpj);
+    if (!rows || rows.length === 0) return [];
+    return (rows as any[]).map(r => ({
+      numPedido: r.num_pedido,
+      ean: r.ean,
+      nomeDist: r.nome_dist || "",
+      dataFaturado: r.created_at,
+    }));
+  } catch { return []; }
+}
+
+export async function markEntradaConfirmada(numPedido: string, ean: string, codDist: number) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE itens_confirmados SET entrada_confirmada = 1
+      WHERE num_pedido = ? AND ean = ? AND cod_dist = ?`;
+    if (USE_TURSO) { await d.run(sql, numPedido, ean, codDist); } else { d.prepare(sql).run(numPedido, ean, codDist); }
+  } catch {}
+}
+
+export async function markEntradaConfirmadaByEan(ean: string, cnpj: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE itens_confirmados SET entrada_confirmada = 1
+      WHERE ean = ? AND cnpj = ? AND status = 'faturado'`;
+    if (USE_TURSO) { await d.run(sql, ean, cnpj); } else { d.prepare(sql).run(ean, cnpj); }
+  } catch {}
+}
+
+export async function getItensAtrasados(cnpj: string, horasLimite: number): Promise<Array<{ numPedido: string; ean: string; nomeDist: string; dataFaturado: string; horasPendente: number }>> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const rows = await d.all(
+      `SELECT num_pedido, ean, nome_dist, created_at FROM itens_confirmados
+       WHERE cnpj = ? AND status = 'faturado' AND entrada_confirmada = 0
+       AND created_at < datetime('now', '-${horasLimite} hours')
+       ORDER BY created_at ASC`
+    , cnpj);
+    if (!rows || rows.length === 0) return [];
+    const now = Date.now();
+    return (rows as any[]).map(r => {
+      const createdMs = new Date(r.created_at.replace(' ', 'T') + 'Z').getTime();
+      const horasPendente = Math.round((now - createdMs) / (1000 * 60 * 60));
+      return { numPedido: r.num_pedido, ean: r.ean, nomeDist: r.nome_dist || "", dataFaturado: r.created_at, horasPendente };
+    });
+  } catch { return []; }
 }
 
 // Itens Manuais (items added manually via button "+")
