@@ -287,6 +287,11 @@ export async function initTursoSchema() {
   for (const sql of MIGRATE_SQL) {
     try { await d.exec(sql); } catch {} // ignora "duplicate column name" ou "duplicate index"
   }
+  // Backfill: marcar itens já existentes como entrada_confirmada=1 (pré-migração)
+  // Idempotente: rodar toda vez é seguro, só marca linhas que ainda estão com 0
+  try {
+    await d.exec(`UPDATE itens_confirmados SET entrada_confirmada = 1 WHERE entrada_confirmada = 0`);
+  } catch {}
 }
 
 // Orders

@@ -2726,7 +2726,7 @@ app.post("/api/reconciliar-faturados-pendentes", async (req, res) => {
         }
 
         if (entradaConfirmada) {
-          await markEntradaConfirmada(item.numPedido, item.ean, 0); // codDist=0 porque não temos no retorno simples
+          await markEntradaConfirmadaByEan(item.ean, cnpj); // marca por EAN+cnpj (não depende de codDist)
           log(`EAN ${item.ean}: ✅ entrada confirmada — marcado.`);
           reconciliados++;
         } else {
