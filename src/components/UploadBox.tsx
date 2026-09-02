@@ -470,7 +470,7 @@ export default function UploadBox({
                 />
                 <div className="flex flex-col">
                   <span className="text-sm font-medium text-slate-700 group-hover:text-slate-900">Avisar pedido repetido pra distribuidora</span>
-                  <span className="text-xs text-slate-400">Se você já pediu esse produto pra mesma distribuidora há menos de 2 dias, o sistema avisa antes de pedir de novo — pra não duplicar o pedido por engano. Mas se esse pedido anterior já chegou e entrou no estoque, o aviso não aparece, porque aí não é duplicidade de verdade.</span>
+                  <span className="text-xs text-slate-400">Se esse produto já foi faturado por alguma distribuidora e ainda não teve entrada confirmada no estoque, o sistema avisa antes de pedir de novo — não precisa ser a mesma distribuidora do pedido atual, e não tem prazo fixo: o aviso fica ativo até a entrada acontecer, mesmo que seja dias depois. Assim que a entrada é confirmada, o aviso some sozinho — não é duplicidade de verdade.</span>
                 </div>
               </label>
               <label className="flex items-center space-x-2.5 cursor-pointer group">
