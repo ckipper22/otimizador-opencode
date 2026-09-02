@@ -187,7 +187,7 @@ Se um novo lugar precisar mostrar observacao de produto DENTRO do fluxo de `/api
 
 ## Checagem de Alerta Profarma 48h — timing e escopo
 
-**Proposito:** `useProfarmaAlertCheck` (`src/hooks/useProfarmaAlertCheck.ts`) alerta o usuario quando um item do relatorio ja foi faturado pela Profarma nas ultimas 48h sem confirmacao de entrada na Trier — evita duplicar pedido pro mesmo item.
+**Proposito:** `useProfarmaAlertCheck` (`src/hooks/useProfarmaAlertCheck.ts`) alerta o usuario quando um item do relatorio ja foi faturado por qualquer distribuidora com alias configurado em `distribuidor_alias` — sem prazo fixo, o aviso fica ativo ate a entrada ser confirmada. Evita duplicar pedido pro mesmo item.
 
 ### Comportamento atual (a partir do fix #44)
 
@@ -343,7 +343,7 @@ npm run lint     # Type checking (tsc --noEmit)
 - **Toggles de regra** (defaults `true`, salvos em localStorage):
   - `bypassMargemRuptura` — se false, sempre aplica margemMinima mesmo em ruptura
   - `alertaConfirmarQtdCaixaMaster` — se false, desativa bloqueio de discrepância caixa master
-  - `alertaProfarma48h` — se false, desativa alerta de duplicidade Profarma 48h
+  - `alertaProfarma48h` — se false, desativa alerta de recompra duplicada
 
 ### Faturamento
 - Blindagem 4 regras antes de enviar
@@ -400,6 +400,10 @@ npm run lint     # Type checking (tsc --noEmit)
 **Por que não foi implementado agora:** computar o melhor preço pago pra todo item do `/api/optimize` (180+ itens) exigiria chamadas adicionais de API (histórico de compras via Ferramentinhas) pra cada item — custo de performance significativo. Mesma razão da pendência de `analisarUmProduto` já documentada: motor central de preço, sem mapeamento completo do fluxo de controle, sem teste automatizado robusto.
 
 **Status:** decisão explícita de adiar — não implementar sem revisitar o custo de API e o impacto no tempo de resposta do `/api/optimize`.
+
+### Nome interno `alertaProfarma48h` mantido de propósito
+
+Nome interno `alertaProfarma48h` (config, types.ts, server.ts, etc.) mantém "Profarma"/"48h" no nome mesmo após a generalização de 2026-08-31 (comportamento real: qualquer distribuidora com alias configurado, sem prazo fixo — texto visível já corrigido). Decisão explícita do Carlos: manter o nome interno assim, ajuda a rastrear a origem histórica da feature no código. Não renomear — não é esquecimento, é decisão consciente.
 
 ---
 
