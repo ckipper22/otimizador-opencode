@@ -23,7 +23,7 @@ export function useDistributorWizards({
     "DrogaCenter": 150,
     "NeoSul": 150,
     "ANB": 150,
-    "Distribuidor": 150,
+    "Distribuidor Não Identificado": 150,
     "Não Encontrados": 0
   });
 

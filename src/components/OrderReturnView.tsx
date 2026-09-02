@@ -66,7 +66,7 @@ export function OrderReturnView({
 
   // Aggregate dists info
   const distCards = dists.map((dist: any) => {
-    const name = dist.NomeDist || dist.nomeDist || "Distribuidor";
+    const name = dist.NomeDist || dist.nomeDist || "Distribuidor Não Identificado";
     const key = `${dist.CodDist || dist.codDist}-${name}`;
     const distItems = itemsByDist[key] || [];
     

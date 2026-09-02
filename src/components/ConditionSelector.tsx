@@ -293,7 +293,7 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
       <div className="flex items-center gap-2 p-2 bg-blue-50 border border-blue-300 rounded-sm text-[10px]">
         <span className="font-black text-blue-800 uppercase tracking-wider">★ Atual:</span>
         <span className="font-bold text-blue-900">
-          [{item.distribuidora || "Distribuidor"}] {item.novoPreco > 0 ? `R$ ${item.novoPreco.toFixed(2).replace(".", ",")}` : ""}
+          [{item.distribuidora || "Distribuidor Não Identificado"}] {item.novoPreco > 0 ? `R$ ${item.novoPreco.toFixed(2).replace(".", ",")}` : ""}
           {item.condicao ? ` | ${item.condicao}` : ""}{item.prazo ? ` | ${item.prazo}d` : ""}
         </span>
         <span className="text-blue-600 font-mono">EAN: {item.novoEan}</span>
@@ -321,7 +321,7 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
                 const g = getAlt(alt);
                 return (
                   <option key={altIdx} value={altIdx}>
-                    [{g.distribuidora || "Distribuidor"}]{" "}
+                    [{g.distribuidora || "Distribuidor Não Identificado"}]{" "}
                     {g.qtdMin > 0 ? `⚠️[MÍN:${g.qtdMin}un] ` : ""}{g.condicao} (R$ {g.preco.toFixed(2).replace(".", ",")}){" "}
                     {g.prazo > 0 ? `| ${g.prazo}d` : "| Vista"}
                   </option>
@@ -379,7 +379,7 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
               </div>
               <div className="text-[10px] mt-0.5 leading-tight font-medium">
                 Trocar para o <strong>mesmo produto</strong> fornecido por{" "}
-                <strong className="underline">{cheapestSameProductNoMinAlt.distribuidora || "Distribuidor"}</strong> sem
+                <strong className="underline">{cheapestSameProductNoMinAlt.distribuidora || "Distribuidor Não Identificado"}</strong> sem
                 exigência de quantidade mínima comercial.
               </div>
               <div className="text-[9.5px] mt-1 text-gray-600 font-mono flex justify-between w-full">
@@ -413,7 +413,7 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
               <div className="text-[10px] mt-0.5 leading-tight font-medium">
                 Mudar para o fabricante <strong>{cheapestOtherItemAlt.laboratorio || "GENÉRICO"}</strong> (
                 {(cheapestOtherItemAlt.descricao || "").substring(0, 32)}...) fornecido por{" "}
-                <strong className="underline">{cheapestOtherItemAlt.distribuidora || "Distribuidor"}</strong>.
+                <strong className="underline">{cheapestOtherItemAlt.distribuidora || "Distribuidor Não Identificado"}</strong>.
               </div>
               <div className="text-[9.5px] mt-1 text-gray-600 font-mono flex justify-between w-full">
                 <span>

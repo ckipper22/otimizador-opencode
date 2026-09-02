@@ -86,7 +86,7 @@ function resolveDistName(obj: any, codDist?: number): string {
     (ok(obj?.Nome) ? obj.Nome : undefined) ||
     (code && DISTRIBUIDORAS_DYNAMIC_CACHE[code] ? DISTRIBUIDORAS_DYNAMIC_CACHE[code] : undefined) ||
     (code && DISTRIBUIDORAS_MAP[code] ? DISTRIBUIDORAS_MAP[code] : undefined) ||
-    (code ? `Distribuidor ${code}` : "Distribuidor")
+    (code ? `Distribuidor Não Identificado (${code})` : "Distribuidor Não Identificado")
   );
 }
 
@@ -5323,7 +5323,7 @@ app.post("/api/optimize", async (req, res) => {
                     const cPrazo = c.Prazo !== undefined ? c.Prazo : (c.prazo || 7);
                     const cPreco = getUnitCost(c);
                     const cEst = parseSmartPedEstoque(c.Estoque !== undefined ? c.Estoque : (c.estoque || 0), cPreco > 0);
-                    const cDist = c.NomeDist || c.nomeDist || DISTRIBUIDORAS_MAP[cCodDist] || `Distribuidor ${cCodDist}`;
+                    const cDist = c.NomeDist || c.nomeDist || DISTRIBUIDORAS_MAP[cCodDist] || `Distribuidor Não Identificado (${cCodDist})`;
                     if (cPreco <= 0 || cEst <= 0) continue;
                     if (cCodDist && disabledDistSet.has(Number(cCodDist))) continue;
                     combinedSubstitutos.push({ Ean: cEan, Descricao: item.Descricao || item.descricao || "", Laboratorio: item.Laboratorio || item.laboratorio || "", TipoItem: "G", Pliquido: cPreco, PliquidoUni: cPreco, Estoque: cEst, NomeDist: cDist, CodDist: cCodDist, Condicao: cCond, Prazo: cPrazo, QtdMin: c.QtdMin !== undefined ? c.QtdMin : (c.qtdMin !== undefined ? c.qtdMin : 0), CX: c.CX !== undefined ? c.CX : (c.cx || 1), CodProdutoDist: c.CodProdutoDist || c.codProdutoDist || "" });
@@ -5366,7 +5366,7 @@ app.post("/api/optimize", async (req, res) => {
                 const cPrazo = c.Prazo !== undefined ? c.Prazo : (c.prazo || 7);
                 const cPreco = getUnitCost(c);
                 const cEst = parseSmartPedEstoque(c.Estoque !== undefined ? c.Estoque : (c.estoque || 0), cPreco > 0);
-                const cDist = c.NomeDist || c.nomeDist || DISTRIBUIDORAS_MAP[cCodDist] || `Distribuidor ${cCodDist}`;
+                const cDist = c.NomeDist || c.nomeDist || DISTRIBUIDORAS_MAP[cCodDist] || `Distribuidor Não Identificado (${cCodDist})`;
                 
                 if (cPreco <= 0 || cEst <= 0) continue;
                 if (cCodDist && disabledDistSet.has(Number(cCodDist))) continue;
@@ -5489,7 +5489,7 @@ app.post("/api/optimize", async (req, res) => {
                         Pliquido: pc.preco_liquido,
                         PliquidoUni: pc.preco_liquido,
                         Estoque: pc.estoque,
-                        NomeDist: pc.nome_dist || DISTRIBUIDORAS_MAP[pc.cod_dist] || `Distribuidor ${pc.cod_dist}`,
+                        NomeDist: pc.nome_dist || DISTRIBUIDORAS_MAP[pc.cod_dist] || `Distribuidor Não Identificado (${pc.cod_dist})`,
                         CodDist: pc.cod_dist,
                         Condicao: pc.condicao,
                         Prazo: pc.prazo,
@@ -5540,7 +5540,7 @@ app.post("/api/optimize", async (req, res) => {
                         const dcEst = parseSmartPedEstoque(dc.Estoque !== undefined ? dc.Estoque : (dc.estoque || 0), dcPreco > 0);
                         const dcCond = dc.Condicao || dc.condicao || 'FIXA';
                         const dcPrazo = dc.Prazo !== undefined ? dc.Prazo : (dc.prazo || 7);
-                        const dcDist = dc.NomeDist || dc.nomeDist || DISTRIBUIDORAS_MAP[dcCodDist] || `Distribuidor ${dcCodDist}`;
+                        const dcDist = dc.NomeDist || dc.nomeDist || DISTRIBUIDORAS_MAP[dcCodDist] || `Distribuidor Não Identificado (${dcCodDist})`;
                         
                         if (dcPreco <= 0 || dcEst <= 0) continue;
                         if (dcCodDist && disabledDistSet.has(Number(dcCodDist))) continue;
@@ -6433,7 +6433,7 @@ condicoesEnriched = condicoes.map((c: any) => {
                 const cPrazo = c.Prazo !== undefined ? c.Prazo : (c.prazo || 7);
                 const cPreco = getUnitCost(c);
                 const cEst = parseSmartPedEstoque(c.Estoque !== undefined ? c.Estoque : (c.estoque || 0), cPreco > 0);
-                const cDist = c.NomeDist || c.nomeDist || DISTRIBUIDORAS_MAP[cCodDist] || `Distribuidor ${cCodDist}`;
+                const cDist = c.NomeDist || c.nomeDist || DISTRIBUIDORAS_MAP[cCodDist] || `Distribuidor Não Identificado (${cCodDist})`;
                 if (cPreco <= 0 || cEst <= 0) continue;
                 if (isNotFoundName(cDist)) continue;
                 if (cCodDist && disabledDistSet.has(Number(cCodDist))) continue;
@@ -7881,7 +7881,7 @@ app.post("/api/pedido-retorno", async (req, res) => {
       // Agrupar as distribuidoras presentes nos itens faturados com seus respectivos cÃ³digos
       const distsMap: Record<string, number> = {};
       finalItemsFaturados.forEach((it: any) => {
-        const dName = it.distribuidora || "Distribuidor";
+        const dName = it.distribuidora || "Distribuidor Não Identificado";
         const dCod = typeof it.codDist === "number" ? it.codDist : parseInt(it.codDist) || 2;
         distsMap[dName] = dCod;
       });
@@ -8379,7 +8379,7 @@ app.post("/api/search-products", async (req, res) => {
                           nomeDist = distInfo.NomeDist || distInfo.nomeDist || distInfo.NomeDistribuidora || distInfo.Nome || distInfo.nome || distInfo.Fantasia || distInfo.fantasia;
                         }
                       }
-                      return nomeDist || DISTRIBUIDORAS_MAP[codDist] || `Distribuidora ${codDist}`;
+                      return nomeDist || DISTRIBUIDORAS_MAP[codDist] || `Distribuidor Não Identificado (${codDist})`;
                     })(),
                     CodDist: codDist,
                     Condicao: condicao,
@@ -8500,7 +8500,7 @@ app.post("/api/search-products", async (req, res) => {
                           nomeDist = distInfo.NomeDist || distInfo.nomeDist || distInfo.NomeDistribuidora || distInfo.Nome || distInfo.nome || distInfo.Fantasia || distInfo.fantasia;
                         }
                       }
-                      return nomeDist || distsMap[codDist] || DISTRIBUIDORAS_MAP[codDist] || `Distribuidora ${codDist}`;
+                      return nomeDist || distsMap[codDist] || DISTRIBUIDORAS_MAP[codDist] || `Distribuidor Não Identificado (${codDist})`;
                     })(),
                     CodDist: codDist,
                     Condicao: condicao,
@@ -8751,7 +8751,7 @@ app.post("/api/search-products", async (req, res) => {
                                 nomeDist = distInfo.NomeDist || distInfo.nomeDist || distInfo.NomeDistribuidora || distInfo.Nome || distInfo.nome || distInfo.Fantasia || distInfo.fantasia;
                               }
                             }
-                            return nomeDist || distsMap[codDist] || DISTRIBUIDORAS_MAP[codDist] || `Distribuidora ${codDist}`;
+                            return nomeDist || distsMap[codDist] || DISTRIBUIDORAS_MAP[codDist] || `Distribuidor Não Identificado (${codDist})`;
                           })(),
                           CodDist: codDist,
                           Condicao: condicao,
@@ -8864,7 +8864,7 @@ app.post("/api/search-products", async (req, res) => {
                                 nomeDist = distInfo.NomeDist || distInfo.nomeDist || distInfo.NomeDistribuidora || distInfo.Nome || distInfo.nome || distInfo.Fantasia || distInfo.fantasia;
                               }
                             }
-                            return nomeDist || distsMap[codDist] || DISTRIBUIDORAS_MAP[codDist] || `Distribuidora ${codDist}`;
+                            return nomeDist || distsMap[codDist] || DISTRIBUIDORAS_MAP[codDist] || `Distribuidor Não Identificado (${codDist})`;
                           })(),
                           CodDist: codDist,
                           Condicao: condicao,
@@ -9017,7 +9017,7 @@ app.post("/api/search-products", async (req, res) => {
         ean: eanStr,
         descricao: desc,
         laboratorio: lab,
-        distribuidora: it.NomeDist || it.nomeDist || "Distribuidora",
+        distribuidora: it.NomeDist || it.nomeDist || "Distribuidor Não Identificado",
         codDist: itemCodDist,
         condicao: itemCondicao,
         codProdutoDist: String(it.CodProdutoDist || it.codProdutoDist || "0"),

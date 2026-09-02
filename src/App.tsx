@@ -99,7 +99,7 @@ export default function App() {
     "DrogaCenter": 150,
     "NeoSul": 150,
     "ANB": 150,
-    "Distribuidor": 150,
+    "Distribuidor Não Identificado": 150,
     "Não Encontrados": 0
   });
 
@@ -529,7 +529,7 @@ export default function App() {
     const offerEan = String(oferta.ean || oferta.Ean || item.ean || "").trim();
     const offerDesc = oferta.descricao || oferta.Descricao || item.descricao;
     const offerLab = oferta.laboratorio || oferta.Laboratorio || oferta.nom_laborat || "";
-    const offerDist = oferta.distribuidora || oferta.NomeDist || (oferta.codDist ? `Distribuidora ${oferta.codDist}` : "Distribuidora");
+    const offerDist = oferta.distribuidora || oferta.NomeDist || (oferta.codDist ? `Distribuidor Não Identificado (${oferta.codDist})` : "Distribuidor Não Identificado");
     const offerPrecoLiq = Number(oferta.pliquidoUni || oferta.pliquido || oferta.precoLiquido || oferta.preco || oferta.Preco || 0);
     const offerPrecoFab = Number(oferta.pfabrica || oferta.Pfabrica || oferta.precoOriginal || oferta.precoFabrica || 0);
     const offerEstoque = Number(oferta.estoque !== undefined ? oferta.estoque : (oferta.Estoque !== undefined ? oferta.Estoque : 9999));
@@ -579,7 +579,7 @@ export default function App() {
         const oEan = String(o.ean || o.Ean || "").trim();
         const oDesc = o.descricao || o.Descricao || offerDesc;
         const oLab = o.laboratorio || o.Laboratorio || o.nom_laborat || offerLab;
-        const oDist = o.distribuidora || o.NomeDist || (o.codDist ? `Distribuidora ${o.codDist}` : "Distribuidora");
+        const oDist = o.distribuidora || o.NomeDist || (o.codDist ? `Distribuidor Não Identificado (${o.codDist})` : "Distribuidor Não Identificado");
         const oPLiq = Number(o.pliquidoUni || o.pliquido || o.precoLiquido || o.preco || o.Preco || 0);
         const oEst = Number(o.estoque !== undefined ? o.estoque : (o.Estoque !== undefined ? o.Estoque : 0));
         const oCodDist = Number(o.codDist !== undefined ? o.codDist : (o.CodDist !== undefined ? o.CodDist : 0));
@@ -722,7 +722,7 @@ export default function App() {
         const offerEan = String(oferta.ean || oferta.Ean || item.ean || "").trim();
         const offerDesc = oferta.descricao || oferta.Descricao || item.descricao;
         const offerLab = oferta.laboratorio || oferta.Laboratorio || oferta.nom_laborat || "";
-        const offerDist = oferta.distribuidora || oferta.NomeDist || (oferta.codDist ? `Distribuidora ${oferta.codDist}` : "Distribuidora");
+        const offerDist = oferta.distribuidora || oferta.NomeDist || (oferta.codDist ? `Distribuidor Não Identificado (${oferta.codDist})` : "Distribuidor Não Identificado");
         const offerPrecoLiq = Number(oferta.pliquidoUni || oferta.pliquido || oferta.precoLiquido || oferta.preco || oferta.Preco || 0);
         const offerPrecoFab = Number(oferta.pfabrica || oferta.Pfabrica || oferta.precoOriginal || oferta.precoFabrica || 0);
         const offerEstoque = Number(oferta.estoque !== undefined ? oferta.estoque : (oferta.Estoque !== undefined ? oferta.Estoque : 9999));
@@ -772,7 +772,7 @@ export default function App() {
             const oEan = String(o.ean || o.Ean || "").trim();
             const oDesc = o.descricao || o.Descricao || offerDesc;
             const oLab = o.laboratorio || o.Laboratorio || o.nom_laborat || offerLab;
-            const oDist = o.distribuidora || o.NomeDist || (o.codDist ? `Distribuidora ${o.codDist}` : "Distribuidora");
+            const oDist = o.distribuidora || o.NomeDist || (o.codDist ? `Distribuidor Não Identificado (${o.codDist})` : "Distribuidor Não Identificado");
             const oPLiq = Number(o.pliquidoUni || o.pliquido || o.precoLiquido || o.preco || o.Preco || 0);
             const oEst = Number(o.estoque !== undefined ? o.estoque : (o.Estoque !== undefined ? o.Estoque : 0));
             const oCodDist = Number(o.codDist !== undefined ? o.codDist : (o.CodDist !== undefined ? o.CodDist : 0));

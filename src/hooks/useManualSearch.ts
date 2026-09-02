@@ -270,7 +270,7 @@ export function useManualSearch({
     const offerEan = cleanEan(String(offer.ean || offer.Ean || ""));
     const offerDesc = offer.descricao || offer.Descricao || offer.nom_produto || "";
     const offerLab = offer.laboratorio || offer.Laboratorio || offer.nom_laborat || "";
-    const offerDist = offer.distribuidora || offer.NomeDist || (offer.codDist ? `Distribuidora ${offer.codDist}` : "Distribuidora");
+    const offerDist = offer.distribuidora || offer.NomeDist || (offer.codDist ? `Distribuidor Não Identificado (${offer.codDist})` : "Distribuidor Não Identificado");
     const offerPrecoLiq = Number(offer._calcPLiquido || offer.pliquidoUni || offer.pliquido || offer.precoLiquido || offer.preco || offer.Preco || 0);
     const offerPrecoFab = Number(offer.pfabrica || offer.Pfabrica || offer.precoOriginal || offer.precoFabrica || 0);
     const offerEstoque = Number(offer.estoque !== undefined ? offer.estoque : (offer.Estoque !== undefined ? offer.Estoque : 9999));
