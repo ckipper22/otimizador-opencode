@@ -494,7 +494,9 @@ export default function SwapsTable({
     
     for (const item of processedReport) {
       // Reclassificar itens faturados sem entrada confirmada
-      const isAguardando = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
+      const isManualOrEncomenda = item.origem === "manual" || item.origem === "encomenda";
+      const isKeptByUser = profarmaDecisions[item.codInterno] === 'keep';
+      const isAguardando = !isManualOrEncomenda && !isKeptByUser && (isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan));
       const distFaturado = isAguardando ? (getFaturadoDistribuidora(item.novoEan) || getFaturadoDistribuidora(item.originalEan)) : null;
       // TODO: Carlos — definir texto final do grupo (ex: "Aguardando Chegar {dist}" ou nome genérico)
       const dist = isAguardando ? (distFaturado ? `Aguardando Chegar ${distFaturado}` : "Aguardando Chegar") : (item.distribuidora || "Não Encontrados");
@@ -562,7 +564,7 @@ export default function SwapsTable({
       
       return 0;
     });
-  }, [processedReport, disabledItemCodes, distributorMinimums, distributorOrder, isEanProfarmaAlerted, getFaturadoDistribuidora]);
+  }, [processedReport, disabledItemCodes, distributorMinimums, distributorOrder, isEanProfarmaAlerted, getFaturadoDistribuidora, profarmaDecisions]);
 
   // Automatically expand/collapse groups when "Apenas Alertas/Pendências" filter is toggled
   useEffect(() => {
