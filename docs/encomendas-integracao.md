@@ -306,7 +306,7 @@ Job server-side persistido em `server/pedido-monitor.ts` que sobrevive ao fecham
 
 ### Quando começa
 
-Após envio bem-sucedido em `/api/faturar` (server.ts:~7443). O endpoint insere uma linha em `pedidos_monitorados` com status `monitorando`, armazenando `itemsFaturados`, `encomendasPendentes`, `relatedGroups` e `baseDistName` como JSON serializado.
+Após envio bem-sucedido em `/api/faturar` (server.ts:~7063). O endpoint insere uma linha em `pedidos_monitorados` com status `monitorando`, armazenando `itemsFaturados`, `encomendasPendentes`, `relatedGroups` e `baseDistName` como JSON serializado.
 
 ### Intervalo de verificação
 

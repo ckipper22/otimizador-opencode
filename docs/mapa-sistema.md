@@ -95,7 +95,7 @@
 
 ## 3. Banco de Dados (Turso) — Inventário Completo
 
-> Schema definido em `server/database.ts`. 11 tabelas + 1 tabela sem CREATE TABLE (`sugestoes_eans`).
+> Schema definido em `server/database.ts`. 15 tabelas documentadas — 14 com CREATE TABLE em SCHEMA_SQL + 1 sem CREATE TABLE (`faturados`, código morto).
 
 ### `orders`
 
@@ -178,7 +178,7 @@
 - **Quem escreve:** `saveFaturado` (database.ts:412) — **DEFINIDA MAS NUNCA CHAMADA** (código morto)
 - **Quem lê:** `getFaturados` (database.ts:425) — também nunca chamado
 - **Purge:** `purgeOldData` (database.ts:601)
-- **⚠️ Código morto:** A tabela existe e é purgada, mas `saveFaturado`/`getFaturados` não são importados por server.ts. O sistema migrou pra `itens_confirmados`. Investigar antes de assumir que é integração ativa.
+- **⚠️ Código morto:** A tabela existe e é purgada, mas `saveFaturado`/`getFaturados` não são importados por server.ts. O sistema migrou pra `itens_confirmados`. Não tem CREATE TABLE em nenhum lugar — só existe se foi criada manualmente no Turso. Investigar antes de assumir que é integração ativa.
 
 ### `itens_confirmados`
 
@@ -406,12 +406,12 @@
 - **Quem lê:** `getDistribuidorAliases` (database.ts), `getFaturadosPendentes` (JOIN)
 - **⚠️ Pergunta em aberto:** Carlos deve configurar aliases pra outros distribuidores (GAM, ANB, CervoSul etc.) — hoje só Profarma tem.
 
-### `sugestoes_eans` (⚠️ sem CREATE TABLE)
+### `sugestoes_eans`
 
 - **Propósito:** EANs fixos do módulo Sugestões (populados uma vez via `/api/sync-eans-fixed`)
+- **Schema:** `CREATE TABLE IF NOT EXISTS sugestoes_eans` em `database.ts:189-196` (SCHEMA_SQL, versionado)
 - **Quem escreve:** `saveEansFixos` (database.ts:777)
 - **Quem lê:** `getEansFixos` (database.ts:789), `countEansFixos` (database.ts:800)
-- **⚠️ Risco de fragilidade:** Não existe `CREATE TABLE` em nenhum lugar do código. A tabela existe no Turso real por fora do fluxo de schema versionado. Se o banco for recriado do zero, essas 3 funções quebram. Não é bug ativo — é dívida técnica registrada.
 
 ---
 

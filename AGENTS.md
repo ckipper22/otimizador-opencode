@@ -405,6 +405,10 @@ npm run lint     # Type checking (tsc --noEmit)
 
 Nome interno `alertaProfarma48h` (config, types.ts, server.ts, etc.) mantém "Profarma"/"48h" no nome mesmo após a generalização de 2026-08-31 (comportamento real: qualquer distribuidora com alias configurado, sem prazo fixo — texto visível já corrigido). Decisão explícita do Carlos: manter o nome interno assim, ajuda a rastrear a origem histórica da feature no código. Não renomear — não é esquecimento, é decisão consciente.
 
+### PedidosMonitoradosPanel fica invisível quando vazio
+
+O componente (`src/components/PedidosMonitoradosPanel.tsx`) retorna `null` quando não há nenhum pedido com `status='monitorando'` (`getPedidosMonitorando`, `database.ts:1242-1250` só busca esse status). Resultado: não tem como saber que a feature existe enquanto não há pedido ativo sendo monitorado — parece que sumiu, não fica claro que é comportamento esperado. Decisão explícita: deixar assim por enquanto (painel só aparece quando relevante) — se no futuro incomodar, considerar sempre mostrar o painel com uma mensagem tipo "nenhum pedido em monitoramento no momento" em vez de sumir completamente.
+
 ---
 
 ## Convenções de Código
