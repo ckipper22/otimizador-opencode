@@ -72,6 +72,28 @@ function runMigrations(d: any) {
   try {
     d.exec(`ALTER TABLE itens_confirmados ADD COLUMN id_encomenda TEXT;`);
   } catch {}
+  try {
+    d.exec(`ALTER TABLE itens_confirmados ADD COLUMN faturado_at TEXT;`);
+    d.exec(`UPDATE itens_confirmados SET faturado_at = created_at WHERE status = 'faturado' AND faturado_at IS NULL;`);
+  } catch {}
+  try {
+    d.exec(`CREATE TABLE IF NOT EXISTS pedidos_monitorados (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      num_pedido TEXT,
+      cnpj TEXT,
+      token TEXT,
+      items_faturados TEXT,
+      encomendas_pendentes TEXT,
+      related_groups TEXT,
+      base_dist_name TEXT,
+      status TEXT DEFAULT 'monitorando',
+      last_checked_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );`);
+    d.exec(`CREATE INDEX IF NOT EXISTS idx_pedidos_monitorados_status ON pedidos_monitorados(status);`);
+    d.exec(`CREATE INDEX IF NOT EXISTS idx_pedidos_monitorados_pedido ON pedidos_monitorados(num_pedido);`);
+  } catch {}
 }
 
 const SCHEMA_SQL = `
@@ -129,6 +151,7 @@ const SCHEMA_SQL = `
     origem TEXT DEFAULT 'manual',
     id_encomenda TEXT,
     entrada_confirmada INTEGER DEFAULT 0,
+    faturado_at TEXT,
     created_at TEXT DEFAULT (${NOW_UTC}),
     updated_at TEXT DEFAULT (${NOW_UTC}),
     UNIQUE(num_pedido, ean, cod_dist)
@@ -261,6 +284,22 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_external_suppliers_cnpj ON external_suppliers(cnpj);
   CREATE INDEX IF NOT EXISTS idx_external_suppliers_validade ON external_suppliers(validade);
+  CREATE TABLE IF NOT EXISTS pedidos_monitorados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    num_pedido TEXT,
+    cnpj TEXT,
+    token TEXT,
+    items_faturados TEXT,
+    encomendas_pendentes TEXT,
+    related_groups TEXT,
+    base_dist_name TEXT,
+    status TEXT DEFAULT 'monitorando',
+    last_checked_at TEXT,
+    created_at TEXT DEFAULT (${NOW_UTC}),
+    updated_at TEXT DEFAULT (${NOW_UTC})
+  );
+  CREATE INDEX IF NOT EXISTS idx_pedidos_monitorados_status ON pedidos_monitorados(status);
+  CREATE INDEX IF NOT EXISTS idx_pedidos_monitorados_pedido ON pedidos_monitorados(num_pedido);
 `;
 
 export async function initTursoSchema() {
@@ -294,6 +333,15 @@ export async function initTursoSchema() {
     await d.exec(`UPDATE itens_confirmados SET entrada_confirmada = 1 WHERE entrada_confirmada = 0`);
   } catch {
     // Coluna já existe — nada a fazer (backfill já rodou antes)
+  }
+  // Migracao faturado_at: registrar momento real do faturamento (quando status transiciona pra 'faturado')
+  try {
+    await d.exec(`ALTER TABLE itens_confirmados ADD COLUMN faturado_at TEXT`);
+    // Backfill: marcar como faturado todo item que já tem status 'faturado' mas faturado_at NULL
+    // (esses itens foram criados antes da migração — o melhor timestamp disponível é created_at)
+    await d.exec(`UPDATE itens_confirmados SET faturado_at = created_at WHERE status = 'faturado' AND faturado_at IS NULL`);
+  } catch {
+    // Coluna já existe — nada a fazer
   }
 }
 
@@ -481,14 +529,15 @@ export async function saveItemConfirmado(item: {
   const d = getDb();
   if (!d) return;
   try {
-    const sql = `INSERT INTO itens_confirmados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd_solicitada, qtd_faturada, preco_liquido, status, motivo, cnpj, data_confirmacao, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${NOW_UTC})
+    const sql = `INSERT INTO itens_confirmados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd_solicitada, qtd_faturada, preco_liquido, status, motivo, cnpj, data_confirmacao, faturado_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'faturado' THEN ${NOW_UTC} ELSE NULL END, ${NOW_UTC})
       ON CONFLICT(num_pedido, ean, cod_dist) DO UPDATE SET
         qtd_faturada = excluded.qtd_faturada,
         status = excluded.status,
         motivo = excluded.motivo,
+        faturado_at = CASE WHEN itens_confirmados.faturado_at IS NULL AND excluded.status = 'faturado' THEN ${NOW_UTC} ELSE itens_confirmados.faturado_at END,
         updated_at = ${NOW_UTC}`;
-    const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao];
+    const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao, item.status];
     if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
   } catch {}
 }
@@ -501,22 +550,23 @@ export async function saveItensConfirmadosBatch(items: Array<{
   const d = getDb();
   if (!d || items.length === 0) return;
   try {
-    const sql = `INSERT INTO itens_confirmados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd_solicitada, qtd_faturada, preco_liquido, status, motivo, cnpj, data_confirmacao, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${NOW_UTC})
+    const sql = `INSERT INTO itens_confirmados (num_pedido, ean, descricao, laboratorio, cod_dist, nome_dist, qtd_solicitada, qtd_faturada, preco_liquido, status, motivo, cnpj, data_confirmacao, faturado_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'faturado' THEN ${NOW_UTC} ELSE NULL END, ${NOW_UTC})
       ON CONFLICT(num_pedido, ean, cod_dist) DO UPDATE SET
         qtd_faturada = excluded.qtd_faturada,
         status = excluded.status,
         motivo = excluded.motivo,
+        faturado_at = CASE WHEN itens_confirmados.faturado_at IS NULL AND excluded.status = 'faturado' THEN ${NOW_UTC} ELSE itens_confirmados.faturado_at END,
         updated_at = ${NOW_UTC}`;
     if (USE_TURSO) {
       const statements = items.map(item => ({
         sql,
-        args: [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao]
+        args: [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao, item.status]
       }));
       await d.batch(statements);
     } else {
       for (const item of items) {
-        const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao];
+        const args = [item.numPedido, item.ean, item.descricao, item.laboratorio, item.codDist, item.nomeDist, item.qtdSolicitada, item.qtdFaturada, item.precoLiquido, item.status, item.motivo || "", item.cnpj, item.dataConfirmacao, item.status];
         d.prepare(sql).run(...args);
       }
     }
@@ -1166,6 +1216,55 @@ export async function getSuppliersAnalisados(cnpj: string) {
     if (USE_TURSO) { return await d.all(sql, cnpj); }
     return d.prepare(sql).all(cnpj);
   } catch { return []; }
+}
+
+// ---- Pedidos Monitorados ----
+
+export async function insertPedidoMonitorado(pedido: {
+  numPedido: string; cnpj: string; token: string;
+  itemsFaturados: any; encomendasPendentes: any;
+  relatedGroups: string[]; baseDistName: string;
+}) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `INSERT INTO pedidos_monitorados (num_pedido, cnpj, token, items_faturados, encomendas_pendentes, related_groups, base_dist_name, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'monitorando')`;
+    const args = [
+      pedido.numPedido, pedido.cnpj, pedido.token,
+      JSON.stringify(pedido.itemsFaturados), JSON.stringify(pedido.encomendasPendentes),
+      JSON.stringify(pedido.relatedGroups), pedido.baseDistName
+    ];
+    if (USE_TURSO) { await d.run(sql, ...args); } else { d.prepare(sql).run(...args); }
+  } catch (e: any) { console.error(`[PEDIDO-MONITOR] Erro ao inserir pedido ${pedido.numPedido}:`, e.message); }
+}
+
+export async function getPedidosMonitorando(): Promise<any[]> {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    const sql = `SELECT * FROM pedidos_monitorados WHERE status = 'monitorando'`;
+    if (USE_TURSO) { return await d.all(sql); }
+    return d.prepare(sql).all();
+  } catch { return []; }
+}
+
+export async function updatePedidoMonitoradoLastChecked(numPedido: string) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE pedidos_monitorados SET last_checked_at = ${NOW_UTC}, updated_at = ${NOW_UTC} WHERE num_pedido = ? AND status = 'monitorando'`;
+    if (USE_TURSO) { await d.run(sql, numPedido); } else { d.prepare(sql).run(numPedido); }
+  } catch {}
+}
+
+export async function updatePedidoMonitoradoStatus(numPedido: string, status: 'concluido' | 'encerrado_manual') {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE pedidos_monitorados SET status = ?, updated_at = ${NOW_UTC} WHERE num_pedido = ?`;
+    if (USE_TURSO) { await d.run(sql, status, numPedido); } else { d.prepare(sql).run(status, numPedido); }
+  } catch {}
 }
 
 export function closeDb() {

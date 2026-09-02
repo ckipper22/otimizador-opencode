@@ -11,6 +11,8 @@ interface ConditionSelectorProps {
   compact?: boolean;
   /** Configuração para buscar alternativas em tempo real */
   config?: { token?: string; cnpj?: string };
+  /** Cache compartilhado de promises de busca entre instâncias (mesmo item montado em 2 visões) */
+  liveAlternativesCache?: Map<string, Promise<Alternative[]>>;
 }
 
 /**
@@ -21,7 +23,7 @@ interface ConditionSelectorProps {
  * Regra de negócio preservada: só lista alternativas com distribuidora real
  * (exclui "Não Encontrados" / "Sem Estoque") e com estoque > 0.
  */
-export function ConditionSelector({ item, onSelectCondition, compact = false, config }: ConditionSelectorProps) {
+export function ConditionSelector({ item, onSelectCondition, compact = false, config, liveAlternativesCache }: ConditionSelectorProps) {
   const [liveAlternatives, setLiveAlternatives] = useState<Alternative[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -72,40 +74,48 @@ export function ConditionSelector({ item, onSelectCondition, compact = false, co
 
     console.log(`[CONDITION-SELECTOR-DEBUG] INICIANDO busca: EAN=${searchEan} | DESC="${searchDesc}" | isRuptura=${isRuptura}`);
 
+    const cacheKey = `${searchEan}::${searchDesc ?? ""}`;
+
     const fetchAlternatives = async () => {
       setIsLoading(true);
       try {
-        const requestBody = {
-          ean: searchEan,
-          descricao: searchDesc,
-          token: config.token,
-          cnpj: config.cnpj
-        };
-        console.log(`[CONDITION-SELECTOR-DEBUG] Enviando para /api/smartped-find-substitutes:`, JSON.stringify(requestBody, null, 2));
-        
-        const response = await fetch("/api/smartped-find-substitutes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody)
-        });
-        const data = await response.json();
-        
-        console.log(`[CONDITION-SELECTOR-DEBUG] RESPOSTA: response.ok=${response.ok} | alternatives=${data?.alternatives?.length ?? 0} | logs=${JSON.stringify(data?.logs)}`);
-        
-        if (response.ok && data.alternatives) {
-          console.log(`[CONDITION-SELECTOR-DEBUG] SUCESSO: ${data.alternatives.length} alternativas recebidas`);
-          data.alternatives.forEach((alt: any, i: number) => {
-            console.log(`[CONDITION-SELECTOR-DEBUG]   ${i+1}. ${alt.distribuidora} | EAN:${alt.ean} | preco:${alt.preco} | estoque:${alt.estoque}`);
-          });
-          
-          setLiveAlternatives(data.alternatives);
+        let promise = liveAlternativesCache?.get(cacheKey);
+        if (!promise) {
+          const requestBody = {
+            ean: searchEan,
+            descricao: searchDesc,
+            token: config.token,
+            cnpj: config.cnpj
+          };
+          console.log(`[CONDITION-SELECTOR-DEBUG] Enviando para /api/smartped-find-substitutes:`, JSON.stringify(requestBody, null, 2));
+
+          promise = fetch("/api/smartped-find-substitutes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody)
+          })
+            .then(r => r.json())
+            .then(data => {
+              console.log(`[CONDITION-SELECTOR-DEBUG] RESPOSTA: alternatives=${data?.alternatives?.length ?? 0}`);
+              if (data?.alternatives) {
+                console.log(`[CONDITION-SELECTOR-DEBUG] SUCESSO: ${data.alternatives.length} alternativas recebidas`);
+                return data.alternatives as Alternative[];
+              }
+              console.log(`[CONDITION-SELECTOR-DEBUG] FALHA: data=${JSON.stringify(data)}`);
+              return [] as Alternative[];
+            })
+            .catch(err => {
+              console.log(`[CONDITION-SELECTOR-DEBUG] ERRO:`, err);
+              return [] as Alternative[];
+            });
+
+          liveAlternativesCache?.set(cacheKey, promise);
         } else {
-          console.log(`[CONDITION-SELECTOR-DEBUG] FALHA: response.ok=${response.ok} | data=${JSON.stringify(data)}`);
-          setLiveAlternatives([]);
+          console.log(`[CONDITION-SELECTOR-DEBUG] REUSANDO promise em cache: ${cacheKey}`);
         }
-      } catch (err) {
-        console.log(`[CONDITION-SELECTOR-DEBUG] ERRO:`, err);
-        setLiveAlternatives([]);
+
+        const alternatives = await promise;
+        setLiveAlternatives(alternatives);
       } finally {
         setIsLoading(false);
       }

@@ -465,7 +465,8 @@ export function useOptimizationResult({
         const baseItem = {
           ...item,
           distribuidora: overDist || item.distribuidora || "Não Encontrados",
-          disabled: isDisabled
+          disabled: isDisabled,
+          ...(overDist ? { motivoAcao: undefined, origem: item.origem === "lista_preco" ? undefined : item.origem } : {})
         };
 
         if (isDisregarded) {
@@ -557,11 +558,12 @@ export function useOptimizationResult({
 
       const isProfarmaAlert = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
 
-      if (isProfarmaAlert && !item.isProfarmaAlertAck) {
-        return true;
-      }
+      // Duplicidade de compra já é tratada pelo agrupamento passivo "Aguardando Chegar" em SwapsTable.
+      // A modal só precisa aparecer pra discrepância de fracionado/embalagem (alertaConfirmarQtd),
+      // que é o único caso que realmente exige decisão humana sobre quantidade.
+      if (!item.alertaConfirmarQtd) return false;
 
-      return item.alertaConfirmarQtd;
+      return true;
     }).map((item) => {
       const isProfarmaAlert = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
 
@@ -613,7 +615,6 @@ export function useOptimizationResult({
                 qtd: qty,
                 economiaTotal: (item.economiaUnit || 0) * qty,
                 alertaConfirmarQtd: false,
-                isProfarmaAlertAck: true
               };
             }
             return item;
@@ -840,5 +841,8 @@ export function useOptimizationResult({
     activeReport,
     activeSummary,
     pendingAlertItems,
+    isEanProfarmaAlerted,
+    getProfarmaOrderDate,
+    getFaturadoDistribuidora,
   };
 }

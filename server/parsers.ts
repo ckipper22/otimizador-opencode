@@ -300,6 +300,7 @@ export function cleanDescriptionKeepDosage(desc: string): string {
   if (!desc) return "";
   let d = desc.toUpperCase();
 
+  d = d.replace(/%/g, " ");
   d = d.replace(/\b\d+\s*(CP|CAPS|COMP|UN|FR|TB|SACH|BG|GTS|SACHES|AMP)\b/gi, " ");
   d = d.replace(/\bC\/\s*\d+\b/gi, " ");
   d = d.replace(/\b(SUBL|REV|L\.P|L\.R|SOL\s+TOP|SOL|TOP|AD|PED|GTS|INJ|LP|LR|REV|AER|AEROSOL|EMULSAO|SUSP|GTS|AMP|BL)\b/gi, " ");
@@ -329,6 +330,21 @@ export function mesmaDosagem(descA: string, descB: string): boolean {
   return matchA[1] === matchB[1] && matchA[2].toLowerCase() === matchB[2].toLowerCase();
 }
 
+/** Stopwords de nomenclatura farmacêutica — não aparecem no nome comercial cadastrado na SmartPed */
+export const PHARMA_SALT_STOPWORDS = [
+  // Stopwords genéricas (mantidas consistentes com normalizeSearchQuery em server.ts)
+  "COM", "DE", "DO", "DA", "DOS", "DAS", "PARA", "POR", "SEM", "ATE", "OU", "E", "EM", "O", "A", "OS", "AS", "UM", "UMA",
+  // Nomes de sal/forma farmacêutica
+  "SULFATO", "CLORIDRATO", "DICLORIDRATO", "MALEATO", "SUCCINATO", "FOSFATO", "ACETATO", "BESILATO",
+  "CITRATO", "BROMETO", "IODETO", "NITRATO", "TARTARATO", "VALERATO", "PROPIONATO", "MESILATO",
+  "TOSILATO", "PALMITATO", "ESTEARATO", "GLUCONATO", "LACTATO", "BENZOATO", "SALICILATO",
+  "CARBONATO", "BICARBONATO", "HIDROCLORETO", "MONOIDRATADO", "DIIDRATADO", "ANIDRO",
+  "SODICO", "SÓDICO", "POTASSICO", "POTÁSSICO", "CALCICO", "CÁLCICO",
+  // Nomenclatura farmacêutica complementar
+  "DIPROPIONATO", "PROPRIONATO", "HEMIHIDRATADO", "TRIIDRATADO", "PENTAIDRATADO",
+  "METILBROMETO", "HIDROBROMETO", "PERCLORATO", "FUMARATO", "TARTRATO", "OXALATO", "MALATO",
+];
+
 export function getWildcardQueries(desc: string): string[] {
   if (!desc) return [];
   const upper = desc.toUpperCase();
@@ -339,7 +355,8 @@ export function getWildcardQueries(desc: string): string[] {
     "BIOLAB", "ACHE", "ACHÉ", "LEGRAND", "SANOFI", "AVENTIS", "ZYDUS", "ALCON", "CIMED", "UNIPHAR",
     "BD", "ULTRA", "FINE", "RISQUE", "RISQUÉ", "COTY", "VITAMEDIC", "BEIERSDORF", "NIVEA", "NÍVEA",
     "UNILEVER", "DOVE", "CIFARMA", "JANSSEN", "CILAG", "MERCK", "SHARP", "DOHME", "MSD", "BASTON",
-    "ABOVE", "CLINICAL", "DERMACLIN", "GARDENIA", "AMENDOAS", "BOTANICALS"
+    "ABOVE", "CLINICAL", "DERMACLIN", "GARDENIA", "AMENDOAS", "BOTANICALS",
+    ...PHARMA_SALT_STOPWORDS,
   ];
 
   const presentationWords = [
@@ -377,16 +394,16 @@ export function getWildcardQueries(desc: string): string[] {
   if (cleanWords.length === 0) return [];
 
   if (cleanWords.length >= 2) {
-    queries.push(`${cleanWords[0]}%${cleanWords[1]}`);
+    queries.push(`%${cleanWords[0]}%${cleanWords[1]}`);
   }
   if (cleanWords.length >= 3) {
-    queries.push(`${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}`);
+    queries.push(`%${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}`);
   }
   if (cleanWords.length >= 4) {
-    queries.push(`${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}%${cleanWords[3]}`);
+    queries.push(`%${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}%${cleanWords[3]}`);
   }
   if (cleanWords.length >= 5) {
-    queries.push(`${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}%${cleanWords[3]}%${cleanWords[4]}`);
+    queries.push(`%${cleanWords[0]}%${cleanWords[1]}%${cleanWords[2]}%${cleanWords[3]}%${cleanWords[4]}`);
   }
 
   const baseActive = cleanWords[0];
@@ -394,21 +411,21 @@ export function getWildcardQueries(desc: string): string[] {
 
   if (baseActive && baseActive.length > 2) {
     if (numberOrDosageWords.length > 0) {
-      queries.push(`${baseActive}%${numberOrDosageWords.join("%")}`);
+      queries.push(`%${baseActive}%${numberOrDosageWords.join("%")}`);
       if (numberOrDosageWords.length > 1) {
-        queries.push(`${baseActive}%${numberOrDosageWords.slice(0, -1).join("%")}`);
+        queries.push(`%${baseActive}%${numberOrDosageWords.slice(0, -1).join("%")}`);
       }
     }
   }
 
   if (cleanWords.length >= 2) {
-    const firstTwo = cleanWords.slice(0, 2).join("%");
+    const firstTwo = `%${cleanWords.slice(0, 2).join("%")}`;
     if (!queries.includes(firstTwo)) {
       queries.push(firstTwo);
     }
   }
 
-  const fullQuery = cleanWords.join("%");
+  const fullQuery = `%${cleanWords.join("%")}`;
   if (!queries.includes(fullQuery) && cleanWords.length > 1) {
     queries.push(fullQuery);
   }

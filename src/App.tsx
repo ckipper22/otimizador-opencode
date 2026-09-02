@@ -4,15 +4,11 @@ import { motion, AnimatePresence, useDragControls } from "motion/react";
 import UploadBox from "./components/UploadBox";
 import ConfigurationPanel from "./components/ConfigurationPanel";
 import OptimizationSummaryStats from "./components/OptimizationSummary";
-import SwapsTable from "./components/SwapsTable";
-import { OrderReturnView } from "./components/OrderReturnView";
-import { PendingOrdersTable } from "./components/PendingOrdersTable";
 import { FaturadosModal } from "./components/FaturadosModal";
 import { ConfirmQuantitiesModal } from "./components/ConfirmQuantitiesModal";
 import { BillingLogsModal } from "./components/BillingLogsModal";
 import { OfertasDoDiaModal } from "./components/OfertasDoDiaModal";
 import VisualChart from "./components/VisualChart";
-import { DailyItemsView } from "./components/DailyItemsView";
 import { OptimizerConfig, OptimizationResponse, SwapReportItem, DistributorOption, ExternalSupplier, AuthorizedCompany } from "./types";
 import { EanEyeButton } from "./components/EanEyeButton";
 import { HOMOLOGACAO_SICF_FILE, formatCurrency, resolveEstoque, resolveQtdMinima, resolvePedidoMinimo } from "./utils";
@@ -28,6 +24,7 @@ const LazyOrderReturnView = React.lazy(() => import("./components/OrderReturnVie
 const LazyDailyItemsView = React.lazy(() => import("./components/DailyItemsView").then(m => ({ default: m.DailyItemsView })));
 const LazyPendingOrdersTable = React.lazy(() => import("./components/PendingOrdersTable").then(m => ({ default: m.PendingOrdersTable })));
 const LazyWhatsAppOrdersView = React.lazy(() => import("./components/WhatsAppOrdersView").then(m => ({ default: m.WhatsAppOrdersView })));
+import { PedidosMonitoradosPanel } from "./components/PedidosMonitoradosPanel";
 
 const normalizeDistName = (name: string) => 
   (name || "")
@@ -126,6 +123,7 @@ export default function App() {
     handleConfirmQtyInInterception,
     downloadSICF, downloadCSV,
     activeReport, activeSummary, pendingAlertItems,
+    isEanProfarmaAlerted, getProfarmaOrderDate, getFaturadoDistribuidora,
   } = useOptimizationResult({
     config, setConfig, disabledDistributors, externalSuppliers,
     distributors, handleCheckDailyOrders, dailyOrders,
@@ -1339,6 +1337,10 @@ export default function App() {
           </div>
         )}
 
+        {mainView === "optimize" && (
+          <PedidosMonitoradosPanel config={config} />
+        )}
+
         {mainView === "returns" && selectedDailyOrder && (
           <div className="space-y-6 mb-8 animate-fade-in">
             <div className="flex justify-between items-center bg-[#DCDAD7] border border-[#141414] p-4">
@@ -2149,6 +2151,9 @@ export default function App() {
                       onSelectCondition={handleSelectCondition}
                       dailyOrders={dailyOrders}
                       config={config}
+                      isEanProfarmaAlerted={isEanProfarmaAlerted}
+                      getProfarmaOrderDate={getProfarmaOrderDate}
+                      getFaturadoDistribuidora={getFaturadoDistribuidora}
                     />
                   </div>
                 )}

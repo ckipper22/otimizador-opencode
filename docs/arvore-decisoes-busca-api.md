@@ -498,6 +498,40 @@ Teto de 7 dias: itens há mais de 7 dias são ignorados. Critério: evita acúmu
 
 ---
 
+## Bugs corrigidos: getWildcardQueries e cleanDescriptionKeepDosage (2026-09-01)
+
+### Bug 1 — stopwords de sal/forma farmacêutica ausentes
+
+`getWildcardQueries()` (server/parsers.ts) monta queries ancoradas em `cleanWords[0]` (primeira palavra após remoção de ignoreList + presentationWords). Para produtos com prefixo de sal químico ("SULFATO DE NEOMICINA+BACITRACINA ZINCICA 5MG+250UI/G POM 15G"), `cleanWords[0]` virava "SULFATO" — nome de composto que NÃO aparece no nome comercial cadastrado na SmartPed ("NEOMICINA+BACITRACINA POMADA..."). Nenhuma query gerada batia.
+
+**Fix:** adicionar ao ignoreList: stopwords já usadas por `normalizeSearchQuery` (DE, DO, DA, etc.) + nomes de sal/forma farmacêutica (SULFATO, CLORIDRATO, MALEATO, etc. — ~40 termos). Resultado: `cleanWords[0]` agora vira "NEOMICINA", queries incluem `%NEOMICINA%BACITRACINA%`.
+
+**Call sites afetados:**
+1. `server.ts:9194` — `/api/smartped-find-substitutes` (dropdown de troca de condição)
+2. `server.ts:1568` — PASSO 1.5 do `/api/optimize` (fallback de preço SmartPed) — mais crítico, pode perder preço melhor silenciosamente
+
+### Bug 2 — `%` sem limpeza em cleanDescriptionKeepDosage
+
+`cleanDescriptionKeepDosage()` (server/parsers.ts:299) nunca remove o caractere `%` — ao contrário de `cleanDescription`/`getMoleculeBase` (removem %) e `getWildcardQueries` (converte % em espaço). O `%` vai direto pro parâmetro `Texto` de `Produtos/Buscar` (server.ts:9151) podendo ser interpretado como wildcard descontrolado.
+
+**Fix:** `d = d.replace(/%/g, " ")` no início da função — remove % mas preserva o número da dosagem ("5%" vira "5", não desaparece).
+
+### Bug 3 — /api/search-products: mesmo problema de getWildcardQueries
+
+`/api/search-products` (server.ts:8059, endpoint da busca manual "Cockpit Comercial") montava a query na linha 8476 como `tryQuery.split(/\s+/).filter(Boolean).join("%")` — sem `%` líder e sem filtro de stopwords de sal/forma farmacêutica. Mesmo caso de teste: "SULFATO DE NEOMICINA BACITRACINA" gerava `SULFATO%DE%NEOMICINA%BACITRACINA` (ancorado em "SULFATO", que não existe no cadastro SmartPed).
+
+**Fix:** (1) `"%" +` no início da query; (2) filtro via `PHARMA_SALT_STOPWORDS` (constante exportada de `server/parsers.ts`, fonte única pra essa lista). Query agora gera `%NEOMICINA%BACITRACINA` (correto).
+
+### Pendência documentada: stopwords duplicadas em 3+ lugares
+
+`PALAVRAS_GENERICAS_BLOQUEIO` (server.ts:4285 e :9081) e `RUPTURA-REGEX` stopWords (server.ts:5402) têm as mesmas stopwords de sal sem importar `PHARMA_SALT_STOPWORDS`. Adiado porque fazem parte do motor de preço central (`analisarUmProduto`), fluxo de controle não totalmente mapeado, sem teste automatizado robusto. Ver seção "PENDÊNCIAS / Dívida Técnica" em AGENTS.md.
+
+### Não mexer: getCleanSearchWords
+
+`getCleanSearchWords` (server/parsers.ts, logo abaixo de `getWildcardQueries`) tem o mesmo problema de stopwords ausentes, mas zero call sites no projeto (código morto). Só documentar, não corrigir agora.
+
+---
+
 ## Referência cruzada
 
 - **AGENTS.md** → "Dois fluxos de matching independentes" (seção ~linha 89): regra geral

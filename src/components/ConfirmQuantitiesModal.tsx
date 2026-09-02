@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertTriangle, Check, Info } from 'lucide-react';
+import { AlertTriangle, Check, Info, Trash2 } from 'lucide-react';
 import { formatCurrency } from '../utils';
 
 interface ConfirmQuantitiesModalProps {
@@ -108,10 +108,10 @@ export const ConfirmQuantitiesModal: React.FC<ConfirmQuantitiesModalProps> = ({
                         <div className="mt-2 text-[10px] bg-rose-100 text-rose-950 border border-rose-300 p-2 rounded-none font-sans font-bold flex flex-col gap-1">
                           <div className="flex items-center gap-1 text-rose-800 font-mono uppercase">
                             <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-600" />
-                            <span>Alerta de Duplicidade Profarma</span>
+                            <span>Alerta de Duplicidade de Compra</span>
                           </div>
                           <div className="text-[10px] font-normal text-rose-900 leading-tight font-sans">
-                            {item.motivoAlertaProfarma || "Este item foi enviado para a Profarma nas últimas 48h. Verifique a quantidade ou digite 0 para remover do lote."}
+                            {item.motivoAlertaProfarma || "Este item foi faturado por uma distribuidora recentemente. Verifique a quantidade ou digite 0 para remover do lote."}
                           </div>
                         </div>
                       ) : (
@@ -135,6 +135,7 @@ export const ConfirmQuantitiesModal: React.FC<ConfirmQuantitiesModalProps> = ({
                           min="0"
                           value={currentQty}
                           onChange={(e) => handleQtyChange(item.codInterno, e.target.value)}
+                          onFocus={(e) => e.target.select()}
                           className="w-20 px-2 py-1.5 border-2 border-[#141414] font-mono text-center font-extrabold bg-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
                         />
                         {currentQty === 0 && (
@@ -147,14 +148,23 @@ export const ConfirmQuantitiesModal: React.FC<ConfirmQuantitiesModalProps> = ({
 
                     {/* Action Button */}
                     <td className="p-3 text-center align-middle">
-                      <button
-                        onClick={() => handleOkClick(item.codInterno)}
-                        className="inline-flex items-center justify-center gap-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs px-3 py-2 uppercase tracking-wider border border-emerald-800 transition-all cursor-pointer shadow-sm active:scale-95"
-                        title={currentQty === 0 ? "Remover item" : "Confirmar quantidade"}
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        <span>OK</span>
-                      </button>
+                      <div className="flex items-center justify-center gap-1.5">
+                        <button
+                          onClick={() => handleOkClick(item.codInterno)}
+                          className="inline-flex items-center justify-center gap-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs px-3 py-2 uppercase tracking-wider border border-emerald-800 transition-all cursor-pointer shadow-sm active:scale-95"
+                          title={currentQty === 0 ? "Remover item" : "Confirmar quantidade"}
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>OK</span>
+                        </button>
+                        <button
+                          onClick={() => onConfirmQty(item.codInterno, 0)}
+                          className="inline-flex items-center justify-center gap-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-2 py-2 uppercase tracking-wider border border-rose-700 transition-all cursor-pointer shadow-sm active:scale-95"
+                          title="Remover item do lote"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

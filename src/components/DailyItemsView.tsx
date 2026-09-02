@@ -836,7 +836,7 @@ export const DailyItemsView = ({
                       </div>
                     ) : item.dataProcessamento ? (
                       <span className="text-[10px] text-gray-600 font-medium">
-                        {new Date(item.dataProcessamento).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' })}
+                        {new Date(item.dataProcessamento.replace(' ', 'T') + 'Z').toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' })}
                       </span>
                     ) : (
                       <span className="text-gray-300">—</span>

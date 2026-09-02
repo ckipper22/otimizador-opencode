@@ -10,7 +10,7 @@ import { cacheKey, getFromCache, getFromCacheBatch, setInCache, MINIMOS_GLOBAL_C
 import { rateLimitMiddleware, startRateLimitPurge } from "./server/rate-limiter";
 import { cleanEan, normalizeDistName, cleanCodProduto, EAN_DATABASE, getEanDatabaseRecord, loadEanDatabase } from "./server/ean-utils";
 import { fetchEanDescriptions, fetchSimilarGenerics, fetchSimilarGenericsBatch } from "./server/smartped-api";
-import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto, mesmaDosagem } from "./server/parsers";
+import { stripHtmlTags, extractQuantityCount, checkColetivoKeywords, calculateQuantityAlert, parseFormattedNumber, extractPmc, extractTablePrice, getUnitCost, isRealOffer, extractSmartPedQtdMin, parseSmartPedEstoque, cleanDescription, getMoleculeBase, cleanDescriptionKeepDosage, getWildcardQueries, getCleanSearchWords, resolveCategoria, CategoriaProduto, hasWordBoundary, classificarProduto, mesmaApresentacao, ClassificacaoProduto, mesmaDosagem, PHARMA_SALT_STOPWORDS } from "./server/parsers";
 import { DISTRIBUIDORAS_MAP } from "./server/distributors";
 import { getDb, USE_TURSO, savePedidoWhatsApp, getPedidosWhatsApp, updatePedidoWhatsAppStatus, deletePedidoWhatsApp, saveWhatsAppRule, getWhatsAppRules, deleteWhatsAppRule, saveWhatsAppEnvioLab, getWhatsAppEnviosLabPendentes, getDistribuidorAliases, saveDistribuidorAlias, deleteDistribuidorAlias, getFaturadosRecentes, getFaturadosPendentesReconciliacao, markEntradaConfirmada, markEntradaConfirmadaByEan, getItensAtrasados, markEncomendaConfirmadaById, getEncomendasPendentesReconciliacao, markEncomendaConfirmada, saveExternalSupplier, getExternalSuppliers, deleteExternalSupplier, updateSupplierAnalysis } from "./server/database";
 
@@ -169,6 +169,16 @@ setInterval(async () => {
     if (d) { USE_TURSO ? await d.all("SELECT 1") : d.prepare("SELECT 1").get(); }
   } catch {}
 }, 4 * 60 * 1000);
+
+// Monitoramento de pedidos — verificar retorno a cada 1 minuto
+setInterval(async () => {
+  try {
+    const { checkAllMonitoredPedidos } = await import("./server/pedido-monitor");
+    await checkAllMonitoredPedidos();
+  } catch (e: any) {
+    console.error(`[PEDIDO-MONITOR] Erro no scheduler:`, e.message);
+  }
+}, 60 * 1000);
 
 // Load EAN database on startup
 loadEanDatabase();
@@ -7427,8 +7437,38 @@ app.post("/api/faturar", async (req, res) => {
       logs
     });
 
+    // Registrar pedido para monitoramento server-side (sobrevive ao fechamento da modal)
+    try {
+      const { insertPedidoMonitorado } = await import("./server/database");
+      await insertPedidoMonitorado({
+        numPedido: String(numPedidoSmartPed),
+        cnpj: apiCnpj,
+        token: actualToken,
+        itemsFaturados: validatedItems.map((it: any) => ({
+          ean: it.novoEan || it.originalEan,
+          descricao: it.novaDescricao || it.originalDescricao,
+          laboratorio: it.novoLaboratorio || it.originalLaboratorio,
+          qtd: it.qtd || 1,
+          preco: it.novoPreco || it.originalPreco,
+          distribuidora: it.distribuidora || "Distribuidora Geral",
+          codDist: it.codDist || 2,
+          condicao: it.condicao || "FIXA",
+          codProdutoDist: it.codProdutoDist || "",
+          codProduto: it.codProduto || "",
+          origem: it.origem || "manual",
+          idEncomenda: it.idEncomenda || null
+        })),
+        encomendasPendentes: encomendasPendentes,
+        relatedGroups: Object.keys(distribuidorasMap),
+        baseDistName: Object.keys(distribuidorasMap).length === 1 ? Object.keys(distribuidorasMap)[0] : "Todas as Distribuidoras"
+      });
+      logs.push(`[PEDIDO-MONITOR] Pedido ${numPedidoSmartPed} registrado para monitoramento.`);
+    } catch (monErr: any) {
+      console.error(`[PEDIDO-MONITOR] Erro ao registrar pedido ${numPedidoSmartPed}:`, monErr.message);
+    }
+
     // NÃO confirmar encomendas aqui — aguardar retorno do SmartPed
-    // Confirmação agora é feita pelo frontend após poll retornar status=faturado
+    // Confirmação agora é feita pelo job de monitoramento server-side
   } catch (err: any) {
     console.error("Erro no faturamento do servidor:", err);
     logs.push(`[ERRO FATURAMENTO] Erro interno: ${err.message}`);
@@ -7617,7 +7657,7 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
     const createdAtMap = new Map<string, string>();
     for (const it of itensTurso) {
       const key = `${it.num_pedido}_${it.ean}_${it.cod_dist}`;
-      if (it.created_at) createdAtMap.set(key, it.created_at);
+      if (it.faturado_at || it.created_at) createdAtMap.set(key, it.faturado_at || it.created_at);
     }
 
     let itensConfirmados: any[] = [];
@@ -7711,27 +7751,8 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
       };
     });
 
-    // Salvar itens confirmados (faturados) no Turso para histÃ³rico permanente
-    const itensFaturados = resultadoFinal.filter(it => it.status === "faturado");
-    if (itensFaturados.length > 0) {
-      logs.push(`[TURSO] Salvando ${itensFaturados.length} itens confirmados no histÃ³rico...`);
-      await saveItensConfirmadosBatch(itensFaturados.map(it => ({
-        numPedido: String(it.numPedido),
-        ean: it.ean,
-        descricao: it.descricaoSmartped || it.nome || "",
-        laboratorio: "",
-        codDist: it.codDist,
-        nomeDist: it.distribuidora || "",
-        qtdSolicitada: it.quantSolicitada || 0,
-        qtdFaturada: it.quantFaturada || 0,
-        precoLiquido: it.precoLiquido || 0,
-        status: it.status,
-        motivo: it.motivo || "",
-        cnpj: apiCnpj,
-        dataConfirmacao: finalDataFim
-      })));
-      logs.push(`[TURSO] Itens confirmados salvos com sucesso.`);
-    }
+    // Escrita de itens_confirmados agora é feita pelo job de monitoramento server-side (pedidos_monitorados)
+    // Este endpoint é só leitura/exibição — NÃO gravar mais aqui
 
     // Combinar resultados: Turso (histórico) + API (tempo real)
     // Evitar duplicatas usando chave: numPedido + ean + codDist
@@ -7757,13 +7778,13 @@ app.post("/api/itens-confirmados-do-dia", async (req, res) => {
         numPedido: it.num_pedido,
         descricaoSmartped: it.descricao,
         nome: it.descricao,
-        dataProcessamento: it.created_at,
+        dataProcessamento: it.faturado_at || it.created_at,
         fonte: "turso"
       }))
     ];
 
     logs.push(`[RESUMO] ${resultadoFinal.length} da API + ${itensTursoNovos.length} do Turso = ${resultadoCombinado.length} itens únicos.`);
-    console.log(`[ITENS CONFIRMADOS] ${resultadoFinal.length} da API + ${itensTursoNovos.length} do Turso = ${resultadoCombinado.length} itens únicos. Faturados salvos: ${itensFaturados.length}`);
+    console.log(`[ITENS CONFIRMADOS] ${resultadoFinal.length} da API + ${itensTursoNovos.length} do Turso = ${resultadoCombinado.length} itens únicos.`);
 
     res.json({ itens: resultadoCombinado, logs });
   } catch (err: any) {
@@ -8013,6 +8034,86 @@ app.post("/api/pedido-retorno", async (req, res) => {
   } catch (err: any) {
     console.error("Erro ao consultar retorno:", err);
     res.status(500).json({ error: "Erro interno do servidor ao consultar retorno: " + err.message });
+  }
+});
+
+// ---- Endpoints de Pedidos Monitorados ----
+
+app.get("/api/pedidos-monitorados", async (req, res) => {
+  try {
+    const { getPedidosMonitorando } = await import("./server/database");
+    let pedidos = await getPedidosMonitorando();
+    // Filtrar por CNPJ se fornecido
+    const cnpjFilter = req.query.cnpj ? String(req.query.cnpj).replace(/\D/g, "") : null;
+    if (cnpjFilter) {
+      pedidos = pedidos.filter((p: any) => (p.cnpj || "").replace(/\D/g, "") === cnpjFilter);
+    }
+    const resultado = pedidos.map((p: any) => {
+      const items = JSON.parse(p.items_faturados || "[]");
+      const totalItens = items.length;
+      return {
+        numPedido: p.num_pedido,
+        cnpj: p.cnpj,
+        baseDistName: p.base_dist_name,
+        status: p.status,
+        totalItens,
+        lastCheckedAt: p.last_checked_at,
+        createdAt: p.created_at,
+        updatedAt: p.updated_at
+      };
+    });
+    res.json({ sucesso: true, pedidos: resultado });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/pedidos-monitorados/:numPedido/forcar-verificacao", async (req, res) => {
+  try {
+    const { numPedido } = req.params;
+    const { getDb, USE_TURSO } = await import("./server/database");
+    const d = getDb();
+    if (!d) return res.status(500).json({ error: "Banco indisponivel" });
+
+    let rows: any[];
+    const sql = `SELECT * FROM pedidos_monitorados WHERE num_pedido = ? AND status = 'monitorando'`;
+    if (USE_TURSO) { rows = await d.all(sql, numPedido); } else { rows = d.prepare(sql).all(numPedido); }
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: "Pedido nao encontrado ou nao esta sendo monitorado." });
+    }
+
+    const { checkPedidoReturn } = await import("./server/pedido-monitor");
+    const { updatePedidoMonitoradoLastChecked, updatePedidoMonitoradoStatus } = await import("./server/database");
+
+    // Chamar checkPedidoReturn DIRETO neste pedido (não checkAllMonitoredPedidos que pula se <10min)
+    const resultado = await checkPedidoReturn(rows[0]);
+
+    for (const log of resultado.logs) console.log(log);
+
+    // Atualizar last_checked_at AGORA (depois da verificação, não antes)
+    await updatePedidoMonitoradoLastChecked(numPedido);
+
+    if (resultado.done) {
+      await updatePedidoMonitoradoStatus(numPedido, "concluido");
+    }
+
+    // Retornar estado atualizado
+    if (USE_TURSO) { rows = await d.all(sql, numPedido); } else { rows = d.prepare(sql).all(numPedido); }
+    res.json({ sucesso: true, resultado: resultado.logs, done: resultado.done, pedido: rows?.[0] || null });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/pedidos-monitorados/:numPedido/encerrar", async (req, res) => {
+  try {
+    const { numPedido } = req.params;
+    const { updatePedidoMonitoradoStatus } = await import("./server/database");
+    await updatePedidoMonitoradoStatus(numPedido, "encerrado_manual");
+    res.json({ sucesso: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -8473,7 +8574,7 @@ app.post("/api/search-products", async (req, res) => {
                 Token: actualToken,
                 parametros: {
                   CnpjCLi: apiCnpj,
-                  Texto: tryQuery.split(/\s+/).filter(Boolean).join("%")
+                  Texto: "%" + tryQuery.split(/\s+/).filter(w => w && !PHARMA_SALT_STOPWORDS.includes(w)).join("%")
                 }
               })
             });

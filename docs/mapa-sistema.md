@@ -201,17 +201,43 @@
 | `origem` | TEXT | DEFAULT 'manual' |
 | `id_encomenda` | TEXT | |
 | `entrada_confirmada` | INTEGER | DEFAULT 0 |
+| `faturado_at` | TEXT | |
 | `created_at` | TEXT | DEFAULT datetime('now') |
 | `updated_at` | TEXT | DEFAULT datetime('now') |
 
 - **UNIQUE:** `(num_pedido, ean, cod_dist)`
 - **Propósito:** Histórico de itens confirmados/faturados no retorno SmartPed
 - **Quem escreve:** `saveItemConfirmado` (database.ts:436), `saveItensConfirmadosBatch` (database.ts:456)
-- **Quem escreve (via server.ts):** `/api/pedido-retorno` (server.ts:~7508, ~7796) — salva itens no momento real do faturamento
+- **Quem escreve (via server.ts):** Job `server/pedido-monitor.ts` (via `checkPedidoReturn`) — salva itens no momento real do faturamento. `/api/pedido-retorno` (server.ts:~7796) — salva itens do retorno quando consultado. **NOTA:** `/api/itens-confirmados-do-dia` NÃO grava mais (era leitura/exibição).
 - **Quem lê:** `getItensConfirmados` (database.ts:486), `getProfarmaFaturadosPendentes` (database.ts:513), `getFaturadosRecentes` (database.ts) — detecção de recompra duplicada, `getFaturadosPendentesReconciliacao` (database.ts) — monitoramento background, `getItensAtrasados` (database.ts) — alerta de atraso
 - **Purge:** `purgeOldData` (database.ts:601)
 - **⚠️ Não é webhook externo:** O Profarma entra como resposta da API SmartPed, que este servidor então persiste. Não confundir "dado que veio de um distribuidor terceiro" com "distribuidor terceiro escreve no nosso banco".
 - **Colunas `origem`/`id_encomenda`:** Presentes no CREATE TABLE e nas migrações (bug #27 corrigido).
+- **Coluna `faturado_at`:** Fix #42 — setada só na transição pra `status='faturado'` (ON CONFLICT preserva se já existia). Backfill pra itens antigos (`faturado_at = created_at WHERE status='faturado'`). Usada em `/api/itens-confirmados-do-dia` pra exibir data/hora real do faturamento.
+
+### `pedidos_monitorados`
+
+| Coluna | Tipo | Constraints |
+|--------|------|-------------|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| `num_pedido` | TEXT | |
+| `cnpj` | TEXT | |
+| `token` | TEXT | |
+| `items_faturados` | TEXT | JSON serializado |
+| `encomendas_pendentes` | TEXT | JSON serializado |
+| `related_groups` | TEXT | JSON array |
+| `base_dist_name` | TEXT | |
+| `status` | TEXT | DEFAULT 'monitorando' |
+| `last_checked_at` | TEXT | |
+| `created_at` | TEXT | DEFAULT datetime('now') |
+| `updated_at` | TEXT | DEFAULT datetime('now') |
+
+- **Índices:** `(status)`, `(num_pedido)`
+- **Propósito:** Monitoramento server-side de retorno de pedido. Job em background verifica a cada 10min se o pedido foi finalizado pela SmartPed, salva itens em `itens_confirmados` e confirma encomendas. Sobrevive ao fechamento da modal de faturamento.
+- **Quem escreve:** `/api/faturar` (server.ts:~7443) — insere após envio bem-sucedido; `updatePedidoMonitoradoLastChecked`/`updatePedidoMonitoradoStatus` (database.ts) — atualizado pelo scheduler.
+- **Quem lê:** `checkAllMonitoredPedidos` (server/pedido-monitor.ts) — scheduler a cada 1min; `GET /api/pedidos-monitorados` — painel frontend; `POST /api/pedidos-monitorados/:numPedido/forcar-verificacao` — verificação manual.
+- **Status possíveis:** `monitorando` (ativo, verificando), `concluido` (todos distribuidores finalizados), `encerrado_manual` (usuário parou o monitoramento).
+- **Purge:** Não implementado — linhas ficam pra auditoria. Pode ser purgada periodicamente se necessário.
 
 ### `itens_manuais`
 

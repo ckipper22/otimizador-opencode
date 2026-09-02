@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect } from "react";
+import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { EanEyeButton } from "./EanEyeButton";
 import { EanPromoButton } from "./EanPromoButton";
 import { ObservationBell } from "./ObservationBell";
@@ -34,11 +34,173 @@ import { motion, AnimatePresence } from "motion/react";
 import { InterchangeabilityModal } from "./InterchangeabilityModal";
 import { WhatsAppOrderModal } from "./WhatsAppOrderModal";
 import { ConditionSelector } from "./ConditionSelector";
-import { useProfarmaAlertCheck } from "../hooks/useProfarmaAlertCheck";
 
 function stripHtml(str: string | undefined | null): string {
   if (!str) return "";
   return str.replace(/<\/?[^>]+(>|$)/g, "").trim();
+}
+
+function QtyLimitBadges({ item, compact = false }: { item: SwapReportItem; compact?: boolean }) {
+  const itemQtd = item.qtd;
+  const cxAlerta = !!(item.cx && item.cx > 1 && (itemQtd % item.cx !== 0));
+  const qtdMinAlerta = !!(item.qtdMin && item.qtdMin > 0 && (itemQtd < item.qtdMin));
+  const qtdMaxAlerta = !!(item.qtdMax && item.qtdMax > 0 && (itemQtd > item.qtdMax));
+
+  if (!(item.cx && item.cx > 1) && !(item.qtdMin && item.qtdMin > 0) && !(item.qtdMax && item.qtdMax > 0)) {
+    return null;
+  }
+
+  return (
+    <div className={`flex flex-wrap items-center gap-1.5 ${compact ? "mt-1" : "mt-1.5 pt-1.5 border-t border-dotted border-gray-300"}`}>
+      {item.cx && item.cx > 1 && (
+        <span className={`text-[8.5px] px-1.5 py-0.5 uppercase tracking-wide font-black flex items-center gap-1 ${
+          cxAlerta
+            ? "bg-amber-100 text-amber-950 border border-amber-400"
+            : "bg-gray-100 text-gray-700 border border-gray-200"
+        }`}>
+          Caixa: {item.cx} un
+          {cxAlerta && <span className="font-sans font-semibold text-[8px] text-amber-700">(Não é múltiplo!)</span>}
+        </span>
+      )}
+      {item.qtdMin && item.qtdMin > 0 && (
+        <span className={`text-[10px] px-2.5 py-1 uppercase tracking-wide font-black flex items-center gap-1.5 rounded-sm border-2 ${
+          qtdMinAlerta
+            ? "bg-red-600 text-white border-red-800 animate-pulse shadow-sm"
+            : "bg-emerald-100 text-emerald-950 border-emerald-400"
+        }`}>
+          ⚠️ MÍNIMO COMERCIAL: {item.qtdMin} un
+          {qtdMinAlerta ? (
+            <span className="font-mono font-black text-[10px] underline decoration-wavy ml-1">
+              (ATENÇÃO: FALTA {item.qtdMin - itemQtd} UN!)
+            </span>
+          ) : (
+            <span className="font-sans font-bold text-[9px] text-emerald-700 ml-1">
+              (Atingido ✓)
+            </span>
+          )}
+        </span>
+      )}
+      {item.qtdMax && item.qtdMax > 0 && (
+        <span className={`text-[8.5px] px-1.5 py-0.5 uppercase tracking-wide font-black flex items-center gap-1 ${
+          qtdMaxAlerta
+            ? "bg-orange-100 text-orange-950 border border-orange-400"
+            : "bg-blue-100 text-blue-900 border border-blue-200"
+        }`}>
+          Limite Promo: {item.qtdMax} un
+          {qtdMaxAlerta && <span className="font-sans font-semibold text-[8px] text-orange-700">(Excedeu {item.qtdMax} un)</span>}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ProfarmaAlertInline({
+  item,
+  isDisabled,
+  profarmaDecisions,
+  setProfarmaDecisions,
+  onToggleDisabled,
+  isEanProfarmaAlerted,
+  getProfarmaOrderDate,
+  getFaturadoDistribuidora,
+  compact = false,
+}: {
+  item: SwapReportItem;
+  isDisabled: boolean;
+  profarmaDecisions: Record<string, 'keep' | 'exclude'>;
+  setProfarmaDecisions: React.Dispatch<React.SetStateAction<Record<string, 'keep' | 'exclude'>>>;
+  onToggleDisabled: (codInterno: string) => void;
+  isEanProfarmaAlerted: (rawEan: string) => boolean;
+  getProfarmaOrderDate: (rawEan: string) => string | undefined;
+  getFaturadoDistribuidora: (rawEan: string) => string | undefined;
+  compact?: boolean;
+}) {
+  const isProfarmaAlert = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
+  if (!isProfarmaAlert) return null;
+
+  const p = compact ? "mt-1 p-1.5" : "mt-2.5 p-3";
+  const text = compact ? "text-[9px]" : "text-xs";
+  const iconSize = compact ? "w-3.5 h-3.5" : "w-5 h-5";
+
+  if (isDisabled) {
+    return (
+      <div className={`${p} flex items-center gap-1.5 ${text} text-gray-500 italic`}>
+        <span>⚠️ Item excluído do lote por alerta de recompra duplicada.</span>
+        <button
+          onClick={() => onToggleDisabled(item.codInterno)}
+          className="text-blue-600 hover:underline font-bold font-sans text-[10px] uppercase ml-1"
+        >
+          Reincluir no Lote
+        </button>
+      </div>
+    );
+  }
+
+  if (profarmaDecisions[item.codInterno] === 'keep') {
+    return (
+      <div className={`${p} rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-950 font-sans shadow-sm flex items-center justify-between gap-2`}>
+        <div className="flex items-center gap-2">
+          <ShieldCheck className={`${compact ? "w-3 h-3" : "w-4 h-4"} text-emerald-600 shrink-0`} />
+          <span className={`${text} font-semibold`}>
+            ✓ Usuário optou por manter a recompra deste produto.
+          </span>
+        </div>
+        <button
+          onClick={() => {
+            setProfarmaDecisions(prev => {
+              const copy = { ...prev };
+              delete copy[item.codInterno];
+              return copy;
+            });
+          }}
+          className="text-[10px] underline text-emerald-700 hover:text-emerald-900 cursor-pointer"
+        >
+          Desfazer Decisão
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`${p} rounded-lg border border-orange-200 bg-orange-50/90 text-orange-950 font-sans shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 animate-pulse`}>
+      <div className="flex items-start gap-2">
+        <AlertTriangle className={`${iconSize} text-orange-600 shrink-0 mt-0.5`} />
+        <div>
+          <p className={`${text} font-bold uppercase tracking-wider text-orange-800 leading-none`}>
+            Alerta de Recompra Duplicada
+          </p>
+          <p className={`${compact ? "text-[9px]" : "text-xs"} font-medium mt-0.5`}>
+            {(() => {
+              const orderDateRaw = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
+              const orderDate = orderDateRaw
+                ? new Date(orderDateRaw.replace(' ', 'T') + 'Z').toLocaleString('pt-BR', {
+                    timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short'
+                  })
+                : "";
+              const distName = getFaturadoDistribuidora(item.novoEan) || getFaturadoDistribuidora(item.originalEan) || "distribuidora";
+              return orderDate
+                ? `Este item foi faturado por ${distName} em ${orderDate}. Deseja manter no pedido ou excluir do lote para evitar duplicidade?`
+                : `Este item foi faturado por ${distName} recentemente. Deseja manter no pedido ou excluir do lote para evitar duplicidade?`;
+            })()}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <button
+          onClick={() => setProfarmaDecisions(prev => ({ ...prev, [item.codInterno]: 'keep' }))}
+          className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider rounded-md border border-orange-300 hover:bg-orange-100 transition-colors bg-white text-orange-800 cursor-pointer shadow-sm"
+        >
+          Manter no Pedido
+        </button>
+        <button
+          onClick={() => onToggleDisabled(item.codInterno)}
+          className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider rounded-md bg-orange-600 hover:bg-orange-700 text-white transition-colors cursor-pointer shadow-sm"
+        >
+          Excluir do Lote
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function getLabBadge(labName: string) {
@@ -89,6 +251,9 @@ interface SwapsTableProps {
   onSelectCondition?: (codInterno: string, selectedAlt: any) => void;
   dailyOrders?: any[];
   config?: OptimizerConfig;
+  isEanProfarmaAlerted?: (rawEan: string) => boolean;
+  getProfarmaOrderDate?: (rawEan: string) => string | undefined;
+  getFaturadoDistribuidora?: (rawEan: string) => string | undefined;
 }
 
 export default function SwapsTable({ 
@@ -115,7 +280,10 @@ export default function SwapsTable({
   onReopenModal,
   onSelectCondition,
   dailyOrders = [],
-  config
+  config,
+  isEanProfarmaAlerted = () => false,
+  getProfarmaOrderDate = () => undefined,
+  getFaturadoDistribuidora = () => undefined,
 }: SwapsTableProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [isFloatingSearchOpen, setIsFloatingSearchOpen] = useState(false);
@@ -157,6 +325,9 @@ export default function SwapsTable({
     return ruleMatchesMap.get(activeWhatsAppRules[0]?.id || "") || [];
   }, [ruleMatchesMap, activeWhatsAppRules]);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+
+  // Cache de promises de busca de alternativas em tempo real — compartilhado entre as 2 instâncias de ConditionSelector
+  const liveAlternativesCacheRef = useRef<Map<string, Promise<NonNullable<SwapReportItem["alternatives"]>>>>(new Map());
   const [isTrackerOpen, setIsTrackerOpen] = useState(false);
   const [trackerQuery, setTrackerQuery] = useState("");
   const [highValueThreshold, setHighValueThreshold] = useState<number>(() => {
@@ -239,12 +410,6 @@ export default function SwapsTable({
     }
     return cleaned;
   };
-
-  const reportEans = useMemo(
-    () => Array.from(new Set(report.flatMap((item: any) => [item.originalEan, item.novoEan]).filter(Boolean))),
-    [report]
-  );
-  const { isEanProfarmaAlerted, getProfarmaOrderDate, getFaturadoDistribuidora } = useProfarmaAlertCheck(config?.cnpj || "", config?.alertaProfarma48h !== false, reportEans);
 
   const handleThresholdChange = (val: number) => {
     const safeVal = Math.max(0, isNaN(val) ? 0 : val);
@@ -330,9 +495,9 @@ export default function SwapsTable({
     for (const item of processedReport) {
       // Reclassificar itens faturados sem entrada confirmada
       const isAguardando = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
-      const distFaturado = isAguardando ? (getFaturadoDistribuidora(item.novoEan) || getFaturadoDistribuidora(item.originalEan) || "Distribuidora") : null;
+      const distFaturado = isAguardando ? (getFaturadoDistribuidora(item.novoEan) || getFaturadoDistribuidora(item.originalEan)) : null;
       // TODO: Carlos — definir texto final do grupo (ex: "Aguardando Chegar {dist}" ou nome genérico)
-      const dist = distFaturado ? `Aguardando Chegar ${distFaturado}` : (item.distribuidora || "Não Encontrados");
+      const dist = isAguardando ? (distFaturado ? `Aguardando Chegar ${distFaturado}` : "Aguardando Chegar") : (item.distribuidora || "Não Encontrados");
       const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque" || dist.startsWith("Aguardando Chegar") || dist === "Descartado — Já Faturado";
       const groupKey = isVirtual 
         ? dist 
@@ -397,7 +562,7 @@ export default function SwapsTable({
       
       return 0;
     });
-  }, [processedReport, disabledItemCodes, distributorMinimums, distributorOrder]);
+  }, [processedReport, disabledItemCodes, distributorMinimums, distributorOrder, isEanProfarmaAlerted, getFaturadoDistribuidora]);
 
   // Automatically expand/collapse groups when "Apenas Alertas/Pendências" filter is toggled
   useEffect(() => {
@@ -652,6 +817,18 @@ export default function SwapsTable({
                             </div>
                           )}
                            <ObservationBell observacao={item.avisoNovo} />
+                           <ProfarmaAlertInline
+                             item={item}
+                             isDisabled={disabledItemCodes.has(item.codInterno)}
+                             profarmaDecisions={profarmaDecisions}
+                             setProfarmaDecisions={setProfarmaDecisions}
+                             onToggleDisabled={onToggleDisabled}
+                             isEanProfarmaAlerted={isEanProfarmaAlerted}
+                             getProfarmaOrderDate={getProfarmaOrderDate}
+                             getFaturadoDistribuidora={getFaturadoDistribuidora}
+                             compact
+                            />
+                            <QtyLimitBadges item={item} compact />
                         </div>
                       </td>
 
@@ -716,7 +893,7 @@ export default function SwapsTable({
                           console.log(`[SWAPS-TABLE] RENDER EAN=${item.originalEan || item.novoEan} "${(item.originalDescricao || "").substring(0, 30)}" codInterno=${item.codInterno} | alternatives=${altsCount} | novoEan=${item.novoEan} | config=${!!config}`);
                           return null;
                         })()}
-                        <ConditionSelector item={item} onSelectCondition={onSelectCondition} compact config={config ? { token: config.token, cnpj: config.cnpj } : undefined} />
+                        <ConditionSelector item={item} onSelectCondition={onSelectCondition} compact config={config ? { token: config.token, cnpj: config.cnpj } : undefined} liveAlternativesCache={liveAlternativesCacheRef.current} />
                       </td>
                     </tr>
                   );
@@ -1305,7 +1482,7 @@ export default function SwapsTable({
                                   });
                                   text += `----------------------------------\n`;
                                   text += `*Total do Pedido: R$ ${group.totalValue.toFixed(2).replace(".", ",")}*\n`;
-                                  text += `_Gerado automaticamente pelo Otimizador SmartPed_`;
+                                   text += `_Gerado automaticamente pelo Otimizador de Pedidos_`;
                                   navigator.clipboard.writeText(text)
                                     .then(() => alert(`📋 Pedido copiado! Cole (CTRL+V) no WhatsApp.`))
                                     .catch(() => alert("Erro ao copiar. Copie o texto manualmente."));
@@ -1477,13 +1654,7 @@ export default function SwapsTable({
                           const isTransferred = item.motivoAcao && (item.motivoAcao.startsWith('Dispersado') || item.motivoAcao.startsWith('Puxado'));
                           
                           const isProfarmaAlert = isEanProfarmaAlerted(item.novoEan) || isEanProfarmaAlerted(item.originalEan);
-                          
-                          const itemQtd = item.qtd;
-                          const cxAlerta = !!(item.cx && item.cx > 1 && (itemQtd % item.cx !== 0));
-                          const qtdMinAlerta = !!(item.qtdMin && item.qtdMin > 0 && (itemQtd < item.qtdMin));
-                          const qtdMaxAlerta = !!(item.qtdMax && item.qtdMax > 0 && (itemQtd > item.qtdMax));
 
-                                                    
                           return (
                             <tr 
                               key={item.codInterno} 
@@ -1631,54 +1802,8 @@ export default function SwapsTable({
                                     </div>
                                   )}
 <ObservationBell observacao={item.avisoNovo} />
+                                     <QtyLimitBadges item={item} />
 
-                                   {(() => {
-                                     if ((item.cx && item.cx > 1) || (item.qtdMin && item.qtdMin > 0) || (item.qtdMax && item.qtdMax > 0)) {
-                                       return (
-                                         <div className="flex flex-wrap items-center gap-1.5 mt-1.5 pt-1.5 border-t border-dotted border-gray-300">
-                                           {item.cx && item.cx > 1 && (
-                                             <span className={`text-[8.5px] px-1.5 py-0.5 uppercase tracking-wide font-black flex items-center gap-1 ${
-                                               cxAlerta 
-                                                 ? "bg-amber-100 text-amber-950 border border-amber-400" 
-                                                 : "bg-gray-100 text-gray-700 border border-gray-200"
-                                             }`}>
-                                               Caixa: {item.cx} un 
-                                               {cxAlerta && <span className="font-sans font-semibold text-[8px] text-amber-700">(Não é múltiplo!)</span>}
-                                             </span>
-                                           )}
-                                           {item.qtdMin && item.qtdMin > 0 && (
-                                             <span className={`text-[10px] px-2.5 py-1 uppercase tracking-wide font-black flex items-center gap-1.5 rounded-sm border-2 ${
-                                               qtdMinAlerta 
-                                                 ? "bg-red-600 text-white border-red-800 animate-pulse shadow-sm" 
-                                                 : "bg-emerald-100 text-emerald-950 border-emerald-400"
-                                             }`}>
-                                               ⚠️ MÍNIMO COMERCIAL: {item.qtdMin} un
-                                               {qtdMinAlerta ? (
-                                                 <span className="font-mono font-black text-[10px] underline decoration-wavy ml-1">
-                                                   (ATENÇÃO: FALTA {item.qtdMin - itemQtd} UN!)
-                                                 </span>
-                                               ) : (
-                                                 <span className="font-sans font-bold text-[9px] text-emerald-700 ml-1">
-                                                   (Atingido ✓)
-                                                 </span>
-                                               )}
-                                             </span>
-                                           )}
-                                           {item.qtdMax && item.qtdMax > 0 && (
-                                             <span className={`text-[8.5px] px-1.5 py-0.5 uppercase tracking-wide font-black flex items-center gap-1 ${
-                                               qtdMaxAlerta 
-                                                 ? "bg-orange-100 text-orange-950 border border-orange-400" 
-                                                 : "bg-blue-100 text-blue-900 border border-blue-200"
-                                             }`}>
-                                               Limite Promo: {item.qtdMax} un
-                                               {qtdMaxAlerta && <span className="font-sans font-semibold text-[8px] text-orange-700">(Excedeu {item.qtdMax} un)</span>}
-                                             </span>
-                                           )}
-                                         </div>
-                                       );
-                                     }
-                                     return null;
-                                   })()}
 
                                      {/* Comercial condition selection */}
                                      {(() => {
@@ -1686,91 +1811,19 @@ export default function SwapsTable({
                                        console.log(`[SWAPS-TABLE-DETAIL] RENDER EAN=${item.originalEan || item.novoEan} codInterno=${item.codInterno} | alternatives=${altsCount} | isDisregarded=${!!(item as any).isDisregarded}`);
                                        return null;
                                      })()}
-                                     <ConditionSelector item={item} onSelectCondition={onSelectCondition} config={config ? { token: config.token, cnpj: config.cnpj } : undefined} />
+                                      <ConditionSelector item={item} onSelectCondition={onSelectCondition} config={config ? { token: config.token, cnpj: config.cnpj } : undefined} liveAlternativesCache={liveAlternativesCacheRef.current} />
 
-                                    {/* Alerta de Duplicidade */}
-                                    {isProfarmaAlert && !isDisabled && profarmaDecisions[item.codInterno] !== 'keep' && (
-                                      <div className="mt-2.5 p-3 rounded-lg border border-orange-200 bg-orange-50/90 text-orange-950 font-sans shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-pulse">
-                                        <div className="flex items-start gap-2.5">
-                                          <AlertTriangle className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
-                                           <div>
-                                             <p className="text-xs font-bold uppercase tracking-wider text-orange-800 leading-none">
-                                               {/* TODO: Carlos — definir texto final do alerta (ex: "Alerta de Recompra Duplicada") */}
-                                               Alerta de Recompra Duplicada
-                                             </p>
-                                             <p className="text-xs font-medium mt-1">
-                                               {(() => {
-                                                 const orderDateRaw = getProfarmaOrderDate(item.novoEan) || getProfarmaOrderDate(item.originalEan) || "";
-                                                 const orderDate = orderDateRaw
-                                                   ? new Date(orderDateRaw.replace(' ', 'T') + 'Z').toLocaleString('pt-BR', {
-                                                       timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short'
-                                                     })
-                                                   : "";
-                                                 const distName = getFaturadoDistribuidora(item.novoEan) || getFaturadoDistribuidora(item.originalEan) || "distribuidora";
-                                                 return orderDate
-                                                   ? `Este item foi faturado por ${distName} em ${orderDate}. Deseja manter no pedido ou excluir do lote para evitar duplicidade?`
-                                                   : `Este item foi faturado por ${distName} recentemente. Deseja manter no pedido ou excluir do lote para evitar duplicidade?`;
-                                               })()}
-                                             </p>
-                                          </div>
-                                       </div>
-                                       <div className="flex items-center gap-2 shrink-0">
-                                         <button
-                                           onClick={() => {
-                                             setProfarmaDecisions(prev => ({ ...prev, [item.codInterno]: 'keep' }));
-                                           }}
-                                           className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider rounded-md border border-orange-300 hover:bg-orange-100 transition-colors bg-white text-orange-800 cursor-pointer shadow-sm"
-                                         >
-                                           Manter no Pedido
-                                         </button>
-                                         <button
-                                           onClick={() => {
-                                             onToggleDisabled(item.codInterno);
-                                           }}
-                                           className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider rounded-md bg-orange-600 hover:bg-orange-700 text-white transition-colors cursor-pointer shadow-sm"
-                                         >
-                                           Excluir do Lote
-                                         </button>
-                                       </div>
-                                     </div>
-                                   )}
+                                     <ProfarmaAlertInline
+                                       item={item}
+                                       isDisabled={isDisabled}
+                                       profarmaDecisions={profarmaDecisions}
+                                       setProfarmaDecisions={setProfarmaDecisions}
+                                       onToggleDisabled={onToggleDisabled}
+                                       isEanProfarmaAlerted={isEanProfarmaAlerted}
+                                       getProfarmaOrderDate={getProfarmaOrderDate}
+                                       getFaturadoDistribuidora={getFaturadoDistribuidora}
+                                     />
 
-                                   {isProfarmaAlert && !isDisabled && profarmaDecisions[item.codInterno] === 'keep' && (
-                                     <div className="mt-2.5 p-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-950 font-sans shadow-sm flex items-center justify-between gap-2">
-                                       <div className="flex items-center gap-2">
-                                         <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                                         <span className="text-xs font-semibold">
-                                           ✓ Usuário optou por manter a recompra deste produto.
-                                         </span>
-                                       </div>
-                                       <button
-                                         onClick={() => {
-                                           setProfarmaDecisions(prev => {
-                                             const copy = { ...prev };
-                                             delete copy[item.codInterno];
-                                             return copy;
-                                           });
-                                         }}
-                                         className="text-[10px] underline text-emerald-700 hover:text-emerald-900 cursor-pointer"
-                                       >
-                                         Desfazer Decisão
-                                       </button>
-                                     </div>
-                                   )}
-
-                                   {isProfarmaAlert && isDisabled && (
-                                     <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-gray-500 italic">
-                                        <span>⚠️ Item excluído do lote por alerta de recompra duplicada.</span>
-                                       <button
-                                         onClick={() => {
-                                           onToggleDisabled(item.codInterno);
-                                         }}
-                                         className="text-blue-600 hover:underline font-bold font-sans text-[10px] uppercase ml-1"
-                                       >
-                                         Reincluir no Lote
-                                       </button>
-                                     </div>
-                                   )}
 
                                 </div>
                               </td>
@@ -1891,7 +1944,7 @@ export default function SwapsTable({
                                       onUpdateQty(item.codInterno, qty);
                                     }}
                                     className={`font-mono font-bold text-center focus:outline-none focus:ring-2 transition-all duration-300 ${
-                                      qtdMinAlerta 
+                                      !!(item.qtdMin && item.qtdMin > 0 && (item.qtd < item.qtdMin)) 
                                         ? "bg-red-50 border-2 border-red-500 text-red-900 focus:ring-red-500 animate-pulse text-sm py-1.5 w-20" 
                                         : "w-16 bg-white border border-[#141414] px-1 py-0.5 text-[11px] text-[#141414] focus:ring-emerald-500"
                                     }`}

@@ -291,3 +291,54 @@ As tabelas `order_items`, `itens_confirmados` e `itens_manuais` possuem as colun
 - **CORS:** O proxy evita problemas de CORS entre navegadores e o servico Encomendas.
 - **Rastreabilidade:** Cada item importado salva `idEncomenda` no Turso (tabela `itens_manuais`), permitindo cruzar dados entre sistemas.
 - **Pendência:** Fornecedores externos (`external_suppliers`) NÃO competem no fluxo de encomendas (`/api/encomendas/buscar-ofertas-batch`). Decisão pra outra sessão.
+
+---
+
+## 9. Monitoramento Server-Side de Retorno (pedidos_monitorados)
+
+### Problema que resolve
+
+O polling de retorno (`handleCheckOrderReturn` em `useBilling.ts`) só roda enquanto a modal de faturamento está aberta. Fechar a modal mata o polling — encomendas não são confirmadas se a modal fechar antes do retorno completo. Além disso, `/api/itens-confirmados-do-dia` gravava `itens_confirmados` toda vez que a tela era aberta, mas isso capturava "quando alguém abriu a tela", não "quando faturou de verdade".
+
+### Solução
+
+Job server-side persistido em `server/pedido-monitor.ts` que sobrevive ao fechamento da modal e ao restart do servidor.
+
+### Quando começa
+
+Após envio bem-sucedido em `/api/faturar` (server.ts:~7443). O endpoint insere uma linha em `pedidos_monitorados` com status `monitorando`, armazenando `itemsFaturados`, `encomendasPendentes`, `relatedGroups` e `baseDistName` como JSON serializado.
+
+### Intervalo de verificação
+
+- **Scheduler:** `setInterval` a cada 1 minuto (server.ts:~178)
+- **Por pedido:** age a cada 10 minutos (`last_checked_at` check)
+- **Forçar agora:** `POST /api/pedidos-monitorados/:numPedido/forcar-verificacao` — ignora o intervalo de 10min, chama `checkPedidoReturn` direto
+
+### O que acontece em cada cenário
+
+| Cenário | Ação |
+|---------|------|
+| Distribuidor com Status !== 3 | Aguarda próxima verificação |
+| Distribuidor Status === 3, pelo menos 1 item faturado | Salva em `itens_confirmados` (via `saveItensConfirmadosBatch`), confirma encomenda (`ENCOMENDAS_API_URL` com `x-api-key`) |
+| Distribuidor Status === 3, nenhum item faturado | Salva em `itens_confirmados` como `nao_confirmado`, confirma encomenda como `nao_atendido` com motivo |
+| Todos distribuidores finalizados | Marca `status='concluido'` em `pedidos_monitorados` |
+
+### Confirmação de encomendas
+
+O job chama diretamente `ENCOMENDAS_API_URL/api/integracao/encomendas/confirmar-pedido` com header `x-api-key: ENCOMENDAS_API_KEY` (mesmas env vars de server.ts). Não usa o proxy interno do servidor — evita overhead de HTTP round-trip desnecessário.
+
+### Painel de intervenção manual
+
+`PedidosMonitoradosPanel.tsx` — componente que lista pedidos com `status='monitorando'`, botões "Verificar Agora" e "Encerrar Monitoramento". Acessível na aba "Otimizador de Pedidos" abaixo do UploadBox.
+
+### Endpoints
+
+| Endpoint | Método | Descrição |
+|----------|--------|-----------|
+| `/api/pedidos-monitorados` | GET | Lista pedidos monitorados (filtro opcional `?cnpj=`) |
+| `/api/pedidos-monitorados/:numPedido/forcar-verificacao` | POST | Verifica retorno imediatamente |
+| `/api/pedidos-monitorados/:numPedido/encerrar` | POST | Para monitoramento (status `encerrado_manual`) |
+
+### Correção importante (FIX 2)
+
+O endpoint de confirmação de encomendas em `pedido-monitor.ts` agora usa `ENCOMENDAS_API_URL` + `x-api-key: ENCOMENDAS_API_KEY` (lido direto de `process.env`), NÃO `CONFIG.SMARTPED_PRODUCTION_URL`. A rota interna `/api/integracao/encomendas/confirmar-pedido` em server.ts é um proxy que faz a mesma coisa — o job a chama direto pra evitar round-trip.

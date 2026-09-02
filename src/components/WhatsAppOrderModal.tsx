@@ -105,7 +105,7 @@ export const WhatsAppOrderModal: React.FC<WhatsAppOrderModalProps> = ({
       message += `\n📝 *Observações:* ${orderNotes.trim()}\n`;
     }
 
-    message += `\n_Pedido gerado via Otimizador de Pedidos SmartPed_`;
+    message += `\n_Pedido gerado via Otimizador de Pedidos_`;
 
     return message;
   }, [activeItems, pharmacyName, config.cnpj, repName, totalBoxes, totalValue, orderNotes, titleText, hidePrices]);

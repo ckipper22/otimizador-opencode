@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 
 function cleanEan(e: string): string {
   if (!e) return "";
@@ -33,6 +33,10 @@ export function useProfarmaAlertCheck(
   const relevantEansSet = useMemo(
     () => new Set(relevantEans.map(cleanEan).filter(Boolean)),
     [relevantEans]
+  );
+  const relevantEansKey = useMemo(
+    () => Array.from(relevantEansSet).sort().join(","),
+    [relevantEansSet]
   );
   // Map ean → { dataFaturado, aliasTrier, codDist }
   const [faturadosMap, setFaturadosMap] = useState<Map<string, { dataFaturado: string; aliasTrier: string; codDist: number }>>(new Map());
@@ -70,7 +74,7 @@ export function useProfarmaAlertCheck(
       }
     })();
     return () => { cancelled = true; };
-  }, [cnpj, alertaProfarma48hEnabled, relevantEansSet]);
+  }, [cnpj, alertaProfarma48hEnabled, relevantEansKey]);
 
   // EANs com entrada confirmada via compras-historico (checagem secundária)
   const [confirmedEntries, setConfirmedEntries] = useState<Set<string>>(new Set());
@@ -152,23 +156,23 @@ export function useProfarmaAlertCheck(
   }, [faturadosMap, alertaProfarma48hEnabled]);
 
   /** true se o EAN está faturado sem entrada confirmada */
-  const isEanProfarmaAlerted = (rawEan: string): boolean => {
+  const isEanProfarmaAlerted = useCallback((rawEan: string): boolean => {
     if (!alertaProfarma48hEnabled) return false;
     const ean = cleanEan(rawEan);
     return faturadosMap.has(ean) && !confirmedEntries.has(ean);
-  };
+  }, [faturadosMap, confirmedEntries, alertaProfarma48hEnabled]);
 
   /** Retorna a data do faturamento (YYYY-MM-DD HH:MM:SS) ou undefined */
-  const getProfarmaOrderDate = (rawEan: string): string | undefined => {
+  const getProfarmaOrderDate = useCallback((rawEan: string): string | undefined => {
     const ean = cleanEan(rawEan);
     return faturadosMap.get(ean)?.dataFaturado;
-  };
+  }, [faturadosMap]);
 
   /** Retorna o alias Trier da distribuidora que faturou o EAN, ou undefined se não há alerta */
-  const getFaturadoDistribuidora = (rawEan: string): string | undefined => {
+  const getFaturadoDistribuidora = useCallback((rawEan: string): string | undefined => {
     const ean = cleanEan(rawEan);
     return faturadosMap.get(ean)?.aliasTrier;
-  };
+  }, [faturadosMap]);
 
   return {
     isEanProfarmaAlerted,

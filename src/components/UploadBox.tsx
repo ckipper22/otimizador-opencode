@@ -469,8 +469,8 @@ export default function UploadBox({
                   className="rounded text-indigo-600 focus:ring-indigo-500 bg-white border-slate-300 w-4 h-4 cursor-pointer"
                 />
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium text-slate-700 group-hover:text-slate-900">Avisar pedido repetido pra Profarma</span>
-                  <span className="text-xs text-slate-400">Se você já pediu esse produto pra Profarma há menos de 2 dias, o sistema avisa antes de pedir de novo — pra não duplicar o pedido por engano. Mas se esse pedido anterior já chegou e entrou no estoque, o aviso não aparece, porque aí não é duplicidade de verdade.</span>
+                  <span className="text-sm font-medium text-slate-700 group-hover:text-slate-900">Avisar pedido repetido pra distribuidora</span>
+                  <span className="text-xs text-slate-400">Se você já pediu esse produto pra mesma distribuidora há menos de 2 dias, o sistema avisa antes de pedir de novo — pra não duplicar o pedido por engano. Mas se esse pedido anterior já chegou e entrou no estoque, o aviso não aparece, porque aí não é duplicidade de verdade.</span>
                 </div>
               </label>
               <label className="flex items-center space-x-2.5 cursor-pointer group">

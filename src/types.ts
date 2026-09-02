@@ -63,7 +63,6 @@ export interface SwapReportItem {
   originalCodProdutoDist?: string;
   originalPrazo?: number;
   originalCodProduto?: string;
-  isProfarmaAlertAck?: boolean;
   alertaConfirmarQtd?: boolean;
   alternatives?: Array<{
     ean: string;
