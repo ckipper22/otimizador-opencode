@@ -338,6 +338,7 @@ export default function SwapsTable({
   const [showOnlyAlerts, setShowOnlyAlerts] = useState(false);
   const [hiddenAlerts, setHiddenAlerts] = useState<Record<string, boolean>>({});
   const [alertInputs, setAlertInputs] = useState<Record<string, number>>({});
+  const [qtyInputs, setQtyInputs] = useState<Record<string, string>>({});
 
   // Calcula dinamicamente o valor acumulado e mínimo de cada distribuidor/grupo
   const groupTotalsAndMins = useMemo(() => {
@@ -1939,11 +1940,21 @@ export default function SwapsTable({
                                 ) : (
                                   <input
                                     type="number"
-                                    value={item.qtd}
+                                    value={qtyInputs[item.codInterno] !== undefined ? qtyInputs[item.codInterno] : String(item.qtd)}
                                     min="1"
                                     onChange={(e) => {
-                                      const qty = Math.max(1, parseInt(e.target.value) || 1);
-                                      onUpdateQty(item.codInterno, qty);
+                                      setQtyInputs(prev => ({ ...prev, [item.codInterno]: e.target.value }));
+                                    }}
+                                    onBlur={() => {
+                                      const raw = qtyInputs[item.codInterno];
+                                      if (raw !== undefined) {
+                                        const qty = Math.max(1, parseInt(raw) || 1);
+                                        onUpdateQty(item.codInterno, qty);
+                                        setQtyInputs(prev => { const n = { ...prev }; delete n[item.codInterno]; return n; });
+                                      }
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") e.currentTarget.blur();
                                     }}
                                     className={`font-mono font-bold text-center focus:outline-none focus:ring-2 transition-all duration-300 ${
                                       !!(item.qtdMin && item.qtdMin > 0 && (item.qtd < item.qtdMin)) 
