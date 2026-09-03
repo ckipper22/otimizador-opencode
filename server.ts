@@ -3171,27 +3171,14 @@ async function fetchComprasHistoricoBatch(eans: string[]): Promise<Record<string
       });
       if (!response.ok) { for (const ean of lote) result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null }; continue; }
       const data = await response.json();
-      const items = data.items || data.produtos || data;
-      if (Array.isArray(items)) {
-        for (const ean of lote) {
-          const match = items.find((it: any) => cleanEan(it.ean || it.Ean || "") === cleanEan(ean));
-          if (match && match.melhor_preco > 0) {
-            result[ean] = { melhorPreco: Number(match.melhor_preco), melhorFornecedor: match.melhor_fornecedor || "", melhorData: match.melhor_data || null };
-          } else {
-            result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
-          }
+      const resultados = data.resultados || {};
+      for (const ean of lote) {
+        const d = resultados[ean] || resultados[ean.replace(/\D/g, "")];
+        if (d && d.encontrou && d.resumo && d.resumo.melhor_preco > 0) {
+          result[ean] = { melhorPreco: Number(d.resumo.melhor_preco), melhorFornecedor: d.resumo.melhor_fornecedor || "", melhorData: d.resumo.melhor_data || null };
+        } else {
+          result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
         }
-      } else if (items && typeof items === "object") {
-        for (const ean of lote) {
-          const d = items[ean] || items[ean.replace(/\D/g, "")];
-          if (d && d.melhor_preco > 0) {
-            result[ean] = { melhorPreco: Number(d.melhor_preco), melhorFornecedor: d.melhor_fornecedor || "", melhorData: d.melhor_data || null };
-          } else {
-            result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
-          }
-        }
-      } else {
-        for (const ean of lote) result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
       }
     } catch {
       for (const ean of lote) result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
