@@ -366,6 +366,7 @@ export function useBilling({
            setBilledGroups(prev => {
               const next = { ...prev };
               relatedGroups.forEach(g => {
+                 if (!prev[g]) return;
                  const currentLogs = prev[g]?.logs || [];
                  const newLogs = [...currentLogs];
                  data.logs.forEach((l: string) => {
@@ -614,6 +615,7 @@ export function useBilling({
         setBilledGroups(prev => {
           const next = { ...prev };
           for (const g of relatedGroups) {
+            if (!prev[g]) continue;
             const currentLogs = prev[g]?.logs || [];
             for (const msgFalha of msgsFalha) {
               if (!currentLogs.includes(msgFalha)) currentLogs.push(msgFalha);
@@ -666,6 +668,7 @@ export function useBilling({
            setBilledGroups(prev => {
               const next = { ...prev };
               relatedGroups.forEach(g => {
+                 if (!prev[g]) return;
                  const currentLogs = prev[g]?.logs || [];
                  const newLogs = [...currentLogs];
                  data.logs.forEach((l: string) => {
@@ -733,6 +736,7 @@ export function useBilling({
         setBilledGroups(prev => {
           const next = { ...prev };
           for (const g of (billingContext?.relatedGroups || [])) {
+            if (!prev[g]) continue;
             const currentLogs = prev[g]?.logs || [];
             if (!currentLogs.includes(msg)) next[g] = { ...prev[g], logs: [...currentLogs, msg] };
           }

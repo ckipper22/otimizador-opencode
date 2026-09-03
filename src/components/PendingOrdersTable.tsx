@@ -43,7 +43,7 @@ export const PendingOrdersTable: React.FC<PendingOrdersTableProps> = ({ billedGr
                     )}
                 </td>
                 <td className="py-2.5 px-3 border-r border-[#141414]/10 text-center font-bold text-gray-700">
-                    {group.faltas.length}
+                    {group.faltas?.length ?? 0}
                 </td>
               </tr>
             ))}
