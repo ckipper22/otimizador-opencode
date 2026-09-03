@@ -2676,7 +2676,7 @@ export default function App() {
                               const offerEan = String(offer.ean || offer.Ean || "").trim();
                               const offerDesc = offer.descricao || offer.Descricao || offer.nom_produto || "";
                               const offerLab = offer.laboratorio || offer.Laboratorio || offer.nom_laborat || "";
-                              const offerDist = offer.distribuidora || offer.NomeDist || (offer.codDist ? `Distribuidora ${offer.codDist}` : "Distribuidora");
+                              const offerDist = offer.distribuidora || offer.NomeDist || (offer.codDist ? `Distribuidor Não Identificado (${offer.codDist})` : "Distribuidor Não Identificado");
                               const offerCodDist = offer.codDist !== undefined ? offer.codDist : (offer.CodDist !== undefined ? offer.CodDist : 0);
                               const offerCond = offer.condicao || offer.Condicao || offer.NomeCondicao || "FIXA";
                               const offerPrazo = Number(offer.prazo !== undefined ? offer.prazo : (offer.Prazo !== undefined ? offer.Prazo : 0));
