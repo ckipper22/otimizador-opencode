@@ -244,7 +244,6 @@ interface SwapsTableProps {
   isSearchingCompleting: string | null;
   isDispersing: Record<string, boolean>;
   onUpdateMinimum: (distName: string, value: number) => void;
-  onUpdateDistributor: (codInterno: string, newDist: string) => void;
   onDeleteDistributor: (distName: string) => void;
   distributorOrder: string[];
   onReopenModal?: () => void;
@@ -274,7 +273,6 @@ export default function SwapsTable({
   isSearchingCompleting,
   isDispersing,
   onUpdateMinimum,
-  onUpdateDistributor,
   onDeleteDistributor,
   distributorOrder,
   onReopenModal,

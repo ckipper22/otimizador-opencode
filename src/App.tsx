@@ -116,7 +116,6 @@ export default function App() {
     disregardedCodes, setDisregardedCodes,
     disabledItemCodes, setDisabledItemCodes,
     billedItemCodes, setBilledItemCodes,
-    overriddenDistributors, setOverriddenDistributors,
     handleFileLoaded, handleClearFile, handleOptimize,
     handleToggleDisregard, handleToggleDisabled,
     handleUpdateQty, handleSelectCondition, handleDeleteDistributor,
@@ -911,7 +910,6 @@ export default function App() {
     setDisregardedCodes(new Set());
     setDisabledItemCodes(new Set());
     setBilledItemCodes(new Set());
-    setOverriddenDistributors({});
     
     if (tab === "homologation") {
       setFileContent(HOMOLOGACAO_SICF_FILE);
@@ -1240,7 +1238,6 @@ export default function App() {
               setDisregardedCodes(new Set());
               setDisabledItemCodes(new Set());
               setBilledItemCodes(new Set());
-              setOverriddenDistributors({});
             }}
           />
         )}
@@ -1281,7 +1278,6 @@ export default function App() {
                 setDisregardedCodes(new Set());
                 setDisabledItemCodes(new Set());
                 setBilledItemCodes(new Set());
-                setOverriddenDistributors({});
                 setPreDistributedMap(map);
 
                 // Executar otimização real imediatamente com o mapa temporário
@@ -1330,7 +1326,6 @@ export default function App() {
                 setDisregardedCodes(new Set());
                 setDisabledItemCodes(new Set());
                 setBilledItemCodes(new Set());
-                setOverriddenDistributors({});
                 setLogs(["[SISTEMA] Lote pré-distribuído importado com sucesso via Log de Payload!"]);
               }}
             />
@@ -2142,9 +2137,6 @@ export default function App() {
                       onReopenModal={() => setIsBillingModalOpen(true)}
                       onUpdateMinimum={(distName, value) => {
                         setDistributorMinimums(prev => ({ ...prev, [distName]: value }));
-                      }}
-                      onUpdateDistributor={(codInterno, newDist) => {
-                        setOverriddenDistributors(prev => ({ ...prev, [codInterno]: newDist }));
                       }}
                       onDeleteDistributor={handleDeleteDistributor}
                       distributorOrder={distributorOrder}

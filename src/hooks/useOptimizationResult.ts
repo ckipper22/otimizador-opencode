@@ -35,7 +35,6 @@ export function useOptimizationResult({
   const [disregardedCodes, setDisregardedCodes] = useState<Set<string>>(new Set());
   const [disabledItemCodes, setDisabledItemCodes] = useState<Set<string>>(new Set());
   const [billedItemCodes, setBilledItemCodes] = useState<Set<string>>(new Set());
-  const [overriddenDistributors, setOverriddenDistributors] = useState<Record<string, string>>({});
 
   const handleFileLoaded = (content: string, name: string) => {
     setFileContent(content);
@@ -46,7 +45,6 @@ export function useOptimizationResult({
     setDisregardedCodes(new Set());
     setDisabledItemCodes(new Set());
     setBilledItemCodes(new Set());
-    setOverriddenDistributors({});
 
     let targetCnpj = config.cnpj;
     try {
@@ -88,7 +86,6 @@ export function useOptimizationResult({
     setDisregardedCodes(new Set());
     setDisabledItemCodes(new Set());
     setBilledItemCodes(new Set());
-    setOverriddenDistributors({});
   };
 
   const handleOptimize = async (overrideFileContent?: string, overridePreDistributedMap?: any) => {
@@ -101,7 +98,6 @@ export function useOptimizationResult({
     setResult(null);
     setLogs(["[PREPARANDO] Formatando dados para envio e iniciando conexões..."]);
     setDisregardedCodes(new Set());
-    setOverriddenDistributors({});
 
     try {
       setLogs((prev) => [...prev, "[SISTEMA] Sincronizando pedidos recentes da Profarma para checar duplicidades..."]);
@@ -460,13 +456,10 @@ export function useOptimizationResult({
       .map((item) => {
         const isDisregarded = disregardedCodes.has(item.codInterno);
         const isDisabled = disabledItemCodes.has(item.codInterno);
-        const overDist = overriddenDistributors[item.codInterno];
 
         const baseItem = {
           ...item,
-          distribuidora: overDist || item.distribuidora || "Não Encontrados",
           disabled: isDisabled,
-          ...(overDist ? { motivoAcao: undefined, origem: item.origem === "lista_preco" ? undefined : item.origem } : {})
         };
 
         if (isDisregarded) {
@@ -516,7 +509,7 @@ export function useOptimizationResult({
             novoPreco: resolvedPreco,
             economiaUnit: 0,
             economiaTotal: 0,
-            distribuidora: overDist || resolvedDist || "Não Encontrados",
+            distribuidora: resolvedDist || "Não Encontrados",
             codDist: resolvedCodDist !== undefined ? resolvedCodDist : baseItem.codDist,
             estoque: resolvedEstoque !== undefined ? resolvedEstoque : baseItem.estoque,
             condicao: resolvedCondicao !== undefined ? resolvedCondicao : baseItem.condicao,
@@ -527,7 +520,7 @@ export function useOptimizationResult({
         }
         return baseItem;
       });
-  }, [result, disregardedCodes, disabledItemCodes, overriddenDistributors, billedItemCodes]);
+  }, [result, disregardedCodes, disabledItemCodes, billedItemCodes]);
 
   // Log diagnóstico: verificar se alternatives sobrevive ao activeReport
   useMemo(() => {
@@ -825,8 +818,6 @@ export function useOptimizationResult({
     setDisabledItemCodes,
     billedItemCodes,
     setBilledItemCodes,
-    overriddenDistributors,
-    setOverriddenDistributors,
     handleFileLoaded,
     handleClearFile,
     handleOptimize,
