@@ -397,13 +397,9 @@ npm run lint     # Type checking (tsc --noEmit)
 
 **Status:** aguarda decisão do Carlos antes de virar prompt de fix — não replicar automaticamente como nos bugs #40/#41.
 
-### "Melhor preço pago" (histórico de compras) não aparece nos cards do SwapsTable
+### ~~"Melhor preço pago" (histórico de compras) não aparece nos cards do SwapsTable~~ (resolvido 2026-09-03)
 
-**Onde:** campos `melhorPrecoHistorico`/`melhorFornecedorHistorico` existem no fluxo Ofertas do Dia (`OfertasDoDiaModal.tsx`) mas não no `SwapReportItem`/relatório principal que alimenta o SwapsTable.
-
-**Por que não foi implementado agora:** computar o melhor preço pago pra todo item do `/api/optimize` (180+ itens) exigiria chamadas adicionais de API (histórico de compras via Ferramentinhas) pra cada item — custo de performance significativo. Mesma razão da pendência de `analisarUmProduto` já documentada: motor central de preço, sem mapeamento completo do fluxo de controle, sem teste automatizado robusto.
-
-**Status:** decisão explícita de adiar — não implementar sem revisitar o custo de API e o impacto no tempo de resposta do `/api/optimize`.
+**Resolvido:** endpoint em lote `POST /api/produtos/compras-historico-lote` (Ferramentinhas, até 50 EANs/chamada, testado com dado real) desbloqueou a implementação. Nova função `fetchComprasHistoricoBatch` em `server.ts` busca histórico de 12 meses em lotes sequenciais (mesma cautela de `fetchVendasResumoBatch`). Badge violeta "💰 Pago antes: R$ X,XX (Fornecedor)" adicionado nas 2 visões do SwapsTable via componente compartilhado `MetricBadges`. Campos `melhorPrecoHistorico`/`melhorFornecedorHistorico` adicionados ao tipo `SwapReportItem` e populados no relatório final do `/api/optimize`.
 
 ### Nome interno `alertaProfarma48h` mantido de propósito
 

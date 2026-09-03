@@ -53,6 +53,8 @@ export interface SwapReportItem {
   fornecedorId?: string;
   vendasMensais?: number;
   estoqueTotal?: number;
+  melhorPrecoHistorico?: number;
+  melhorFornecedorHistorico?: string;
   tiers?: Array<{ minQty: number; price: number }>;
   discountTiers?: Array<{ minQty: number; discountPercent: number }>;
   originalDist?: string;

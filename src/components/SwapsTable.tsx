@@ -255,6 +255,32 @@ interface SwapsTableProps {
   getFaturadoDistribuidora?: (rawEan: string) => string | undefined;
 }
 
+function MetricBadges({ item }: { item: any }) {
+  const hasVendas = (item.vendasMensais ?? 0) > 0;
+  const hasEstoque = (item.estoqueTotal ?? 0) > 0;
+  const hasHistorico = (item.melhorPrecoHistorico ?? 0) > 0;
+  if (!hasVendas && !hasEstoque && !hasHistorico) return null;
+  return (
+    <div className="flex items-center gap-2 mt-1 flex-wrap">
+      {hasVendas && (
+        <span className="text-sm font-sans font-bold text-indigo-700 bg-indigo-50 px-2 py-1 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
+          📊 {item.vendasMensais} un/mês (4m)
+        </span>
+      )}
+      {hasEstoque && (
+        <span className="text-sm font-sans font-bold text-teal-700 bg-teal-50 px-2 py-1 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
+          📦 {item.estoqueTotal} cx
+        </span>
+      )}
+      {hasHistorico && (
+        <span className="text-sm font-sans font-bold text-violet-700 bg-violet-50 px-2 py-1 border border-violet-200 rounded-none inline-flex items-center gap-0.5" title={`Melhor preço pago em ${item.melhorFornecedorHistorico || "histórico"}`}>
+          💰 Pago antes: R$ {item.melhorPrecoHistorico?.toFixed(2)}{item.melhorFornecedorHistorico ? ` (${item.melhorFornecedorHistorico})` : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export default function SwapsTable({ 
   report, 
   rawReport = [],
@@ -718,22 +744,9 @@ export default function SwapsTable({
                             )}
                             <span className="mx-1">|</span> Unit: {formatCurrency(item.isRupturaSubstitution ? item.novoPreco : item.originalPreco)}
                           </div>
-                          {/* Vendas + Estoque badge (Painel de Escolhas) */}
-                          {((item.vendasMensais ?? 0) > 0 || (item.estoqueTotal ?? 0) > 0) && (
-                            <div className="flex items-center gap-2 mt-1">
-                               {(item.vendasMensais ?? 0) > 0 && (
-                                <span className="text-sm font-sans font-bold text-indigo-700 bg-indigo-50 px-2 py-1 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
-                                  📊 {item.vendasMensais} un/mês (4m)
-                                </span>
-                              )}
-                              {(item.estoqueTotal ?? 0) > 0 && (
-                                <span className="text-sm font-sans font-bold text-teal-700 bg-teal-50 px-2 py-1 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
-                                  📦 {item.estoqueTotal} cx
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          {item.isRupturaSubstitution && item.originalRupturaEan && (
+                           {/* Metric badges (vendas, estoque, histórico) */}
+                           <MetricBadges item={item} />
+                           {item.isRupturaSubstitution && item.originalRupturaEan && (
                             <div className="mt-1.5 p-2 bg-yellow-50 border border-yellow-400 rounded-sm">
                               <div className="flex items-center gap-1 text-[10px] font-black text-yellow-800 mb-1">
                                 <AlertTriangle className="w-3 h-3 text-yellow-600" />
@@ -1706,23 +1719,10 @@ export default function SwapsTable({
                                     )}
                                   </div>
                                   
-                                  {/* Vendas + Estoque badge */}
-                                  {((item.vendasMensais ?? 0) > 0 || (item.estoqueTotal ?? 0) > 0) && (
-                                    <div className="flex items-center gap-2 mt-1">
-                                      {(item.vendasMensais ?? 0) > 0 && (
-                                        <span className="text-sm font-sans font-bold text-indigo-700 bg-indigo-50 px-2 py-1 border border-indigo-200 rounded-none inline-flex items-center gap-0.5" title="Média de vendas nos últimos 4 meses">
-                                          📊 {item.vendasMensais} un/mês (4m)
-                                        </span>
-                                      )}
-                                      {(item.estoqueTotal ?? 0) > 0 && (
-                                        <span className="text-sm font-sans font-bold text-teal-700 bg-teal-50 px-2 py-1 border border-teal-200 rounded-none inline-flex items-center gap-0.5">
-                                          📦 {item.estoqueTotal} cx
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
+                                   {/* Metric badges (vendas, estoque, histórico) */}
+                                   <MetricBadges item={item} />
 
-                                  {/* Badges */}
+                                   {/* Badges */}
                                   <div className="flex flex-wrap items-center gap-1.5 mt-1">
                                     {item.originalSemEstoque && (
                                       <div className="flex flex-col gap-1 w-full">

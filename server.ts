@@ -3156,6 +3156,50 @@ async function fetchVendasResumoBatch(eans: string[]): Promise<Record<string, { 
   return result;
 }
 
+async function fetchComprasHistoricoBatch(eans: string[]): Promise<Record<string, { melhorPreco: number; melhorFornecedor: string; melhorData: string | null }>> {
+  const result: Record<string, { melhorPreco: number; melhorFornecedor: string; melhorData: string | null }> = {};
+  const MAX_BATCH = 50;
+  const uniqueEans = Array.from(new Set(eans.filter(e => e && e.trim())));
+  for (let i = 0; i < uniqueEans.length; i += MAX_BATCH) {
+    const lote = uniqueEans.slice(i, i + MAX_BATCH);
+    try {
+      const response = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/compras-historico-lote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eans: lote, meses: CONFIG.HISTORICO_COMPRAS_MESES }),
+        signal: AbortSignal.timeout(30000)
+      });
+      if (!response.ok) { for (const ean of lote) result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null }; continue; }
+      const data = await response.json();
+      const items = data.items || data.produtos || data;
+      if (Array.isArray(items)) {
+        for (const ean of lote) {
+          const match = items.find((it: any) => cleanEan(it.ean || it.Ean || "") === cleanEan(ean));
+          if (match && match.melhor_preco > 0) {
+            result[ean] = { melhorPreco: Number(match.melhor_preco), melhorFornecedor: match.melhor_fornecedor || "", melhorData: match.melhor_data || null };
+          } else {
+            result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
+          }
+        }
+      } else if (items && typeof items === "object") {
+        for (const ean of lote) {
+          const d = items[ean] || items[ean.replace(/\D/g, "")];
+          if (d && d.melhor_preco > 0) {
+            result[ean] = { melhorPreco: Number(d.melhor_preco), melhorFornecedor: d.melhor_fornecedor || "", melhorData: d.melhor_data || null };
+          } else {
+            result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
+          }
+        }
+      } else {
+        for (const ean of lote) result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
+      }
+    } catch {
+      for (const ean of lote) result[ean] = { melhorPreco: 0, melhorFornecedor: "", melhorData: null };
+    }
+  }
+  return result;
+}
+
 const SYNC_STATE = { running: false, logs: [] as string[], totalSync: 0, totalPrincipios: 0, totalLancamentos: 0, totalSugestoes: 0 };
 
 async function syncEnrichAndSave(ean: string, token: string, cnpj: string, lanc: any, sug: any, logs: string[]) {
@@ -4529,6 +4573,7 @@ app.post("/api/optimize", async (req, res) => {
     // ===== VENDAS + ESTOQUE (Ferramentinhas) — Batch para todos os EANs do SICF + similares =====
     const _f5Start = Date.now();
     const vendasEstoqueMap: Record<string, { vendasMensais: number; estoqueTotal: number }> = {};
+    const comprasHistByOriginal: Record<string, { melhorPreco: number; melhorFornecedor: string; melhorData: string | null }> = {};
     {
       // 1. Mapear cada EAN expandido → EAN original do SICF (filtrado por apresentação)
       const eanToOriginal = new Map<string, string>();
@@ -4577,6 +4622,18 @@ app.post("/api/optimize", async (req, res) => {
       // 2. Buscar vendas de TODOS os EANs (expandidos) via vendas-resumo batch
       const vendasByOriginal: Record<string, { total: number; meses: number }> = {};
       const vendasBatch = await fetchVendasResumoBatch(allEansForVendas);
+
+      // 2b. Buscar histórico de compras (melhor preço pago) em lote
+      const comprasHistBatch = await fetchComprasHistoricoBatch(allEansForVendas);
+      for (const ean of allEansForVendas) {
+        const origEan = eanToOriginal.get(ean) || ean;
+        const ch = comprasHistBatch[ean];
+        if (ch && ch.melhorPreco > 0) {
+          if (!comprasHistByOriginal[origEan] || ch.melhorPreco < comprasHistByOriginal[origEan].melhorPreco) {
+            comprasHistByOriginal[origEan] = ch;
+          }
+        }
+      }
       const vendasResults = allEansForVendas.map((ean) => {
         const v = vendasBatch[ean];
         if (v && v.totalVendas > 0 && v.primeira && v.ultima) {
@@ -6632,6 +6689,8 @@ condicoesEnriched = condicoes.map((c: any) => {
             motivoAlerta: alertaConfirmarQtdCaixaMaster ? alertResult.motivoAlerta : undefined,
             vendasMensais: (vendasEstoqueMap[cleanEan(item.ean)] || {}).vendasMensais || 0,
             estoqueTotal: (vendasEstoqueMap[cleanEan(item.ean)] || {}).estoqueTotal || 0,
+            melhorPrecoHistorico: comprasHistByOriginal[cleanEan(item.ean)]?.melhorPreco || 0,
+            melhorFornecedorHistorico: comprasHistByOriginal[cleanEan(item.ean)]?.melhorFornecedor || "",
             alternatives: (() => {
               const chosen = finalAlternatives.length > 0 ? finalAlternatives : (rawSubstitutosForAlternatives.length > 0 ? rawSubstitutosForAlternatives : (substitutos.length > 0 ? substitutos : []));
               // ENRICH-ALL-ALTS: Construir mapa global Ean_CodDist → CodProdutoDist a partir de TODAS as fontes
@@ -6838,6 +6897,8 @@ condicoesEnriched = condicoes.map((c: any) => {
             motivoAlerta: alertaConfirmarQtdCaixaMaster ? alertResult.motivoAlerta : undefined,
             vendasMensais: (vendasEstoqueMap[cleanEan(item.ean)] || {}).vendasMensais || 0,
             estoqueTotal: (vendasEstoqueMap[cleanEan(item.ean)] || {}).estoqueTotal || 0,
+            melhorPrecoHistorico: comprasHistByOriginal[cleanEan(item.ean)]?.melhorPreco || 0,
+            melhorFornecedorHistorico: comprasHistByOriginal[cleanEan(item.ean)]?.melhorFornecedor || "",
             alternatives: (() => {
               const chosen = finalAlternatives.length > 0 ? finalAlternatives : (rawSubstitutosForAlternatives.length > 0 ? rawSubstitutosForAlternatives : (substitutos.length > 0 ? substitutos : []));
               // ENRICH-ALL-ALTS: Construir mapa global Ean_CodDist → CodProdutoDist a partir de TODAS as fontes
@@ -6936,6 +6997,8 @@ condicoesEnriched = condicoes.map((c: any) => {
           originalSemEstoque: true,
           vendasMensais: (vendasEstoqueMap[cleanEan(item.ean)] || {}).vendasMensais || 0,
           estoqueTotal: (vendasEstoqueMap[cleanEan(item.ean)] || {}).estoqueTotal || 0,
+          melhorPrecoHistorico: comprasHistByOriginal[cleanEan(item.ean)]?.melhorPreco || 0,
+          melhorFornecedorHistorico: comprasHistByOriginal[cleanEan(item.ean)]?.melhorFornecedor || "",
           alternatives: []
         });
       }
