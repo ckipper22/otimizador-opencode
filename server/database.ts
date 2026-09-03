@@ -77,6 +77,9 @@ function runMigrations(d: any) {
     d.exec(`UPDATE itens_confirmados SET faturado_at = created_at WHERE status = 'faturado' AND faturado_at IS NULL;`);
   } catch {}
   try {
+    d.exec(`ALTER TABLE pedidos_monitorados ADD COLUMN pending_dists_summary TEXT;`);
+  } catch {}
+  try {
     d.exec(`CREATE TABLE IF NOT EXISTS pedidos_monitorados (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       num_pedido TEXT,
