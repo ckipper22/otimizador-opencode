@@ -411,6 +411,10 @@ Nome interno `alertaProfarma48h` (config, types.ts, server.ts, etc.) mantém "Pr
 
 O componente (`src/components/PedidosMonitoradosPanel.tsx`) retorna `null` quando não há nenhum pedido com `status='monitorando'` (`getPedidosMonitorando`, `database.ts:1242-1250` só busca esse status). Resultado: não tem como saber que a feature existe enquanto não há pedido ativo sendo monitorado — parece que sumiu, não fica claro que é comportamento esperado. Decisão explícita: deixar assim por enquanto (painel só aparece quando relevante) — se no futuro incomodar, considerar sempre mostrar o painel com uma mensagem tipo "nenhum pedido em monitoramento no momento" em vez de sumir completamente.
 
+### Batch compras-historico em analisarFornecedorEmBackground — oportunidade de otimização, não implementada de propósito
+
+`analisarUmProduto` (server.ts, usada em 3 lugares: botão P, background de fornecedores externos via `analisarFornecedorEmBackground`, e batch SICF) busca `compras-historico` por EAN individualmente (Promise.all sobre `eanListFiltrado` — grupo de equivalentes por produto, diferente pra cada produto da lista). Diferente do fix do `/api/optimize` (#50 e a feature de melhor preço pago), aqui não dá pra simplesmente juntar EANs de N produtos numa lista fixa — cada produto tem seu próprio grupo de equivalentes, calculado durante a análise. Pra usar o endpoint em lote, seria preciso pré-calcular o grupo de equivalentes de TODOS os produtos ANTES do loop de análise, e passar como parâmetro opcional de cache pra `analisarUmProduto` (sem quebrar os outros 2 chamadores, que continuariam buscando ao vivo). Avaliação de custo/benefício: esse fluxo já roda em background (não trava UI), e `CONCURRENCY=2` já limita várias OUTRAS chamadas de API do mesmo produto (similares, SmartPed Condicoes) — o ganho seria mais de confiabilidade/redução de carga na API do Ferramentinhas do que de velocidade percebida. Decisão: adiar pra sessão com mais tempo, não é bug ativo.
+
 ---
 
 ## Convenções de Código

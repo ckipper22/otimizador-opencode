@@ -2992,6 +2992,158 @@ def api_produtos_compras_historico(ean):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/produtos/compras-historico-lote', methods=['POST'])
+def api_produtos_compras_historico_lote():
+    """
+    Histórico de compras em lote (por EANs).
+    Body: {"eans": ["7891234567890", ...], "meses": 6}
+    Retorna objeto com chave = EAN original, valor = {encontrou, resumo, compras}.
+    Limita 50 EANs por chamada.
+    """
+    data = request.get_json(force=True, silent=True)
+    if not data or not isinstance(data.get('eans'), list):
+        return jsonify({'success': False, 'error': 'Body deve conter {"eans": ["...", "..."]}'}), 400
+
+    eans = [str(ean).strip() for ean in data['eans'] if str(ean).strip()]
+
+    if not eans:
+        return jsonify({'success': False, 'error': 'Lista de EANs vazia.'}), 400
+
+    if len(eans) > 50:
+        return jsonify({'success': False, 'error': 'Máximo de 50 EANs por chamada.'}), 400
+
+    try:
+        meses = int(data.get('meses', 6))
+    except (ValueError, TypeError):
+        meses = 6
+
+    if meses < 1 or meses > 36:
+        return jsonify({'success': False, 'error': 'Parâmetro "meses" deve estar entre 1 e 36.'}), 400
+
+    cod_rede = DADOS_SOLICITANTE['COD_REDE']
+    cod_filial = DADOS_SOLICITANTE['COD_FILIAL']
+
+    resultados = {}
+
+    try:
+        conn = db_pool.getconn()
+
+        for ean_original in eans:
+            with conn.cursor() as cur:
+                # 1. EAN -> cod_reduzido
+                cur.execute("SELECT cod_reduzido FROM cadcdbar WHERE cod_barra = %s LIMIT 1", (ean_original,))
+                row = cur.fetchone()
+
+                if not row:
+                    resultados[ean_original] = {
+                        'encontrou': False,
+                        'ean': ean_original,
+                        'error': f'EAN {ean_original} não encontrado.'
+                    }
+                    continue
+
+                cod_reduzido = row[0]
+
+                # 2. Buscar compras no período
+                cur.execute("""
+                    SELECT
+                        i.dat_entrada,
+                        f.nom_fornec,
+                        i.vlr_custopersonalizado,
+                        i.vlr_unitario,
+                        i.qtd_produto,
+                        i.num_nota
+                    FROM cadicomp i
+                    LEFT JOIN cadforne f ON f.cod_fornec = i.cod_fornec AND f.cod_rede = i.cod_rede
+                    WHERE i.cod_reduzido = %s
+                      AND i.cod_rede = %s
+                      AND i.cod_filial = %s
+                      AND i.dat_entrada >= CURRENT_DATE - INTERVAL '%s months'
+                    ORDER BY i.dat_entrada DESC, i.num_nota DESC
+                """, (cod_reduzido, cod_rede, cod_filial, meses))
+
+                compras = cur.fetchall()
+
+            if not compras:
+                resultados[ean_original] = {
+                    'encontrou': False,
+                    'ean': ean_original,
+                    'resumo': None,
+                    'compras': []
+                }
+                continue
+
+            # Processar compras
+            compras_formatadas = []
+            precos = []
+
+            for c in compras:
+                data_entrada = c[0]
+                fornecedor = c[1] if c[1] else 'N/A'
+                custo_personalizado = float(c[2]) if c[2] is not None else 0.0
+                preco_tabela = float(c[3]) if c[3] is not None else 0.0
+                quantidade = int(c[4]) if c[4] is not None else 0
+                nota_fiscal = c[5] if c[5] else 'N/A'
+
+                if custo_personalizado > 0:
+                    precos.append(custo_personalizado)
+
+                compras_formatadas.append({
+                    'data': data_entrada.strftime('%Y-%m-%d') if data_entrada else None,
+                    'fornecedor': fornecedor,
+                    'preco_unitario': custo_personalizado,
+                    'preco_tabela': preco_tabela,
+                    'quantidade': quantidade,
+                    'nota_fiscal': nota_fiscal
+                })
+
+            # Calcular resumo
+            melhor_preco = min(precos) if precos else 0.0
+            preco_medio = sum(precos) / len(precos) if precos else 0.0
+            total_compras = len(compras)
+
+            melhor_compra = min(compras, key=lambda x: float(x[2]) if x[2] is not None else float('inf'))
+            melhor_fornecedor = melhor_compra[1] if melhor_compra[1] else 'N/A'
+            melhor_data = melhor_compra[0].strftime('%Y-%m-%d') if melhor_compra[0] else None
+
+            ultima_compra = compras[0]
+            ultima_compra_data = ultima_compra[0].strftime('%Y-%m-%d') if ultima_compra[0] else None
+            ultima_compra_fornecedor = ultima_compra[1] if ultima_compra[1] else 'N/A'
+            ultima_compra_preco = float(ultima_compra[2]) if ultima_compra[2] is not None else 0.0
+
+            resumo = {
+                'melhor_preco': round(melhor_preco, 2),
+                'melhor_fornecedor': melhor_fornecedor,
+                'melhor_data': melhor_data,
+                'preco_medio': round(preco_medio, 2),
+                'total_compras': total_compras,
+                'ultima_compra_data': ultima_compra_data,
+                'ultima_compra_fornecedor': ultima_compra_fornecedor,
+                'ultima_compra_preco': round(ultima_compra_preco, 2)
+            }
+
+            resultados[ean_original] = {
+                'encontrou': True,
+                'ean': ean_original,
+                'resumo': resumo,
+                'compras': compras_formatadas
+            }
+
+        db_pool.putconn(conn)
+
+        return jsonify({
+            'success': True,
+            'total_itens': len(eans),
+            'resultados': resultados
+        }), 200
+
+    except Exception as e:
+        print(f"Erro em api_produtos_compras_historico_lote: {e}")
+        if 'conn' in locals():
+            db_pool.putconn(conn)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/produtos/buscar-por-ean/<string:ean>', methods=['GET'])
 def api_produtos_buscar_por_ean(ean):
     """
