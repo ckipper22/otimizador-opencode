@@ -8051,12 +8051,17 @@ app.get("/api/pedidos-monitorados", async (req, res) => {
     const resultado = pedidos.map((p: any) => {
       const items = JSON.parse(p.items_faturados || "[]");
       const totalItens = items.length;
+      let pendingDistsSummary: string[] | null = null;
+      if (p.pending_dists_summary) {
+        try { pendingDistsSummary = JSON.parse(p.pending_dists_summary); } catch {}
+      }
       return {
         numPedido: p.num_pedido,
         cnpj: p.cnpj,
         baseDistName: p.base_dist_name,
         status: p.status,
         totalItens,
+        pendingDistsSummary,
         lastCheckedAt: p.last_checked_at,
         createdAt: p.created_at,
         updatedAt: p.updated_at

@@ -86,6 +86,7 @@ function runMigrations(d: any) {
       encomendas_pendentes TEXT,
       related_groups TEXT,
       base_dist_name TEXT,
+      pending_dists_summary TEXT,
       status TEXT DEFAULT 'monitorando',
       last_checked_at TEXT,
       created_at TEXT DEFAULT (datetime('now')),
@@ -293,6 +294,7 @@ const SCHEMA_SQL = `
     encomendas_pendentes TEXT,
     related_groups TEXT,
     base_dist_name TEXT,
+    pending_dists_summary TEXT,
     status TEXT DEFAULT 'monitorando',
     last_checked_at TEXT,
     created_at TEXT DEFAULT (${NOW_UTC}),
@@ -321,6 +323,7 @@ export async function initTursoSchema() {
     `ALTER TABLE itens_confirmados ADD COLUMN origem TEXT DEFAULT 'manual'`,
     `ALTER TABLE itens_confirmados ADD COLUMN id_encomenda TEXT`,
     `ALTER TABLE order_items ADD COLUMN encomenda_confirmada INTEGER DEFAULT 0`,
+    `ALTER TABLE pedidos_monitorados ADD COLUMN pending_dists_summary TEXT`,
   ];
   for (const sql of MIGRATE_SQL) {
     try { await d.exec(sql); } catch {} // ignora "duplicate column name" ou "duplicate index"
@@ -1264,6 +1267,15 @@ export async function updatePedidoMonitoradoStatus(numPedido: string, status: 'c
   try {
     const sql = `UPDATE pedidos_monitorados SET status = ?, updated_at = ${NOW_UTC} WHERE num_pedido = ?`;
     if (USE_TURSO) { await d.run(sql, status, numPedido); } else { d.prepare(sql).run(status, numPedido); }
+  } catch {}
+}
+
+export async function updatePedidoMonitoradoPendingDists(numPedido: string, summary: string | null) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE pedidos_monitorados SET pending_dists_summary = ?, updated_at = ${NOW_UTC} WHERE num_pedido = ? AND status = 'monitorando'`;
+    if (USE_TURSO) { await d.run(sql, summary, numPedido); } else { d.prepare(sql).run(summary, numPedido); }
   } catch {}
 }
 

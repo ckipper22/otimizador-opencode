@@ -7,6 +7,7 @@ interface PedidoMonitorado {
   baseDistName: string;
   status: string;
   totalItens: number;
+  pendingDistsSummary: string[] | null;
   lastCheckedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -96,7 +97,9 @@ export function PedidosMonitoradosPanel({ config }: { config: { cnpj: string } }
               <span className="text-[#141414]/40">{p.totalItens} itens</span>
               {p.status === "monitorando" ? (
                 <span className="flex items-center gap-1 text-amber-700 font-bold uppercase tracking-wider">
-                  <Clock className="w-3 h-3" /> Monitorando
+                  <Clock className="w-3 h-3" /> Monitorando{p.pendingDistsSummary && p.pendingDistsSummary.length > 0 ? (
+                    <span className="font-normal normal-case tracking-normal text-amber-600"> — Aguardando: {p.pendingDistsSummary.join(", ")}</span>
+                  ) : null}
                 </span>
               ) : (
                 <span className="flex items-center gap-1 text-green-700 font-bold uppercase tracking-wider">

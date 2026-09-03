@@ -7,6 +7,7 @@ import {
   getPedidosMonitorando,
   updatePedidoMonitoradoLastChecked,
   updatePedidoMonitoradoStatus,
+  updatePedidoMonitoradoPendingDists,
   saveItensConfirmadosBatch,
 } from "./database";
 
@@ -145,8 +146,19 @@ export async function checkPedidoReturn(pedido: PedidoMonitorado): Promise<{ don
 
     if (isAllFinalized) {
       logs.push(`[PEDIDO-MONITOR] Todos os distribuidores finalizados — pedido ${numPedido} concluido.`);
+      await updatePedidoMonitoradoPendingDists(numPedido, null);
       return { done: true, logs };
     }
+
+    // Montar resumo dos distribuidores pendentes (Status !== 3)
+    const pendingDists = (codDistsNoLote.length > 0
+      ? dists.filter((d: any) => codDistsNoLote.includes(String(d.CodDist || d.codDist || "").trim()))
+      : dists
+    ).filter((d: any) => d.Status !== 3);
+    const pendingSummary = pendingDists.length > 0
+      ? JSON.stringify(pendingDists.map((d: any) => d.NomeDist || d.nomeDist || `Dist ${d.CodDist || d.codDist}`))
+      : null;
+    await updatePedidoMonitoradoPendingDists(numPedido, pendingSummary);
 
     logs.push(`[PEDIDO-MONITOR] Ainda ha distribuidores pendentes — continuando monitoramento.`);
     return { done: false, logs };

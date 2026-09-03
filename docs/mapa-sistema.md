@@ -227,6 +227,7 @@
 | `encomendas_pendentes` | TEXT | JSON serializado |
 | `related_groups` | TEXT | JSON array |
 | `base_dist_name` | TEXT | |
+| `pending_dists_summary` | TEXT | JSON array de nomes dos distribuidores pendentes (Status !== 3) |
 | `status` | TEXT | DEFAULT 'monitorando' |
 | `last_checked_at` | TEXT | |
 | `created_at` | TEXT | DEFAULT datetime('now') |
