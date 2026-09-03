@@ -1282,6 +1282,16 @@ export async function updatePedidoMonitoradoPendingDists(numPedido: string, summ
   } catch {}
 }
 
+export async function updatePedidoMonitoradoEncomendasPendentes(numPedido: string, encomendasPendentes: any[]) {
+  const d = getDb();
+  if (!d) return;
+  try {
+    const sql = `UPDATE pedidos_monitorados SET encomendas_pendentes = ?, updated_at = ${NOW_UTC} WHERE num_pedido = ? AND status = 'monitorando'`;
+    const json = JSON.stringify(encomendasPendentes);
+    if (USE_TURSO) { await d.run(sql, json, numPedido); } else { d.prepare(sql).run(json, numPedido); }
+  } catch {}
+}
+
 export function closeDb() {
   if (!USE_TURSO && db) {
     try { db.close(); } catch {}

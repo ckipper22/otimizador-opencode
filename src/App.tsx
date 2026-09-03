@@ -285,7 +285,6 @@ export default function App() {
   const [completingTargetDist, setCompletingTargetDist] = useState<string | null>(null);
   const [completingEligibleItems, setCompletingEligibleItems] = useState<any[]>([]);
   const [completingSelectedCodes, setCompletingSelectedCodes] = useState<Set<string>>(new Set());
-  const [wizardLogs, setWizardLogs] = useState<string[]>([]);
   const [isSearchingCompleting, setIsSearchingCompleting] = useState<string | null>(null);
   const [isReRoutingShortages, setIsReRoutingShortages] = useState<boolean>(false);
 
@@ -356,87 +355,297 @@ export default function App() {
     return Array.from(map.values());
   }, [activeReport]);
 
-  const handleStartDispersingWizard = async (distName: string) => {
-    setDispersingFromDist(distName);
+  const handleStartDispersingWizard = async (fromDist: string) => {
+    setDispersingEligibleItems([]);
+    setDispersingSelectedCodes(new Set());
+    const isVirtualGroup = fromDist === "Não Encontrados" || fromDist === "Sem Estoque" || fromDist.startsWith("Aguardando Chegar") || fromDist === "Descartado — Já Faturado";
+    const groupItems = activeReport.filter(it => {
+      const dist = it.distribuidora || "Não Encontrados";
+      const key = isVirtualGroup ? dist : `${dist} [${it.condicao || "FIXA"} | ${it.prazo !== undefined ? it.prazo : 0}d]`;
+      return key === fromDist && !disabledItemCodes.has(it.codInterno);
+    });
+    if (groupItems.length === 0) return;
     setIsSearchingDispersing(true);
-    setWizardLogs([`[BUSCA] Procurando itens elegíveis para dispersão a partir de ${distName}...`]);
+    setDispersingFromDist(fromDist);
+    const fromDistNormalized = normalizeDistName(fromDist);
+    const targetDistsUpper = distributorGroupings
+      .filter(g => normalizeDistName(g.name) !== fromDistNormalized && g.name !== "Não Encontrados" && g.name !== "Sem Estoque" && g.itemsCount > 0)
+      .map(g => normalizeDistName(g.name));
+
     try {
-      const distItems = activeReport.filter(it => it.distribuidora === distName && !disabledItemCodes.has(it.codInterno));
-      const otherDists = distributorGroupings.filter(g => g.name !== distName && g.name !== "Não Encontrados" && g.name !== "Sem Estoque");
-      const eligible: any[] = [];
-      for (const item of distItems) {
-        for (const otherDist of otherDists) {
-          const otherItem = otherDist.items.find((i: any) => i.codInterno === item.codInterno && i.distribuidora !== distName);
-          if (otherItem) {
-            eligible.push({ ...item, targetDist: otherDist.name });
+      const eligibleList: any[] = [];
+      const allCodes = new Set<string>();
+
+      for (const item of groupItems) {
+        try {
+          const storedCutsStr = localStorage.getItem("cortes_recentes");
+          const cortesRecentes = storedCutsStr ? JSON.parse(storedCutsStr) : {};
+
+          const response = await fetch("/api/search-products", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query: item.novoEan,
+              token: config.token,
+              cnpj: config.cnpj,
+              tipos: config.tipos,
+              margemMinima: config.margemMinima,
+              permitirSemEstoque: config.permitirSemEstoque,
+              cortesRecentes
+            })
+          });
+          if (response.ok) {
+            const data = await response.json();
+            if (data && data.items && data.items.length > 0) {
+              const allOffers = data.items.filter((it: any) =>
+                it.estoque > 0 &&
+                normalizeDistName(it.distribuidora || "") !== fromDistNormalized &&
+                targetDistsUpper.includes(normalizeDistName(it.distribuidora || ""))
+              );
+
+              if (allOffers.length > 0) {
+                allOffers.sort((a: any, b: any) => a.precoLiquido - b.precoLiquido);
+                const bestOffer = allOffers[0];
+                const pctIncrease = ((bestOffer.precoLiquido / item.novoPreco) - 1) * 100;
+
+                eligibleList.push({
+                  item,
+                  targetDist: bestOffer.distribuidora,
+                  currentPrice: item.novoPreco,
+                  targetPrice: bestOffer.precoLiquido,
+                  pctIncrease,
+                  offer: bestOffer,
+                  allOffers
+                });
+                allCodes.add(item.codInterno);
+              } else {
+                eligibleList.push({ item, targetDist: "Sem Opção", currentPrice: item.novoPreco, targetPrice: 0, pctIncrease: 0, offer: null });
+              }
+            } else {
+              eligibleList.push({ item, targetDist: "Sem Opção", currentPrice: item.novoPreco, targetPrice: 0, pctIncrease: 0, offer: null });
+            }
+          } else {
+            eligibleList.push({ item, targetDist: "Erro API", currentPrice: item.novoPreco, targetPrice: 0, pctIncrease: 0, offer: null });
           }
+        } catch (itemErr) {
+          console.error("[DISPERSAR PEDIDO] Erro ao testar item:", itemErr);
+          eligibleList.push({ item, targetDist: "Erro", currentPrice: item.novoPreco, targetPrice: 0, pctIncrease: 0, offer: null });
         }
       }
-      setDispersingEligibleItems(eligible);
-      setWizardLogs(prev => [...prev, `[OK] ${eligible.length} itens elegíveis encontrados.`]);
+
+      setDispersingEligibleItems(eligibleList);
+      setDispersingSelectedCodes(allCodes);
     } catch (err: any) {
-      setWizardLogs(prev => [...prev, `[ERRO] ${err.message}`]);
+      console.error(err);
+      alert("Erro ao pesquisar alternativas de dispersão: " + err.message);
+    } finally {
+      setIsSearchingDispersing(false);
     }
-    setIsSearchingDispersing(false);
   };
 
-  const handleStartCompletingWizard = async (distName: string) => {
-    setCompletingTargetDist(distName);
-    setIsSearchingCompleting(distName);
-    setWizardLogs([`[BUSCA] Analisando itens para completar pedido de ${distName}...`]);
+  const handleStartCompletingWizard = async (toDist: string) => {
+    setIsSearchingCompleting(toDist);
+    setCompletingEligibleItems([]);
+    setCompletingSelectedCodes(new Set());
+
+    const targetDistClean = normalizeDistName(toDist);
+
+    const otherItems = activeReport.filter(r => {
+      const rDistClean = normalizeDistName(r.distribuidora || "");
+      return rDistClean !== targetDistClean &&
+             r.distribuidora !== "Não Encontrados" &&
+             r.distribuidora !== "Sem Estoque" &&
+             !disabledItemCodes.has(r.codInterno) &&
+             !(r as any).disabled;
+    });
+
+    if (otherItems.length === 0) {
+      alert("Não há itens direcionados para outras distribuidoras para analisar.");
+      setIsSearchingCompleting(null);
+      return;
+    }
+
     try {
-      const targetItems = activeReport.filter(it => it.distribuidora === distName && !disabledItemCodes.has(it.codInterno));
-      const otherDists = distributorGroupings.filter(g => g.name !== distName && g.name !== "Não Encontrados" && g.name !== "Sem Estoque");
-      const eligible: any[] = [];
-      for (const item of targetItems) {
-        for (const otherDist of otherDists) {
-          const otherItem = otherDist.items.find((i: any) => i.codInterno === item.codInterno && i.distribuidora !== distName);
-          if (otherItem) {
-            eligible.push({ ...otherItem, targetDist: distName });
+      const eligibleList: any[] = [];
+      for (const item of otherItems) {
+        try {
+          const storedCutsStr = localStorage.getItem("cortes_recentes");
+          const cortesRecentes = storedCutsStr ? JSON.parse(storedCutsStr) : {};
+
+          const response = await fetch("/api/search-products", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query: item.novoEan,
+              token: config.token,
+              cnpj: config.cnpj,
+              tipos: config.tipos,
+              margemMinima: config.margemMinima,
+              permitirSemEstoque: config.permitirSemEstoque,
+              cortesRecentes
+            })
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            if (data && data.items) {
+              const targetOffer = data.items.find((it: any) => {
+                const offerDistNorm = normalizeDistName(it.distribuidora || "");
+                return offerDistNorm === targetDistClean && it.estoque > 0;
+              });
+
+              if (targetOffer) {
+                const currentPrice = item.novoPreco;
+                const targetPrice = targetOffer.precoLiquido;
+                const ratio = targetPrice / currentPrice;
+                const increase = (ratio - 1) * 100;
+
+                if (ratio <= 1.10) {
+                  eligibleList.push({
+                    item,
+                    offer: targetOffer,
+                    currentPrice,
+                    currentDist: item.distribuidora,
+                    targetPrice,
+                    pctIncrease: increase
+                  });
+                }
+              }
+            }
           }
+        } catch (itemErr) {
+          console.error("[COMPLETAR PEDIDO] Falha na consulta:", itemErr);
         }
       }
-      setCompletingEligibleItems(eligible);
-      setWizardLogs(prev => [...prev, `[OK] ${eligible.length} itens de outros distribuidores elegíveis.`]);
+
+      if (eligibleList.length > 0) {
+        setCompletingEligibleItems(eligibleList);
+        setCompletingSelectedCodes(new Set(eligibleList.map(i => i.item.codInterno)));
+        setCompletingTargetDist(toDist);
+      } else {
+        alert("Nenhum item de outras distribuidoras pode ser puxado para " + toDist + " (limite de 10% de acréscimo e verificação de estoque). Verifique o console (F12) para detalhes.");
+      }
     } catch (err: any) {
-      setWizardLogs(prev => [...prev, `[ERRO] ${err.message}`]);
+      console.error("[COMPLETAR PEDIDO] Erro fatal:", err);
+      alert("Erro ao pesquisar alternativas para completar: " + err.message);
+    } finally {
+      setIsSearchingCompleting(null);
     }
-    setIsSearchingCompleting(null);
   };
 
   const handleApplyDispersingTransfers = (selectedCodes: string[]) => {
-    if (selectedCodes.length === 0 || !dispersingFromDist) return;
-    const newResult = { ...result! };
-    const newReport = [...newResult.report];
-    const updatedMap = new Map<string, any>(newReport.map(r => [r.codInterno, r]));
-    for (const code of selectedCodes) {
-      const item = dispersingEligibleItems.find((i: any) => i.codInterno === code);
-      if (item && updatedMap.has(code)) {
-        const existing = updatedMap.get(code);
-        updatedMap.set(code, { ...existing, distribuidora: item.targetDist });
+    if (!result) return;
+
+    const updatedReport = [...result.report];
+    const selectedSet = new Set(selectedCodes);
+    let transferredCount = 0;
+    const logMessages: string[] = [];
+
+    dispersingEligibleItems.forEach((eleg) => {
+      if (selectedSet.has(eleg.item.codInterno) && eleg.offer) {
+        const idx = updatedReport.findIndex(r => r.codInterno === eleg.item.codInterno);
+        if (idx !== -1) {
+          const off = eleg.offer;
+          const mappedAlternatives = (eleg.allOffers || []).map((o: any) => ({
+            ean: o.ean,
+            descricao: o.descricao,
+            laboratorio: o.laboratorio,
+            preco: o.precoLiquido !== undefined ? o.precoLiquido : (o.preco !== undefined ? o.preco : 0),
+            distribuidora: o.distribuidora,
+            codDist: o.codDist,
+            condicao: o.condicao,
+            prazo: o.prazo,
+            qtdMin: o.qtdMin,
+            qtdMax: o.qtdMax,
+            cx: o.cx,
+            estoque: o.estoque
+          }));
+
+          updatedReport[idx] = {
+            ...updatedReport[idx],
+            novoEan: off.ean || updatedReport[idx].novoEan || updatedReport[idx].originalEan,
+            novaDescricao: off.descricao || updatedReport[idx].novaDescricao || updatedReport[idx].originalDescricao,
+            novoLaboratorio: off.laboratorio || updatedReport[idx].novoLaboratorio || updatedReport[idx].originalLaboratorio || "GENÉRICO",
+            novoPreco: off.precoLiquido,
+            distribuidora: off.distribuidora,
+            estoque: off.estoque,
+            codDist: off.codDist,
+            condicao: off.condicao,
+            codProdutoDist: off.codProdutoDist,
+            codProduto: off.codProduto,
+            prazo: off.prazo,
+            motivoAcao: `Dispersado p/ ${off.distribuidora}`,
+            economiaUnit: Math.max(0, updatedReport[idx].originalPreco - off.precoLiquido),
+            economiaTotal: Math.max(0, updatedReport[idx].originalPreco - off.precoLiquido) * updatedReport[idx].qtd,
+            isShortage: false,
+            alternatives: mappedAlternatives
+          };
+          transferredCount++;
+          logMessages.push(`[SUCESSO] Item "${eleg.item.novaDescricao}" dispersado para ${off.distribuidora}`);
+        }
       }
+    });
+
+    if (transferredCount > 0) {
+      setResult((prev: any) => {
+        if (!prev) return null;
+        const activeSwaps = updatedReport.filter((it: any) => !disregardedCodes.has(it.codInterno));
+        const newTotalSavings = activeSwaps.reduce((sum, it) => sum + (it.economiaTotal || 0), 0);
+        return { ...prev, summary: { ...prev.summary, totalSavings: newTotalSavings }, report: updatedReport };
+      });
+      setLogs(prev => [...prev, ...logMessages]);
     }
-    newResult.report = Array.from(updatedMap.values());
-    setResult(newResult);
     setDispersingFromDist(null);
     setDispersingEligibleItems([]);
     setDispersingSelectedCodes(new Set());
   };
 
   const handleApplyCompletingTransfers = (selectedCodes: string[]) => {
-    if (selectedCodes.length === 0 || !completingTargetDist) return;
-    const newResult = { ...result! };
-    const newReport = [...newResult.report];
-    const updatedMap = new Map<string, any>(newReport.map(r => [r.codInterno, r]));
-    for (const code of selectedCodes) {
-      const item = completingEligibleItems.find((i: any) => i.codInterno === code);
-      if (item && updatedMap.has(code)) {
-        const existing = updatedMap.get(code);
-        updatedMap.set(code, { ...existing, distribuidora: completingTargetDist });
+    if (!result) return;
+
+    const updatedReport = [...result.report];
+    const selectedSet = new Set(selectedCodes);
+    let transferredCount = 0;
+    const logMessages: string[] = [];
+
+    completingEligibleItems.forEach((eleg) => {
+      if (selectedSet.has(eleg.item.codInterno)) {
+        const idx = updatedReport.findIndex(r => r.codInterno === eleg.item.codInterno);
+        if (idx !== -1) {
+          const off = eleg.offer;
+          updatedReport[idx] = {
+            ...updatedReport[idx],
+            novoEan: off.ean || updatedReport[idx].novoEan || updatedReport[idx].originalEan,
+            novaDescricao: off.descricao || updatedReport[idx].novaDescricao || updatedReport[idx].originalDescricao,
+            novoLaboratorio: off.laboratorio || updatedReport[idx].novoLaboratorio || updatedReport[idx].originalLaboratorio || "GENÉRICO",
+            novoPreco: off.precoLiquido,
+            distribuidora: off.distribuidora,
+            estoque: off.estoque,
+            codDist: off.codDist,
+            condicao: off.condicao,
+            codProdutoDist: off.codProdutoDist,
+            codProduto: off.codProduto,
+            prazo: off.prazo,
+            motivoAcao: `Puxado p/ ${off.distribuidora}`,
+            economiaUnit: Math.max(0, updatedReport[idx].originalPreco - off.precoLiquido),
+            economiaTotal: Math.max(0, updatedReport[idx].originalPreco - off.precoLiquido) * updatedReport[idx].qtd,
+            isShortage: false
+          };
+          transferredCount++;
+          logMessages.push(`[SUCESSO] Item "${eleg.item.novaDescricao}" puxado para ${off.distribuidora}`);
+        }
       }
+    });
+
+    if (transferredCount > 0) {
+      setResult((prev: any) => {
+        if (!prev) return null;
+        const activeSwaps = updatedReport.filter((it: any) => !disregardedCodes.has(it.codInterno));
+        const newTotalSavings = activeSwaps.reduce((sum, it) => sum + (it.economiaTotal || 0), 0);
+        return { ...prev, summary: { ...prev.summary, totalSavings: newTotalSavings }, report: updatedReport };
+      });
+      setLogs(prev => [...prev, ...logMessages]);
     }
-    newResult.report = Array.from(updatedMap.values());
-    setResult(newResult);
     setCompletingTargetDist(null);
     setCompletingEligibleItems([]);
     setCompletingSelectedCodes(new Set());
@@ -482,7 +691,8 @@ export default function App() {
           token: config.token,
           cnpj: config.cnpj,
           margemMinima: config.margemMinima,
-          disabledDistributors: Array.from(disabledDistributors)
+          disabledDistributors: Array.from(disabledDistributors),
+          externalSuppliers
         })
       });
 
@@ -2209,7 +2419,7 @@ export default function App() {
             >
               <button
                 onClick={() => {
-                  if (!isDragging.current) setIsManualAddModalOpen(true);
+                  if (!isDragging.current) { setManualAddOriginItem(null); setIsManualAddModalOpen(true); }
                 }}
                 className="bg-emerald-700 hover:bg-emerald-800 text-white rounded-full p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] border-2 border-[#141414] cursor-pointer flex items-center justify-center transition-colors group"
               >
@@ -3210,7 +3420,7 @@ export default function App() {
                                         <span className="text-[10px] text-amber-700 bg-amber-100 px-1.5 py-0.5 font-bold">Sem ofertas</span>
                                         <button
                                           onClick={() => {
-                                            setManualAddOriginItem({ ean: item.ean || "", descricao: item.descricao, laboratorio: "" });
+                                            setManualAddOriginItem({ ean: item.ean || "", descricao: item.descricao, laboratorio: "", idEncomenda: item.idEncomenda });
                                             setManualAddFromEncomendas(itemRowKey);
                                             setIsManualAddModalOpen(true);
                                             setIsEncomendasImportOpen(false);

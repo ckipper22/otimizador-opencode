@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import React, { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect } from "react";
 import { EanEyeButton } from "./EanEyeButton";
 import { EanPromoButton } from "./EanPromoButton";
 import { ObservationBell } from "./ObservationBell";
@@ -349,6 +349,7 @@ export default function SwapsTable({
     return ruleMatchesMap.get(activeWhatsAppRules[0]?.id || "") || [];
   }, [ruleMatchesMap, activeWhatsAppRules]);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [stableGroupOrder, setStableGroupOrder] = useState<string[]>([]);
 
   // Cache de promises de busca de alternativas em tempo real — compartilhado entre as 2 instâncias de ConditionSelector
   const liveAlternativesCacheRef = useRef<Map<string, Promise<NonNullable<SwapReportItem["alternatives"]>>>>(new Map());
@@ -505,18 +506,18 @@ export default function SwapsTable({
   }, [report, disregardedCodes, searchTerm, filterType, disabledItemCodes, showOnlyAlerts, isItemAlert]);
 
   // Group filtered items by distributor and condition/prazo
-  const groups = useMemo(() => {
-    const map: Record<string, { 
-      name: string; 
+  const groupsMap = useMemo(() => {
+    const map: Record<string, {
+      name: string;
       distribuidora: string;
       condicao?: string;
       prazo?: number;
       pedidoMinimo: number;
-      items: SwapReportItem[]; 
-      totalValue: number; 
-      activeCount: number; 
+      items: SwapReportItem[];
+      totalValue: number;
+      activeCount: number;
     }> = {};
-    
+
     for (const item of processedReport) {
       // Reclassificar itens faturados sem entrada confirmada
       const isManualOrEncomenda = item.origem === "manual" || item.origem === "encomenda";
@@ -526,70 +527,79 @@ export default function SwapsTable({
       // TODO: Carlos — definir texto final do grupo (ex: "Aguardando Chegar {dist}" ou nome genérico)
       const dist = isAguardando ? (distFaturado ? `Aguardando Chegar ${distFaturado}` : "Aguardando Chegar") : (item.distribuidora || "Não Encontrados");
       const isVirtual = dist === "Não Encontrados" || dist === "Sem Estoque" || dist.startsWith("Aguardando Chegar") || dist === "Descartado — Já Faturado";
-      const groupKey = isVirtual 
-        ? dist 
+      const groupKey = isVirtual
+        ? dist
         : `${dist} [${item.condicao || "FIXA"} | ${item.prazo !== undefined ? item.prazo : 0}d]`;
-      
+
       const isDisabled = disabledItemCodes.has(item.codInterno);
-      
+
       if (!map[groupKey]) {
-        map[groupKey] = { 
-          name: groupKey, 
+        map[groupKey] = {
+          name: groupKey,
           distribuidora: dist,
           condicao: item.condicao,
           prazo: item.prazo,
           pedidoMinimo: item.pedidoMinimo || 0,
-          items: [], 
-          totalValue: 0, 
-          activeCount: 0 
+          items: [],
+          totalValue: 0,
+          activeCount: 0
         };
       }
-      
+
       map[groupKey].items.push(item);
       if (!isDisabled) {
         map[groupKey].totalValue += item.novoPreco * item.qtd;
         map[groupKey].activeCount++;
       }
     }
-    
-    // Sort based on the stable distributorOrder if available, otherwise use default logic
-    if (distributorOrder && distributorOrder.length > 0) {
-      return distributorOrder
-        .map(name => map[name])
-        .filter(g => g && g.items.length > 0);
-    }
 
-    return Object.values(map).sort((a, b) => {
-      const isAVirtual = a.distribuidora === "Não Encontrados" || a.distribuidora === "Sem Estoque" || a.distribuidora.startsWith("Aguardando Chegar") || a.distribuidora === "Descartado — Já Faturado";
-      const isBVirtual = b.distribuidora === "Não Encontrados" || b.distribuidora === "Sem Estoque" || b.distribuidora.startsWith("Aguardando Chegar") || b.distribuidora === "Descartado — Já Faturado";
+    return map;
+  }, [processedReport, disabledItemCodes, isEanProfarmaAlerted, getFaturadoDistribuidora, profarmaDecisions]);
 
-      if (isAVirtual && !isBVirtual) return 1;
-      if (!isAVirtual && isBVirtual) return -1;
+  useLayoutEffect(() => {
+    const currentKeys = Object.keys(groupsMap);
+    setStableGroupOrder(prev => {
+      const missing = currentKeys.filter(k => !prev.includes(k));
+      if (missing.length === 0) return prev;
 
-      if (!isAVirtual && !isBVirtual) {
-        const minA = distributorMinimums[a.name] !== undefined ? distributorMinimums[a.name] : a.pedidoMinimo;
-        const isAMet = a.totalValue >= minA;
-        const minB = distributorMinimums[b.name] !== undefined ? distributorMinimums[b.name] : b.pedidoMinimo;
-        const isBMet = b.totalValue >= minB;
+      const missingSorted = [...missing].sort((ka, kb) => {
+        const a = groupsMap[ka];
+        const b = groupsMap[kb];
+        const isAVirtual = a.distribuidora === "Não Encontrados" || a.distribuidora === "Sem Estoque" || a.distribuidora.startsWith("Aguardando Chegar") || a.distribuidora === "Descartado — Já Faturado";
+        const isBVirtual = b.distribuidora === "Não Encontrados" || b.distribuidora === "Sem Estoque" || b.distribuidora.startsWith("Aguardando Chegar") || b.distribuidora === "Descartado — Já Faturado";
 
-        // Incompletos primeiro (amarelo)
-        if (!isAMet && isBMet) return -1;
-        // Completos depois (verde)
-        if (isAMet && !isBMet) return 1;
+        if (isAVirtual && !isBVirtual) return 1;
+        if (!isAVirtual && isBVirtual) return -1;
 
-        // Mesma categoria, ordena por valor decrescente
-        return b.totalValue - a.totalValue;
-      }
+        if (!isAVirtual && !isBVirtual) {
+          const minA = distributorMinimums[a.name] !== undefined ? distributorMinimums[a.name] : a.pedidoMinimo;
+          const isAMet = a.totalValue >= minA;
+          const minB = distributorMinimums[b.name] !== undefined ? distributorMinimums[b.name] : b.pedidoMinimo;
+          const isBMet = b.totalValue >= minB;
 
-      // Ambos virtuais
-      if (a.distribuidora === "Não Encontrados" && b.distribuidora === "Sem Estoque") return -1;
-      if (a.distribuidora === "Sem Estoque" && b.distribuidora === "Não Encontrados") return 1;
-      if (a.distribuidora.startsWith("Aguardando Chegar")) return 1;
-      if (b.distribuidora.startsWith("Aguardando Chegar")) return -1;
-      
-      return 0;
+          if (!isAMet && isBMet) return -1;
+          if (isAMet && !isBMet) return 1;
+
+          return b.totalValue - a.totalValue;
+        }
+
+        if (a.distribuidora === "Não Encontrados" && b.distribuidora === "Sem Estoque") return -1;
+        if (a.distribuidora === "Sem Estoque" && b.distribuidora === "Não Encontrados") return 1;
+        if (a.distribuidora.startsWith("Aguardando Chegar")) return 1;
+        if (b.distribuidora.startsWith("Aguardando Chegar")) return -1;
+
+        return 0;
+      });
+
+      return [...prev, ...missingSorted];
     });
-  }, [processedReport, disabledItemCodes, distributorMinimums, distributorOrder, isEanProfarmaAlerted, getFaturadoDistribuidora, profarmaDecisions]);
+  }, [groupsMap, distributorMinimums]);
+
+  const groups = useMemo(() => {
+    return stableGroupOrder
+      .map(name => groupsMap[name])
+      .filter(g => g && g.items.length > 0);
+  }, [stableGroupOrder, groupsMap]);
 
   // Automatically expand/collapse groups when "Apenas Alertas/Pendências" filter is toggled
   useEffect(() => {

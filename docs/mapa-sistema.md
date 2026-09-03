@@ -472,9 +472,9 @@ Opcional: POST confirmar-pedido → status "Encomendado"
 - **Bug #27 (corrigido):** Migração `origem`/`id_encomenda` nunca rodava contra Turso — `initTursoSchema()` agora tem as 6 migrações ALTER TABLE (database.ts:266-271)
 - **Bug #39:** Mesma razão do throttle `CONCURRENCY=1` — APIs externas sobrecarregavam e itens se perdiam
 
-### Pendência conhecida
+~~### Pendência conhecida~~ (resolvido 2026-09-03)
 
-Fornecedores externos (`external_suppliers`) NÃO competem no fluxo de encomendas (`/api/encomendas/buscar-ofertas-batch`). Decisão pra outra sessão.
+**Resolvido:** Fornecedores externos (`external_suppliers`) agora competem no fluxo de encomendas (`/api/encomendas/buscar-ofertas-batch`). A lógica de matching (EAN exato + fallback texto + resolução de preço/desconto) foi extraída de `/api/optimize` pra função compartilhada `matchExternalSupplierOffer` (server.ts), reaproveitada nos dois endpoints. Preço de referência (`melhorPrecoAtual`) é filtrado por EAN igual + estoque > 0 antes do cálculo de desconto. Ver CEGUEIRA ANTIGA #52 em AGENTS.md.
 
 ---
 

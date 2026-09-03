@@ -8,6 +8,7 @@ import {
   updatePedidoMonitoradoLastChecked,
   updatePedidoMonitoradoStatus,
   updatePedidoMonitoradoPendingDists,
+  updatePedidoMonitoradoEncomendasPendentes,
   saveItensConfirmadosBatch,
 } from "./database";
 
@@ -141,7 +142,14 @@ export async function checkPedidoReturn(pedido: PedidoMonitorado): Promise<{ don
 
     // Confirmar encomendas por distribuidora
     if (encomendasPendentes.length > 0) {
-      await confirmarEncomendasAposRetorno(numPedido, itens, encomendasPendentes, relatedGroups, dists, logs);
+      const resolvedIds = await confirmarEncomendasAposRetorno(numPedido, itens, encomendasPendentes, relatedGroups, dists, logs);
+      if (resolvedIds.length > 0) {
+        const remaining = encomendasPendentes.filter((e: any) => !resolvedIds.includes(e.idEncomenda));
+        if (remaining.length !== encomendasPendentes.length) {
+          await updatePedidoMonitoradoEncomendasPendentes(numPedido, remaining);
+          logs.push(`[PEDIDO-MONITOR] ${resolvedIds.length} encomenda(s) resolvida(s) e removida(s) do rastreamento.`);
+        }
+      }
     }
 
     if (isAllFinalized) {
@@ -177,12 +185,13 @@ async function confirmarEncomendasAposRetorno(
   relatedGroups: string[],
   dists: any[],
   logs: string[]
-) {
+): Promise<string[]> {
   const finalizedCodDists = new Set(
     dists.filter((d: any) => d.Status === 3).map((d: any) => String(d.CodDist || d.codDist || "").trim())
   );
 
   const paraConfirmar: { encomenda: any; payload: { id: string; fornecedor: string; dataPrevisao: string; status?: string; observacao?: string } }[] = [];
+  const resolvedIds: string[] = [];
 
   for (const encPendente of encomendasPendentes) {
     const encCodDists = Array.from(new Set(
@@ -190,6 +199,8 @@ async function confirmarEncomendasAposRetorno(
     )) as string[];
     const todosFinalizados = encCodDists.length > 0 && encCodDists.every((cd: string) => finalizedCodDists.has(cd));
     if (!todosFinalizados) continue;
+
+    resolvedIds.push(encPendente.idEncomenda);
 
     // Verificar se pelo menos 1 item desta encomenda foi faturado
     const itensFaturadosDaEnc = encPendente.itens.filter((itemEnc: any) => {
@@ -240,7 +251,7 @@ async function confirmarEncomendasAposRetorno(
     }
   }
 
-  if (paraConfirmar.length === 0) return;
+  if (paraConfirmar.length === 0) return resolvedIds;
 
   logs.push(`[PEDIDO-MONITOR] Confirmando ${paraConfirmar.length} encomenda(s): ${paraConfirmar.map(p => p.encomenda.idEncomenda).join(", ")}...`);
 
@@ -271,6 +282,8 @@ async function confirmarEncomendasAposRetorno(
       logs.push(`[PEDIDO-MONITOR] ATENCAO: ${msg}`);
     }
   }
+
+  return resolvedIds;
 }
 
 // Função principal: processar TODOS os pedidos monitorados

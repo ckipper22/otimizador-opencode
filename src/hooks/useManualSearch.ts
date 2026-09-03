@@ -35,7 +35,7 @@ export function useManualSearch({
   const [isManualAddModalOpen, setIsManualAddModalOpen] = useState<boolean>(false);
   const [manualModalWidth, setManualModalWidth] = useState<string>(() => sessionStorage.getItem('manual_modal_width') || "1200px");
   const [manualModalHeight, setManualModalHeight] = useState<string>(() => sessionStorage.getItem('manual_modal_height') || "700px");
-  const [manualAddOriginItem, setManualAddOriginItem] = useState<{ean: string, descricao: string, laboratorio: string} | null>(null);
+  const [manualAddOriginItem, setManualAddOriginItem] = useState<{ean: string, descricao: string, laboratorio: string, idEncomenda?: string} | null>(null);
 
   const handleManualSearch = async () => {
     if (manualQuery.trim() === "") {
@@ -311,7 +311,8 @@ export function useManualSearch({
       prazo: offerPrazo,
       codProduto: offerCodProd,
       pedidoMinimo: offerPedMin,
-      origem: offer.origem || "manual",
+      origem: manualAddOriginItem?.idEncomenda ? "encomenda" : (offer.origem || "manual"),
+      idEncomenda: manualAddOriginItem?.idEncomenda || undefined,
       motivoAcao: offer.motivoAcao || "",
       whatsappDestino: offer.whatsappDestino || "",
       whatsappRuleId: offer.whatsappRuleId || "",
@@ -383,7 +384,8 @@ export function useManualSearch({
         condicao: offerCondicao,
         prazo: offerPrazo,
         dataAdicao: new Date().toISOString(),
-        origem: offer.origem || "manual",
+        origem: manualAddOriginItem?.idEncomenda ? "encomenda" : (offer.origem || "manual"),
+        idEncomenda: manualAddOriginItem?.idEncomenda || undefined,
         motivoAcao: offer.motivoAcao || "",
         fornecedorLista: offer.fornecedorLista || "",
       });
@@ -411,7 +413,8 @@ export function useManualSearch({
             condicao: offerCondicao,
             prazo: offerPrazo,
             dataAdicao: new Date().toISOString(),
-            origem: "manual"
+            origem: manualAddOriginItem?.idEncomenda ? "encomenda" : "manual",
+            idEncomenda: manualAddOriginItem?.idEncomenda || null
           },
           cnpj: config.cnpj || ""
         })

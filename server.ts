@@ -2794,7 +2794,7 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
   const ts = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const log = (msg: string) => { const m = `[${ts()}] ${msg}`; logs.push(m); console.log(`[ENCOMENDAS-BATCH] ${m}`); };
   try {
-    const { encomendas, token, cnpj, margemMinima = 0, disabledDistributors = [] } = req.body;
+    const { encomendas, token, cnpj, margemMinima = 0, disabledDistributors = [], externalSuppliers = [] } = req.body;
     const disabledDistSetEncomendas = new Set(disabledDistributors.map(Number));
 
     if (!encomendas || !Array.isArray(encomendas) || encomendas.length === 0) {
@@ -2936,6 +2936,26 @@ app.post("/api/encomendas/buscar-ofertas-batch", async (req, res) => {
                 }
               }
             }
+          }
+        }
+
+        // Adicionar oferta de fornecedor externo (WhatsApp) se houver match
+        if (externalSuppliers && externalSuppliers.length > 0) {
+          const eanLimpoRef = (ean || "").replace(/^0+/, "");
+          const ofertasMesmoEan = ofertas.filter((o: any) => {
+            const ofertaEan = String(o.Ean || o.ean || "").replace(/^0+/, "");
+            const est = o.Estoque !== undefined ? o.Estoque : (o.estoque !== undefined ? o.estoque : 9999);
+            return (!eanLimpoRef || ofertaEan === eanLimpoRef) && est > 0;
+          });
+          const melhorPrecoAtual = ofertasMesmoEan.length > 0
+            ? Math.min(...ofertasMesmoEan.map((o: any) => Number(o.PliquidoUni || o.pliquidoUni || o.Pliquido || o.pliquido || o.Preco || o.preco || Infinity)))
+            : 0;
+          const extResult = matchExternalSupplierOffer(
+            descricao, ean, "", melhorPrecoAtual,
+            externalSuppliers, "[ENCOMENDAS-BATCH]", logs
+          );
+          if (extResult?.offer) {
+            ofertas.push(extResult.offer);
           }
         }
 
@@ -3185,6 +3205,195 @@ async function fetchComprasHistoricoBatch(eans: string[]): Promise<Record<string
     }
   }
   return result;
+}
+
+function matchExternalSupplierOffer(
+  descricao: string,
+  ean: string,
+  _laboratorio: string,
+  precoReferencia: number,
+  externalSuppliers: any[],
+  logPrefix: string,
+  logs: string[]
+): { offer: { NomeDist: string; CodDist: number; Estoque: number; Condicao: string; Prazo: number; PliquidoUni: number; Pliquido: number; Ean: string; CodProdutoDist: string; CodProduto: string; Descricao: string }; trabalhaComItem: { name: string; description: string } | null } | null {
+  if (!externalSuppliers || externalSuppliers.length === 0) return null;
+
+  const cleanString = (str: string) => {
+    return str
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
+  const extractDosageAndQty = (str: string) => {
+    const normalized = str.toLowerCase();
+    const dosageRegex = /(\d+[,.]?\d*)\s*(mg|mcg|g|ml|ui|ug)\b/gi;
+    const dosages: string[] = [];
+    let dMatch;
+    while ((dMatch = dosageRegex.exec(normalized)) !== null) {
+      dosages.push(`${dMatch[1].replace(",", ".")}${dMatch[2].toLowerCase()}`);
+    }
+    const qtyRegex = /(\d+)\s*(cp|cpr|caps|capsulas|tabs|comprimidos|comprimido|amp|frascos|frasco|unidades|unidade|un)\b/gi;
+    const quantities: string[] = [];
+    let qMatch;
+    while ((qMatch = qtyRegex.exec(normalized)) !== null) {
+      quantities.push(qMatch[1]);
+    }
+    return { dosages, quantities };
+  };
+
+  const resolveExtPrice = (extProd: any, basePrice: number): number | null => {
+    if (extProd.price && extProd.price > 0) return extProd.price;
+    if (extProd.discountPercent && extProd.discountPercent > 0 && basePrice > 0) {
+      return basePrice * (1 - extProd.discountPercent / 100);
+    }
+    let tiers = extProd.discountTiers;
+    if (tiers && tiers.length > 0 && basePrice > 0) {
+      if (typeof tiers[0] === "string") {
+        tiers = tiers.map((s: string) => {
+          const m = s.match(/minQty=(\d+).*?discountPercent=([\d.]+)/);
+          if (m) return { minQty: parseInt(m[1]), discountPercent: parseFloat(m[2]) };
+          return null;
+        }).filter(Boolean);
+      }
+      const sorted = [...tiers].sort((a: any, b: any) => a.minQty - b.minQty);
+      if (sorted[0] && sorted[0].discountPercent > 0) {
+        return basePrice * (1 - sorted[0].discountPercent / 100);
+      }
+    }
+    return null;
+  };
+
+  const sicfDesc = descricao || "";
+  const sicfClean = cleanString(sicfDesc);
+  const sicfWords = sicfClean.split(" ").filter(w => w.length > 1);
+  const stopWords = new Set(["de", "com", "cp", "cpr", "generico", "gen", "c/", "emb", "cx", "mg", "g", "ml"]);
+  const sicfInfo = extractDosageAndQty(sicfDesc);
+  const todayStr = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  // FASE 1: Match por EAN exato
+  const eanMatchCandidates: Array<{ extProd: any; supplierName: string }> = [];
+  for (const supplier of externalSuppliers) {
+    if (supplier.status_analise === "descartada") continue;
+    if (!supplier.products || !Array.isArray(supplier.products)) continue;
+    for (const extProd of supplier.products) {
+      const itemValidade = extProd.validade || supplier.validade;
+      if (itemValidade && itemValidade < todayStr) continue;
+      if (extProd.ean && cleanEan(extProd.ean) === cleanEan(ean)) {
+        eanMatchCandidates.push({ extProd, supplierName: supplier.name });
+      }
+    }
+  }
+
+  let matchedExternal: any = null;
+  let matchedSupplierName = "";
+
+  if (eanMatchCandidates.length > 0) {
+    let best = eanMatchCandidates[0];
+    let bestPrice = resolveExtPrice(best.extProd, precoReferencia);
+    for (let i = 1; i < eanMatchCandidates.length; i++) {
+      const price = resolveExtPrice(eanMatchCandidates[i].extProd, precoReferencia);
+      if (price !== null && (bestPrice === null || price < bestPrice)) {
+        best = eanMatchCandidates[i];
+        bestPrice = price;
+      }
+    }
+    matchedExternal = best.extProd;
+    matchedSupplierName = best.supplierName;
+    logs.push(`${logPrefix} [FORNECEDOR WHATSAPP] Match por EAN exato: ${cleanEan(ean)} = ${cleanEan(best.extProd.ean)} ("${best.extProd.description}" de "${best.supplierName}")`);
+  } else {
+    // FASE 2: Match por texto
+    let bestExternalMatch: any = null;
+    let bestExternalScore = 0;
+
+    for (const supplier of externalSuppliers) {
+      if (supplier.status_analise === "descartada") continue;
+      if (!supplier.products || !Array.isArray(supplier.products)) continue;
+      for (const extProd of supplier.products) {
+        const itemValidade = extProd.validade || supplier.validade;
+        if (itemValidade && itemValidade < todayStr) continue;
+        if (!validateSwapEquivalence(sicfDesc, extProd.description)) continue;
+        const extClean = cleanString(extProd.description);
+        const extWords = extClean.split(" ").filter(w => w.length > 1 && !stopWords.has(w));
+        if (extWords.length === 0) continue;
+        const extInfo = extractDosageAndQty(extProd.description);
+        if (sicfInfo.dosages.length > 0 && extInfo.dosages.length > 0) {
+          if (!sicfInfo.dosages.some(d => extInfo.dosages.includes(d))) continue;
+        }
+        if (sicfInfo.quantities.length > 0 && extInfo.quantities.length > 0) {
+          if (!sicfInfo.quantities.some(q => extInfo.quantities.includes(q))) continue;
+        }
+        let matches = 0;
+        for (const word of extWords) {
+          if (sicfWords.includes(word)) matches++;
+        }
+        const score = matches / extWords.length;
+        const firstWordExt = extClean.split(" ")[0];
+        const firstWordSicf = sicfClean.split(" ")[0];
+        const firstWordMatches = firstWordExt === firstWordSicf || sicfWords.includes(firstWordExt);
+        if (firstWordMatches && score >= 0.6) {
+          if (!bestExternalMatch || score > bestExternalScore) {
+            bestExternalMatch = extProd;
+            bestExternalScore = score;
+            matchedSupplierName = supplier.name;
+          }
+        }
+      }
+    }
+    if (bestExternalMatch) {
+      matchedExternal = bestExternalMatch;
+      logs.push(`${logPrefix} [FORNECEDOR WHATSAPP] Match por texto: score=${bestExternalScore.toFixed(2)} ("${bestExternalMatch.description}" de "${matchedSupplierName}")`);
+    }
+  }
+
+  if (!matchedExternal) return null;
+
+  // Resolver preço (suporte a % desconto e discountTiers)
+  let extPrice = matchedExternal.price;
+  let extDiscountPercent = matchedExternal.discountPercent;
+  let extDiscountTiers = matchedExternal.discountTiers;
+  if (extDiscountTiers && extDiscountTiers.length > 0 && typeof extDiscountTiers[0] === "string") {
+    extDiscountTiers = extDiscountTiers.map((s: string) => {
+      const match = s.match(/minQty=(\d+).*?discountPercent=([\d.]+)/);
+      if (match) return { minQty: parseInt(match[1]), discountPercent: parseFloat(match[2]) };
+      return null;
+    }).filter(Boolean);
+  }
+  if ((!extPrice || extPrice === 0) && extDiscountPercent && extDiscountPercent > 0 && precoReferencia > 0) {
+    extPrice = precoReferencia * (1 - extDiscountPercent / 100);
+    logs.push(`${logPrefix} [FORNECEDOR WHATSAPP] Preço calculado via ${extDiscountPercent}% desconto: R$ ${extPrice.toFixed(2)} (base: R$ ${precoReferencia.toFixed(2)})`);
+  } else if ((!extPrice || extPrice === 0) && (!extDiscountPercent || extDiscountPercent === 0) && extDiscountTiers && extDiscountTiers.length > 0 && precoReferencia > 0) {
+    const lowestTier = [...extDiscountTiers].sort((a: any, b: any) => a.minQty - b.minQty)[0];
+    if (lowestTier && lowestTier.discountPercent > 0) {
+      extPrice = precoReferencia * (1 - lowestTier.discountPercent / 100);
+      extDiscountPercent = lowestTier.discountPercent;
+      logs.push(`${logPrefix} [FORNECEDOR WHATSAPP] Preço calculado via discountTiers: R$ ${extPrice.toFixed(2)} (base: R$ ${precoReferencia.toFixed(2)}, desconto: ${lowestTier.discountPercent}% faixa ${lowestTier.minQty}un)`);
+    }
+  }
+
+  if (!extPrice || extPrice <= 0) {
+    return { offer: null, trabalhaComItem: { name: matchedSupplierName, description: matchedExternal.description } };
+  }
+
+  return {
+    offer: {
+      Ean: ean,
+      Descricao: matchedExternal.description,
+      NomeDist: matchedSupplierName,
+      CodDist: 9999,
+      Estoque: 999,
+      Condicao: "MANUAL",
+      Prazo: 0,
+      PliquidoUni: extPrice,
+      Pliquido: extPrice,
+      CodProdutoDist: "",
+      CodProduto: "",
+    },
+    trabalhaComItem: null,
+  };
 }
 
 const SYNC_STATE = { running: false, logs: [] as string[], totalSync: 0, totalPrincipios: 0, totalLancamentos: 0, totalSugestoes: 0 };
@@ -6103,8 +6312,8 @@ condicoesEnriched = condicoes.map((c: any) => {
               return getUnitCost(a) - getUnitCost(b);
             });
             ref = condicoesOriginalCompativeis[0];
-            bestOriginalDist = resolveDistName(ref, bestOriginalCodDist);
             bestOriginalCodDist = ref.CodDist !== undefined ? ref.CodDist : (ref.codDist !== undefined ? ref.codDist : 0);
+            bestOriginalDist = resolveDistName(ref, bestOriginalCodDist);
             bestOriginalEstoque = ref.Estoque !== undefined ? ref.Estoque : 0;
             bestOriginalCondicao = ref.Condicao || ref.condicao || "FIXA";
             bestOriginalCodProdutoDist = ref.CodProdutoDist || ref.codProdutoDist || "";
@@ -6161,242 +6370,34 @@ condicoesEnriched = condicoes.map((c: any) => {
         }
 
         // Verificar se há fornecedores externos cadastrados com preços melhores
-        let matchedExternal: any = null;
-        let matchedSupplierName = "";
-        
-        if (externalSuppliers && externalSuppliers.length > 0) {
-          const cleanString = (str: string) => {
-            return str
-              .toLowerCase()
-              .normalize("NFD")
-              .replace(/[\u0300-\u036f]/g, "")
-              .replace(/[^a-z0-9\s]/g, " ")
-              .replace(/\s+/g, " ")
-              .trim();
-          };
+        const extMatchResult = matchExternalSupplierOffer(
+          item.descricao || "", item.ean, item.laboratorio || "",
+          bestSmartPedPrice, externalSuppliers, "[FORNECEDOR WHATSAPP]", logs
+        );
+        const externalTrabalhaComItem = extMatchResult?.trabalhaComItem ?? null;
 
-          const extractDosageAndQty = (str: string) => {
-            const normalized = str.toLowerCase();
-            
-            // Extrair dosagens (ex: 5mg, 500mg, 10ml, 5g, 100mcg, 1000ui)
-            const dosageRegex = /(\d+[,.]?\d*)\s*(mg|mcg|g|ml|ui|ug)\b/gi;
-            const dosages: string[] = [];
-            let dMatch;
-            while ((dMatch = dosageRegex.exec(normalized)) !== null) {
-              dosages.push(`${dMatch[1].replace(",", ".")}${dMatch[2].toLowerCase()}`);
-            }
-
-            // Extrair quantidades (ex: 30cp, 10 caps, 60 comprimidos)
-            const qtyRegex = /(\d+)\s*(cp|cpr|caps|capsulas|tabs|comprimidos|comprimido|amp|frascos|frasco|unidades|unidade|un)\b/gi;
-            const quantities: string[] = [];
-            let qMatch;
-            while ((qMatch = qtyRegex.exec(normalized)) !== null) {
-              quantities.push(qMatch[1]);
-            }
-
-            return { dosages, quantities };
-          };
-
-          // Resolver preço efetivo de um produto externo (sem mutar o objeto)
-          const resolveExtPrice = (extProd: any, basePrice: number): number | null => {
-            if (extProd.price && extProd.price > 0) return extProd.price;
-            if (extProd.discountPercent && extProd.discountPercent > 0 && basePrice > 0) {
-              return basePrice * (1 - extProd.discountPercent / 100);
-            }
-            let tiers = extProd.discountTiers;
-            if (tiers && tiers.length > 0 && basePrice > 0) {
-              if (typeof tiers[0] === "string") {
-                tiers = tiers.map((s: string) => {
-                  const m = s.match(/minQty=(\d+).*?discountPercent=([\d.]+)/);
-                  if (m) return { minQty: parseInt(m[1]), discountPercent: parseFloat(m[2]) };
-                  return null;
-                }).filter(Boolean);
-              }
-              const sorted = [...tiers].sort((a: any, b: any) => a.minQty - b.minQty);
-              if (sorted[0] && sorted[0].discountPercent > 0) {
-                return basePrice * (1 - sorted[0].discountPercent / 100);
-              }
-            }
-            return null;
-          };
-
-          const sicfDesc = item.descricao || "";
-          const sicfClean = cleanString(sicfDesc);
-          const sicfWords = sicfClean.split(" ").filter(w => w.length > 1);
-          const stopWords = new Set(["de", "com", "cp", "cpr", "generico", "gen", "c/", "emb", "cx", "mg", "g", "ml"]);
-          
-          const sicfInfo = extractDosageAndQty(sicfDesc);
-
-          const todayStr = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10); // UTC-3
-
-          // ── FASE 1: Match por EAN exato (caminho primário) ──
-          // EAN é identificador global — se bate, é o mesmo produto, sem precisar de heurísticas de texto
-          const eanMatchCandidates: Array<{ extProd: any; supplierName: string }> = [];
-          for (const supplier of externalSuppliers) {
-            if (supplier.status_analise === "descartada") continue;
-            if (!supplier.products || !Array.isArray(supplier.products)) continue;
-            for (const extProd of supplier.products) {
-              const itemValidade = extProd.validade || supplier.validade;
-              if (itemValidade && itemValidade < todayStr) continue;
-              if (extProd.ean && cleanEan(extProd.ean) === cleanEan(item.ean)) {
-                eanMatchCandidates.push({ extProd, supplierName: supplier.name });
-              }
-            }
-          }
-
-          if (eanMatchCandidates.length > 0) {
-            // Entre candidatos EAN, escolher o de menor preço efetivo
-            let best = eanMatchCandidates[0];
-            let bestPrice = resolveExtPrice(best.extProd, bestSmartPedPrice);
-            for (let i = 1; i < eanMatchCandidates.length; i++) {
-              const price = resolveExtPrice(eanMatchCandidates[i].extProd, bestSmartPedPrice);
-              if (price !== null && (bestPrice === null || price < bestPrice)) {
-                best = eanMatchCandidates[i];
-                bestPrice = price;
-              }
-            }
-            matchedExternal = best.extProd;
-            matchedSupplierName = best.supplierName;
-            logs.push(`[FORNECEDOR WHATSAPP] Match por EAN exato: ${cleanEan(item.ean)} = ${cleanEan(best.extProd.ean)} ("${best.extProd.description}" de "${best.supplierName}")`);
-          } else {
-            // ── FASE 2: Match por texto (fallback quando nenhum EAN bate) ──
-            let bestExternalMatch: any = null;
-            let bestExternalScore = 0;
-
-            for (const supplier of externalSuppliers) {
-              if (supplier.status_analise === "descartada") continue;
-              if (!supplier.products || !Array.isArray(supplier.products)) continue;
-              
-              for (const extProd of supplier.products) {
-                const itemValidade = extProd.validade || supplier.validade;
-                if (itemValidade && itemValidade < todayStr) continue;
-                if (!validateSwapEquivalence(sicfDesc, extProd.description)) {
-                  continue;
-                }
-                const extClean = cleanString(extProd.description);
-                const extWords = extClean.split(" ").filter(w => w.length > 1 && !stopWords.has(w));
-                if (extWords.length === 0) continue;
-
-                const extInfo = extractDosageAndQty(extProd.description);
-                
-                if (sicfInfo.dosages.length > 0 && extInfo.dosages.length > 0) {
-                  const dosageMatch = sicfInfo.dosages.some(d => extInfo.dosages.includes(d));
-                  if (!dosageMatch) continue;
-                }
-                
-                if (sicfInfo.quantities.length > 0 && extInfo.quantities.length > 0) {
-                  const qtyMatch = sicfInfo.quantities.some(q => extInfo.quantities.includes(q));
-                  if (!qtyMatch) continue;
-                }
-
-                let matches = 0;
-                for (const word of extWords) {
-                  if (sicfWords.includes(word)) {
-                    matches++;
-                  }
-                }
-
-                const score = matches / extWords.length;
-                const firstWordExt = extClean.split(" ")[0];
-                const firstWordSicf = sicfClean.split(" ")[0];
-                const firstWordMatches = firstWordExt === firstWordSicf || sicfWords.includes(firstWordExt);
-
-                if (firstWordMatches && score >= 0.6) {
-                  if (!bestExternalMatch || score > bestExternalScore) {
-                    bestExternalMatch = extProd;
-                    bestExternalScore = score;
-                    matchedSupplierName = supplier.name;
-                  }
-                }
-              }
-            }
-
-            if (bestExternalMatch) {
-              matchedExternal = bestExternalMatch;
-              logs.push(`[FORNECEDOR WHATSAPP] Match por texto: score=${bestExternalScore.toFixed(2)} ("${bestExternalMatch.description}" de "${matchedSupplierName}")`);
-            }
-          }
-        }
-
-        // Calcular preço do fornecedor externo (suporte a % desconto e discountTiers)
-        if (matchedExternal) {
-          // Normalizar discountTiers: aceitar JSON valido OU formato PowerShell
-          let extDiscountTiers = matchedExternal.discountTiers;
-          if (extDiscountTiers && extDiscountTiers.length > 0 && typeof extDiscountTiers[0] === "string") {
-            extDiscountTiers = extDiscountTiers.map((s: string) => {
-              const match = s.match(/minQty=(\d+).*?discountPercent=([\d.]+)/);
-              if (match) return { minQty: parseInt(match[1]), discountPercent: parseFloat(match[2]) };
-              return null;
-            }).filter(Boolean);
-          }
-          if ((!matchedExternal.price || matchedExternal.price === 0) && matchedExternal.discountPercent && matchedExternal.discountPercent > 0 && bestSmartPedPrice > 0) {
-            matchedExternal.price = bestSmartPedPrice * (1 - matchedExternal.discountPercent / 100);
-            logs.push(`[FORNECEDOR WHATSAPP] Preço calculado via ${matchedExternal.discountPercent}% desconto: R$ ${matchedExternal.price.toFixed(2)} (base SmartPed: R$ ${bestSmartPedPrice.toFixed(2)})`);
-          } else if ((!matchedExternal.price || matchedExternal.price === 0) && (!matchedExternal.discountPercent || matchedExternal.discountPercent === 0) && extDiscountTiers && extDiscountTiers.length > 0 && bestSmartPedPrice > 0) {
-            // Fallback: usar desconto da faixa de MENOR minQty (desconto garantido sem volume)
-            const lowestTier = extDiscountTiers.sort((a: any, b: any) => a.minQty - b.minQty)[0];
-            if (lowestTier && lowestTier.discountPercent > 0) {
-              matchedExternal.price = bestSmartPedPrice * (1 - lowestTier.discountPercent / 100);
-              matchedExternal.discountPercent = lowestTier.discountPercent;
-              logs.push(`[FORNECEDOR WHATSAPP] Preço calculado via discountTiers: R$ ${matchedExternal.price.toFixed(2)} (base SmartPed: R$ ${bestSmartPedPrice.toFixed(2)}, desconto: ${lowestTier.discountPercent}% faixa ${lowestTier.minQty}un)`);
-            }
-          }
-        }
-
-        // Guardar info de "trabalha com item sem preço" pra usar no path de manter original
-        // Inclui price === 0 porque o código de resolução trata 0 como "sem preço" (mesma condição que null)
-        let externalTrabalhaComItem: { name: string; description: string } | null = null;
-        if (matchedExternal && !matchedExternal.price) {
-          externalTrabalhaComItem = { name: matchedSupplierName, description: matchedExternal.description };
-        }
-
-        if (matchedExternal && matchedExternal.price > 0) {
+        if (extMatchResult?.offer) {
+          const matchedExternalPrice = extMatchResult.offer.PliquidoUni;
           if (bestSmartPedPrice <= 0) {
-            // Sem preço de referência (SmartPed e preço original zerados/ausentes) — qualquer preço real é melhor que nenhum
-            // Não aplicar margemMinima: não há baseline pra calcular economia contra R$ 0
-            const discountInfo = matchedExternal.discountPercent ? ` (${matchedExternal.discountPercent}% desconto)` : "";
-            logs.push(`⭐ [FORNECEDOR WHATSAPP] Sem preço de referência — aceitando oferta do fornecedor "${matchedSupplierName}": R$ ${matchedExternal.price.toFixed(2)}${discountInfo} para "${matchedExternal.description}"`);
-            const melhorExt = {
-              Ean: item.ean,
-              Descricao: matchedExternal.description,
-              Laboratorio: item.laboratorio,
-              NomeDist: matchedSupplierName,
-              CodDist: 9999,
-              Estoque: 999,
-              Condicao: "MANUAL",
-              Prazo: 0,
-              PliquidoUni: matchedExternal.price,
-              Pliquido: matchedExternal.price,
-              CodProdutoDist: "",
-              CodProduto: "",
-              Mensagem: "Pedido via WhatsApp"
-            };
+            logs.push(`⭐ [FORNECEDOR WHATSAPP] Sem preço de referência — aceitando oferta do fornecedor "${extMatchResult.offer.NomeDist}": R$ ${matchedExternalPrice.toFixed(2)} para "${extMatchResult.offer.Descricao}"`);
             finalResult = {
-              melhor: melhorExt,
-              economia: item.precoOriginal - matchedExternal.price,
+              melhor: {
+                ...extMatchResult.offer,
+                Laboratorio: item.laboratorio,
+                Mensagem: "Pedido via WhatsApp"
+              },
+              economia: item.precoOriginal - matchedExternalPrice,
               isFallback: false
             };
-          } else if ((bestSmartPedPrice - matchedExternal.price) >= margemMinima) {
-            const discountInfo = matchedExternal.discountPercent ? ` (${matchedExternal.discountPercent}% desconto)` : "";
-            logs.push(`⭐ [FORNECEDOR WHATSAPP] Melhor preço no fornecedor externo "${matchedSupplierName}": R$ ${matchedExternal.price.toFixed(2)}${discountInfo} (SmartPed: R$ ${bestSmartPedPrice.toFixed(2)}) para "${matchedExternal.description}"`);
-            const melhorExt = {
-              Ean: item.ean,
-              Descricao: matchedExternal.description,
-              Laboratorio: item.laboratorio,
-              NomeDist: matchedSupplierName,
-              CodDist: 9999,
-              Estoque: 999,
-              Condicao: "MANUAL",
-              Prazo: 0,
-              PliquidoUni: matchedExternal.price,
-              Pliquido: matchedExternal.price,
-              CodProdutoDist: "",
-              CodProduto: "",
-              Mensagem: "Pedido via WhatsApp"
-            };
+          } else if ((bestSmartPedPrice - matchedExternalPrice) >= margemMinima) {
+            logs.push(`⭐ [FORNECEDOR WHATSAPP] Melhor preço no fornecedor externo "${extMatchResult.offer.NomeDist}": R$ ${matchedExternalPrice.toFixed(2)} (SmartPed: R$ ${bestSmartPedPrice.toFixed(2)}) para "${extMatchResult.offer.Descricao}"`);
             finalResult = {
-              melhor: melhorExt,
-              economia: item.precoOriginal - matchedExternal.price,
+              melhor: {
+                ...extMatchResult.offer,
+                Laboratorio: item.laboratorio,
+                Mensagem: "Pedido via WhatsApp"
+              },
+              economia: item.precoOriginal - matchedExternalPrice,
               isFallback: false
             };
           }
@@ -6766,8 +6767,8 @@ condicoesEnriched = condicoes.map((c: any) => {
 
             if (validSubstitutos.length > 0) {
               const ref = validSubstitutos[0];
-              originalDist = resolveDistName(ref, originalCodDist);
               originalCodDist = ref.CodDist !== undefined ? ref.CodDist : (ref.codDist !== undefined ? ref.codDist : 0);
+              originalDist = resolveDistName(ref, originalCodDist);
               originalEstoque = ref.Estoque !== undefined ? ref.Estoque : 0;
               originalCondicao = ref.Condicao || ref.condicao || "FIXA";
               originalCodProdutoDist = ref.CodProdutoDist || ref.codProdutoDist || "";
@@ -7478,7 +7479,7 @@ app.post("/api/faturar", async (req, res) => {
         qtd: it.qtd || 1,
         preco: it.novoPreco || it.originalPreco,
         distribuidora: it.distribuidora || "Distribuidora Geral",
-        codDist: it.codDist || 2,
+        codDist: it.codDist || 0,
         condicao: it.condicao || "FIXA",
         codProdutoDist: it.codProdutoDist || "",
         codProduto: it.codProduto || "",
@@ -7502,7 +7503,7 @@ app.post("/api/faturar", async (req, res) => {
           qtd: it.qtd || 1,
           preco: it.novoPreco || it.originalPreco,
           distribuidora: it.distribuidora || "Distribuidora Geral",
-          codDist: it.codDist || 2,
+          codDist: it.codDist || 0,
           condicao: it.condicao || "FIXA",
           codProdutoDist: it.codProdutoDist || "",
           codProduto: it.codProduto || "",
