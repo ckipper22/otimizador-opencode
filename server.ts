@@ -4594,10 +4594,11 @@ app.post("/api/optimize", async (req, res) => {
             if (sEan) eanCatMap.set(sEan, resolveCategoria(s));
           }
         }
+        const ownEans = new Set(parsedItems.map(i => cleanEan(i.ean)).filter(Boolean));
         const beforeRefFilter = allEansForVendas.length;
         for (let i = allEansForVendas.length - 1; i >= 0; i--) {
           const cat = eanCatMap.get(allEansForVendas[i]);
-          if (cat === "marca") allEansForVendas.splice(i, 1);
+          if (cat === "marca" && !ownEans.has(allEansForVendas[i])) allEansForVendas.splice(i, 1);
         }
         if (beforeRefFilter !== allEansForVendas.length) {
           logs.push(`[METRICAS-REF-FILTER] ${beforeRefFilter} EANs → ${allEansForVendas.length} após excluir Referência/Ético (${beforeRefFilter - allEansForVendas.length} removidos)`);
