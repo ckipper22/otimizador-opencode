@@ -615,7 +615,7 @@ export async function getFaturadosPendentes(cnpj: string): Promise<Array<{ ean: 
       `SELECT ic.ean, ic.created_at, ic.cod_dist, da.alias_trier
        FROM itens_confirmados ic
        JOIN distribuidor_alias da ON ic.cod_dist = da.cod_dist AND ic.cnpj = da.cnpj
-       WHERE ic.cnpj = ? AND ic.status = 'faturado'
+       WHERE ic.cnpj = ? AND ic.status = 'faturado' AND ic.entrada_confirmada = 0
        ORDER BY ic.created_at DESC`,
       cnpj
     );

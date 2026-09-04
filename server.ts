@@ -4294,8 +4294,8 @@ app.post("/api/optimize", async (req, res) => {
             }
           }
         } catch (error: any) {
-          console.error("Erro consultando lote da API SmartPed:", error.message);
-          logs.push(`[API ALERTA CRÃTICO] Falha de conexÃ£o: ${error.message}. EANs serÃ£o enriquecidos no ENRICH-POST-BATCH.`);
+          console.error("Erro consultando lote da API SmartPed:", "Lote: " + batch.join(", ") + " -", error.message);
+          logs.push(`[API ALERTA CRÃTICO] Falha de conexÃ£o no lote [${batch.join(", ")}]: ${error.message}. EANs serÃ£o enriquecidos no ENRICH-POST-BATCH.`);
         }
       }
 
