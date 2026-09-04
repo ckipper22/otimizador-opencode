@@ -391,7 +391,8 @@ export default function App() {
               tipos: config.tipos,
               margemMinima: config.margemMinima,
               permitirSemEstoque: config.permitirSemEstoque,
-              cortesRecentes
+              cortesRecentes,
+              onlyExactEan: true
             })
           });
           if (response.ok) {
@@ -482,7 +483,8 @@ export default function App() {
               tipos: config.tipos,
               margemMinima: config.margemMinima,
               permitirSemEstoque: config.permitirSemEstoque,
-              cortesRecentes
+              cortesRecentes,
+              onlyExactEan: true
             })
           });
 

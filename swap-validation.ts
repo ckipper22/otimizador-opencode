@@ -124,6 +124,14 @@ export function validateSwapEquivalence(
     return false;
   }
 
+  // 0b. Bloqueio de Combinado vs Puro — se um é combinado (2+ princípios ativos) e o outro não, rejeitar
+  const COMBO_PATTERN = /\d+(?:\s*(?:MG|MCG|ML|G|UI|%))?\s*[+\/]\s*\d+(?:\s*(?:MG|MCG|ML|G|UI|%))?/;
+  const origIsCombo = COMBO_PATTERN.test(origDesc);
+  const altIsCombo = COMBO_PATTERN.test(altDesc);
+  if (origIsCombo !== altIsCombo) {
+    return false;
+  }
+
   // 1. Função de Normalização de Texto: Remover acentos, caixa alta, caracteres especiais
   const normalizeText = (text: string) => {
     if (!text) return "";

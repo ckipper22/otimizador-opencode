@@ -3,7 +3,7 @@ import { Eye } from "lucide-react";
 import { SimilarProductsModal } from "./SimilarProductsModal";
 import { AnimatePresence } from "motion/react";
 
-export const EanEyeButton = ({ ean, descricao, laboratorio, qtd }: { ean: string, descricao?: string, laboratorio?: string, qtd?: number }) => {
+export const EanEyeButton = ({ ean, descricao, laboratorio, qtd, originalEan }: { ean: string, descricao?: string, laboratorio?: string, qtd?: number, originalEan?: string }) => {
   const [isOpen, setIsOpen] = useState(false);
   
   if (!ean || ean === "0") return null;
@@ -22,7 +22,7 @@ export const EanEyeButton = ({ ean, descricao, laboratorio, qtd }: { ean: string
         <Eye className="w-3.5 h-3.5" />
       </button>
       <AnimatePresence>
-        {isOpen && <SimilarProductsModal ean={ean} descricao={descricao} laboratorio={laboratorio} qtd={qtd} onClose={() => setIsOpen(false)} />}
+        {isOpen && <SimilarProductsModal ean={ean} descricao={descricao} laboratorio={laboratorio} qtd={qtd} originalEan={originalEan} onClose={() => setIsOpen(false)} />}
       </AnimatePresence>
     </>
   );

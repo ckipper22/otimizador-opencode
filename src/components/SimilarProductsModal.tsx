@@ -32,6 +32,7 @@ export interface SimilarProductsModalProps {
   descricao?: string;
   laboratorio?: string;
   qtd?: number;
+  originalEan?: string;
   codInterno?: string;
   onSelectCondition?: (codInterno: string, selectedAlt: any) => void;
   onAddProduct?: (product: any) => void;
@@ -43,6 +44,7 @@ export const SimilarProductsModal: React.FC<SimilarProductsModalProps> = ({
   descricao, 
   laboratorio, 
   qtd = 1,
+  originalEan,
   codInterno,
   onSelectCondition,
   onAddProduct
@@ -76,7 +78,10 @@ export const SimilarProductsModal: React.FC<SimilarProductsModalProps> = ({
       setLoadingSimilares(true);
       setErrorSimilares(null);
       try {
-        const response = await fetch(`/api/similares/${ean}?descricao=${encodeURIComponent(descricao || "")}&forceDesc=${buscarDescricaoParecida}`);
+        const url = originalEan && originalEan !== ean
+          ? `/api/similares/${ean}?descricao=${encodeURIComponent(descricao || "")}&forceDesc=${buscarDescricaoParecida}&originalEan=${originalEan}`
+          : `/api/similares/${ean}?descricao=${encodeURIComponent(descricao || "")}&forceDesc=${buscarDescricaoParecida}`;
+        const response = await fetch(url);
         const result = await response.json();
         if (!response.ok || !result.success) throw new Error(result.error || "Erro ao buscar similares locais no ERP Trier");
         setDataSimilares(result);
@@ -89,7 +94,7 @@ export const SimilarProductsModal: React.FC<SimilarProductsModalProps> = ({
     if (ean) {
       fetchSimilares();
     }
-  }, [ean, buscarDescricaoParecida]);
+  }, [ean, buscarDescricaoParecida, originalEan]);
 
   const produtosExibidos = useMemo(() => {
     if (!dataSimilares?.produtos) return [];
@@ -307,6 +312,13 @@ export const SimilarProductsModal: React.FC<SimilarProductsModalProps> = ({
                   </div>
                 </label>
               </div>
+
+              {dataSimilares?.regexUsed && (
+                <div className="my-3 p-3 bg-amber-100/80 border border-amber-300 text-amber-900 text-xs flex items-center gap-2.5">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>Este produto não está cadastrado no ERP local desta farmácia. Mostrando busca aproximada por descrição, limitada aos produtos já carregados nesta sessão — pode não refletir todos os equivalentes reais disponíveis.</span>
+                </div>
+              )}
 
               {loadingSimilares ? (
                 <div className="py-12 flex flex-col items-center justify-center text-[#141414]/70">

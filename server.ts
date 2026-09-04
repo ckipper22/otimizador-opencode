@@ -6829,13 +6829,15 @@ condicoesEnriched = condicoes.map((c: any) => {
           const calcOriginalPmc = apiOriginalPmc > 0 ? apiOriginalPmc : (baseOriginalPmc > 0 ? Number((baseOriginalPmc * 1.4).toFixed(2)) : 0);
           const calcNovoPmc = calcOriginalPmc;
 
-          const alertResult = calculateQuantityAlert(
-            item.precoOriginal,
-            originalNovoPreco,
-            item.descricao,
-            originalCx,
-            item.descricao
-          );
+          const alertResult = (originalDist === "Sem Estoque")
+            ? { alertaConfirmarQtd: false as const }
+            : calculateQuantityAlert(
+                item.precoOriginal,
+                originalNovoPreco,
+                item.descricao,
+                originalCx,
+                item.descricao
+              );
 
           // Se fornecedor externo "trabalha com item" mas sem preço definido, anotar no observacao
           // (não é troca — só informação pro comprador, igual ao conceito de Ofertas do Dia)
@@ -8631,7 +8633,7 @@ app.post("/api/search-products", async (req, res) => {
                 Token: actualToken,
                 parametros: {
                   CnpjCLi: apiCnpj,
-                  Texto: "%" + tryQuery.split(/\s+/).filter(w => w && !PHARMA_SALT_STOPWORDS.includes(w)).join("%")
+                  Texto: "%" + tryQuery.split(/\s+/).filter(w => w && !PHARMA_SALT_STOPWORDS.includes(w)).join("%") + "%"
                 }
               })
             });
@@ -9109,8 +9111,17 @@ app.post("/api/search-products", async (req, res) => {
 
     log(`[FILTRO TIPOS] Filtro de tipos aceitos: [${normalizedTipos.join(", ")}] | Itens correspondentes: ${processedItems.length}`);
 
-    // 3. Ordenar por preÃ§o lÃ­quido ascendente
-    processedItems.sort((a, b) => a.precoLiquido - b.precoLiquido);
+    // 3. Ordenar: composicao exata antes de combinados, depois por preco
+    const temCombinacao = /\d\s*(MG|MCG|ML|G|UI|%)?\s*\+\s*\d/i;
+    const queryIndicaCombinacao = /\+/.test(searchQuery) ||
+      /\d\s*\/\s*\d/.test(searchQuery) ||
+      ((searchQuery.match(/\d+\s*(MG|MCG|ML)/gi) || []).length >= 2);
+    for (const item of processedItems) {
+      const isCombinacao = temCombinacao.test(item.descricao);
+      (item as any).matchTier = (isCombinacao && !queryIndicaCombinacao) ? "similar" : "exato";
+    }
+    const tierRank = (t: string) => t === "exato" ? 0 : 1;
+    processedItems.sort((a, b) => tierRank((a as any).matchTier) - tierRank((b as any).matchTier) || a.precoLiquido - b.precoLiquido);
 
     // 4. Indicar qual Ã© o genÃ©rico mais barato
     const genericItems = processedItems.filter(it => it.isGeneric);
@@ -9985,10 +9996,60 @@ app.get("/api/similares/:ean", async (req, res) => {
             trierEncontrou = true;
             trierData = data;
           }
+        } else {
+          console.log(`[SIMILARES] Ferramentinhas respondeu OK mas sem dado util pro EAN ${ean}: encontrou=${data?.encontrou}, produtos=${Array.isArray(data?.produtos) ? data.produtos.length : "ausente"}. Caindo no fallback local.`);
         }
+      } else {
+        console.log(`[SIMILARES] Ferramentinhas respondeu HTTP ${response.status} pro EAN ${ean}. Caindo no fallback local.`);
       }
     } catch (errDirect) {
       console.warn(`[SIMILARES] Falha ou erro na consulta direta ao ERP para EAN ${ean}:`, errDirect);
+    }
+
+    // Fallback: tentar EAN original do SICF se o principal falhou
+    const originalEanParam = req.query.originalEan ? cleanEan(req.query.originalEan as string) : null;
+    if (!trierEncontrou && originalEanParam && originalEanParam !== ean) {
+      console.log(`[SIMILARES] EAN ${ean} nao encontrado na Ferramentinhas, tentando EAN original do SICF: ${originalEanParam}`);
+      try {
+        const responseOrig = await fetch(`${CONFIG.FERRAMENTINHAS_API_URL}/api/produtos/similares/${originalEanParam}`);
+        if (responseOrig.ok) {
+          const dataOrig = await responseOrig.json();
+          if (dataOrig && dataOrig.encontrou && Array.isArray(dataOrig.produtos) && dataOrig.produtos.length > 0) {
+            console.log(`[SIMILARES REGISTRO] Carregados ${dataOrig.produtos.length} produtos oficiais da Trier via EAN original ${originalEanParam}.`);
+            for (const prod of dataOrig.produtos) {
+              const pEan = cleanEan(prod.ean || prod.cod_barra || prod.cod_barras || "");
+              const pDesc = prod.nom_produto || prod.descricao;
+              if (pEan && pDesc) {
+                EAN_DATABASE[pEan] = {
+                  descricao: pDesc,
+                  laboratorio: prod.nom_laborat || prod.laboratorio || "Geral",
+                  precoOriginal: parseFloat(prod.vlr_venda_final || prod.vlr_venda_tabela || prod.vlr_custopersonalizado || "10.0") || 10.0,
+                  qtd_estoque: prod.qtd_estoque !== undefined ? parseFloat(prod.qtd_estoque) : undefined,
+                  est_minimo: prod.est_minimo !== undefined ? parseFloat(prod.est_minimo) : undefined,
+                  est_maximo: prod.est_maximo !== undefined ? parseFloat(prod.est_maximo) : (prod.estoque_maximo !== undefined ? parseFloat(prod.estoque_maximo) : (prod.maximo !== undefined ? parseFloat(prod.maximo) : undefined)),
+                  cod_reduzido: prod.cod_reduzido,
+                  vlr_custopersonalizado: prod.vlr_custopersonalizado !== undefined ? parseFloat(prod.vlr_custopersonalizado) : undefined,
+                  vlr_venda_tabela: prod.vlr_venda_tabela !== undefined ? parseFloat(prod.vlr_venda_tabela) : undefined,
+                  vlr_venda_final: prod.vlr_venda_final !== undefined ? parseFloat(prod.vlr_venda_final) : undefined,
+                  dat_ultent: prod.dat_ultent,
+                  cod_dcb: prod.cod_dcb,
+                  cod_concentracao: prod.cod_concentracao
+                };
+              }
+            }
+            if (!forceDesc) {
+              trierEncontrou = true;
+              trierData = dataOrig;
+            }
+          } else {
+            console.log(`[SIMILARES] Ferramentinhas respondeu OK mas sem dado util pro EAN original ${originalEanParam} tambem.`);
+          }
+        } else {
+          console.log(`[SIMILARES] Ferramentinhas respondeu HTTP ${responseOrig.status} pro EAN original ${originalEanParam} tambem.`);
+        }
+      } catch (errOrig) {
+        console.warn(`[SIMILARES] Falha na consulta pelo EAN original ${originalEanParam}:`, errOrig);
+      }
     }
 
     if (trierEncontrou && trierData && !forceDesc) {

@@ -61,6 +61,12 @@ export function runEngineSelfTests() {
       alt: { descricao: "FLEDOID GEL 300 40G", ean: "7898040325183", tipo: "Similar" },
       expected: false,
     },
+    {
+      name: "7. Bloqueio de Combinado vs Puro Mesma Embalagem (Losartana vs Losartana+HCT)",
+      orig: { descricao: "GT LOSARTANA 50MG 60CPR COZAAR FP", ean: "7896112134220" },
+      alt: { descricao: "LOSARTANA+ HIDRO 50MG+12.5 60CPR (ARADOIS H) (REFERENCIA) BIOLAB", ean: "7896112427933" },
+      expected: false,
+    },
   ];
 
   let passed = 0;

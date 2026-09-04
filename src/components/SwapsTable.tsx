@@ -792,7 +792,7 @@ export default function SwapsTable({
                             </span>
                           )}
                           <div className="text-[10px] text-gray-400 mt-0.5 font-normal flex flex-wrap items-center">
-                            EAN: {item.novoEan} <EanEyeButton ean={item.novoEan} descricao={item.novaDescricao} laboratorio={item.novoLaboratorio || item.originalLaboratorio} qtd={item.qtd || 1} /><EanPromoButton ean={item.novoEan} descricao={item.novaDescricao} />
+                            EAN: {item.novoEan} <EanEyeButton ean={item.novoEan} descricao={item.novaDescricao} laboratorio={item.novoLaboratorio || item.originalLaboratorio} qtd={item.qtd || 1} originalEan={item.originalEan !== item.novoEan ? item.originalEan : undefined} /><EanPromoButton ean={item.novoEan} descricao={item.novaDescricao} />
                             {item.alternatives && item.alternatives.length > 0 && (
                               <button
                                 onClick={(e) => {
@@ -1844,7 +1844,7 @@ export default function SwapsTable({
                                 <div className="flex flex-col items-center justify-center text-center leading-tight">
                                   <div className="flex items-center">
                                     {isDisregarded ? item.originalEan : item.novoEan}
-                                    <EanEyeButton ean={isDisregarded ? item.originalEan : item.novoEan} descricao={isDisregarded ? item.originalDescricao : item.novaDescricao} laboratorio={isDisregarded ? item.originalLaboratorio : item.novoLaboratorio} />
+                                    <EanEyeButton ean={isDisregarded ? item.originalEan : item.novoEan} descricao={isDisregarded ? item.originalDescricao : item.novaDescricao} laboratorio={isDisregarded ? item.originalLaboratorio : item.novoLaboratorio} originalEan={!isDisregarded && item.originalEan !== item.novoEan ? item.originalEan : undefined} />
                                     <EanPromoButton ean={isDisregarded ? item.originalEan : item.novoEan} descricao={isDisregarded ? item.originalDescricao : item.novaDescricao} />
                                     {((item.alternatives && item.alternatives.length > 0) || item.distribuidora === "Sem Estoque" || item.distribuidora === "Não Encontrados") && (
                                       <button
