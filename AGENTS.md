@@ -82,6 +82,7 @@
 | 55 | Card do grupo de distribuidor mudava de posição na tela ao alterar quantidade, trocar condição/laboratório ou excluir item no pré-pedido — comprador perdia a referência visual do que estava editando | Existia um mecanismo de "ordem estável" (distributorOrder) já desenhado no SwapsTable mas nunca ativado (setDistributorOrder nunca era chamado em lugar nenhum do projeto) — a lista sempre recaía no fallback de sort puro por valor/status, recalculado do zero a cada edição. Fix: novo estado local stableGroupOrder fixa a posição de cada grupo na primeira vez que aparece; useLayoutEffect só adiciona grupos NOVOS no final (mesma prioridade de sempre: incompletos primeiro, depois por valor), nunca move os já posicionados | src/components/SwapsTable.tsx |
 | 56 | Item de encomenda faturado com sucesso via "Buscar manual" (quando não havia oferta automática) nunca era confirmado no sistema de Encomendas — ficava preso em "ENCOMENDADO" pra sempre mesmo já faturado | handleAddManualItem nunca setava origem: "encomenda" nem idEncomenda no item resultante (o vínculo com a encomenda de origem se perdia), mesmo quando disparado a partir de uma encomenda sem oferta automática. No /api/faturar, o filtro origem === "encomenda" && idEncomenda excluía esse item de encomendasPendentes — o sistema de Encomendas nunca era notificado. Fix: manualAddOriginItem agora carrega idEncomenda opcional, setado no trigger do botão "Buscar manual" e lido em handleAddManualItem (3 pontos: item do relatório, localStorage, persistência Turso). Botão "+" genérico agora reseta manualAddOriginItem antes de abrir o modal, evitando vazamento de idEncomenda de uma sessão anterior | src/hooks/useManualSearch.ts, src/App.tsx |
 | 57 | Mensagem "NÃO ATENDIDO" duplicada dezenas de vezes na observação da mesma encomenda | encomendas_pendentes (coluna de pedidos_monitorados) era gravada uma única vez no faturamento e nunca atualizada depois — confirmarEncomendasAposRetorno reprocessava a lista inteira a cada checagem (10min ou "Verificar Agora"), reenviando confirmação/falha pra encomendas já resolvidas em checagens anteriores, enquanto outros distribuidores do mesmo lote continuassem pendentes. Fix: confirmarEncomendasAposRetorno agora retorna os IDs resolvidos nesta chamada; checkPedidoReturn filtra e persiste a lista restante via nova função updatePedidoMonitoradoEncomendasPendentes | server/database.ts, server/pedido-monitor.ts |
+| 58 | Item faturado ficava preso pra sempre em "Aguardando Chegar" mesmo com entrada_confirmada = 1 | `getFaturadosPendentes` (alias `getProfarmaFaturadosPendentes`) filtrava só `status = 'faturado'`, sem checar `entrada_confirmada` — ao contrário das funções irmãs `getFaturadosPendentesReconciliacao` e `getItensAtrasados`. Fix: `AND ic.entrada_confirmada = 0` adicionado na query (`database.ts:618`). Caso real: EAN 7891317103323 (Betatrinta), faturado pela Profarma em 16/08, preso no grupo por semanas | server/database.ts |
 
 **Se o problema parece novo, verifique esta tabela antes de investigar.**
 
@@ -223,6 +224,18 @@ A modal `ConfirmQuantitiesModal` so aparece pra `alertaConfirmarQtd` (discrepanc
 ### Regra
 
 Qualquer novo consumidor de `useProfarmaAlertCheck` deve passar `relevantEans` com os EANs do contexto atual — nao omitir esse argumento (default e array vazio = hook fica inerte).
+
+### Terceiro bug historico: entrada_confirmada ignorada
+
+`getFaturadosPendentes` (server/database.ts, alias `getProfarmaFaturadosPendentes`, usada por `/api/profarma-faturados-pendentes`) filtrava so `status = 'faturado'`, sem checar `entrada_confirmada`. Item ja com entrada confirmada (inclusive registros antigos, backfillados como `entrada_confirmada = 1` quando a coluna foi criada — ver migracao em `database.ts:339`) continuava aparecendo pra sempre no grupo "Aguardando Chegar {distribuidor}", porque a query nunca reconhecia que ja estava resolvido. Fix: `AND ic.entrada_confirmada = 0` adicionado na query (`database.ts:618`), igual ja era feito em `getFaturadosPendentesReconciliacao` e `getItensAtrasados`. Caso real que expôs o bug: EAN 7891317103323 (Betatrinta), pedido faturado pela Profarma em 16/08, preso no grupo por semanas mesmo ja confirmado.
+
+### Log de diagnostico: falha de lote na API SmartPed
+
+Catch de erro de rede em `processBatch` (server.ts:4296-4299) agora loga os EANs do lote que falhou (`batch.join(", ")`), nao so a mensagem generica de erro. Facilita rastrear, na proxima vez que um item aparecer com preco/classificacao estranha (ex: "Sem Estoque" com preco de fracionado bizarro), se foi falha pontual de API naquele lote especifico.
+
+### Alerta de fracionado em itens de varejo (nao-medicamento)
+
+Itens de varejo/perfumaria (esmalte, lamina de barbear, etc.) caem com frequencia maior no alerta "potencialmente fracionado" (`calculateQuantityAlert`, preco cotado > 3x o ERP) porque distribuidoras costumam cotar esse tipo de item por caixa fechada/duzia, diferente de medicamento. Confirmado em sessao de investigacao (04/09/2026): nao e bug — e o alerta funcionando como projetado, pedindo confirmacao de "Qtd Caixas" antes de faturar errado. Nao confundir com instabilidade de API (que e intermitente, item aparece/some entre rodadas) — fracionado real em item de varejo e consistente, aparece toda vez.
 
 ---
 
