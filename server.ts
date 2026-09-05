@@ -8244,18 +8244,28 @@ app.post("/api/search-products", async (req, res) => {
     // Normalizar query de busca: remover stopwords, normalizar abreviacoes, limpar espacos
     const normalizeSearchQuery = (q: string): { query: string; quantity: string | null } => {
       let s = q.trim().toUpperCase();
+
+      // Detectar quantidade EXPLICITA via separador ("com"/"c/") entre dois numeros,
+      // ANTES de remover stopwords (senao perde o sinal do separador)
+      let explicitQuantity: string | null = null;
+      const separatorMatch = s.match(/\d+\s*(?:COM|C\/)\s*(\d+)\s*$/i);
+      if (separatorMatch) {
+        explicitQuantity = separatorMatch[1];
+      }
+
       // Remover stopwords que nao ajudam na busca
       const stopwords = ["COM", "DE", "DO", "DA", "DOS", "DAS", "PARA", "POR", "SEM", "ATE", "OU", "E", "EM", "O", "A", "OS", "AS", "UM", "UMA"];
       const words = s.split(/\s+/).filter(w => w.length > 0 && !stopwords.includes(w));
 
-      // Extrair quantidade standalone (numero sozinho no final, ex: "60", "120")
+      // Extrair quantidade: SO quando veio de separador explicito ("com"/"c/")
       // NAO extrair quando a query e 100% numerica com 8+ digitos (EAN)
+      // SEM separador: numero solto fica no texto de busca (tratado como dosagem/descricao)
       let quantity: string | null = null;
       const isEan = words.length === 1 && /^\d{8,}$/.test(words[0]);
-      if (!isEan) {
+      if (!isEan && explicitQuantity) {
+        quantity = explicitQuantity;
         const lastWord = words[words.length - 1] || "";
-        if (/^\d+$/.test(lastWord) && parseInt(lastWord) > 1) {
-          quantity = lastWord;
+        if (lastWord === explicitQuantity) {
           words.pop(); // remover do query de busca
         }
       }
